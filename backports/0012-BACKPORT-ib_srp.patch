@@ -1,0 +1,211 @@
+From: Vladimir Sokolovsky <vlad@mellanox.com>
+Subject: [PATCH] BACKPORT: ib_srp
+
+Signed-off-by: Vladimir Sokolovsky <vlad@mellanox.com>
+Signed-off-by: Sagi Grimberg <sagig@mellanox.com>
+---
+ drivers/infiniband/ulp/srp/ib_srp.c | 91 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 90 insertions(+), 1 deletion(-)
+
+--- a/drivers/infiniband/ulp/srp/ib_srp.c
++++ b/drivers/infiniband/ulp/srp/ib_srp.c
+@@ -35,6 +35,7 @@
+ #endif
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/version.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+ #include <linux/slab.h>
+@@ -44,7 +45,11 @@
+ #include <linux/random.h>
+ #include <linux/jiffies.h>
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)
+ #include <linux/atomic.h>
++#else
++#include <asm/atomic.h>
++#endif
+ 
+ #include <scsi/scsi.h>
+ #include <scsi/scsi_device.h>
+@@ -101,23 +106,45 @@ module_param(register_always, bool, 0444
+ MODULE_PARM_DESC(register_always,
+ 		 "Use memory registration even for contiguous memory regions");
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ static struct kernel_param_ops srp_tmo_ops;
++#endif
+ 
+ static int srp_reconnect_delay = 20;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ module_param_cb(reconnect_delay, &srp_tmo_ops, &srp_reconnect_delay, S_IRUGO);
++#else
++module_param_named(reconnect_delay, srp_reconnect_delay, int, S_IRUGO);
++#endif
++
+ MODULE_PARM_DESC(reconnect_delay, "Time between successive reconnect attempts");
+ 
+ static int srp_fast_io_fail_tmo = 15;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ module_param_cb(fast_io_fail_tmo, &srp_tmo_ops, &srp_fast_io_fail_tmo, S_IRUGO);
++#else
++module_param_named(fast_io_fail_tmo, srp_fast_io_fail_tmo, int, S_IRUGO);
++#endif
++
+ MODULE_PARM_DESC(fast_io_fail_tmo,
+ 		 "Number of seconds between the observation of a transport"
+ 		 " layer error and failing all I/O.\n"
+ 		 "                             "
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ 		 "\"off\" means that this"
++#else
++                "(-1) means that this"
++#endif
++
+ 		 " functionality is disabled.");
+ 
+ static int srp_dev_loss_tmo = -1;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ module_param_cb(dev_loss_tmo, &srp_tmo_ops, &srp_dev_loss_tmo, S_IRUGO);
++#else
++module_param_named(dev_loss_tmo, srp_dev_loss_tmo, int, S_IRUGO);
++#endif
++
+ MODULE_PARM_DESC(dev_loss_tmo,
+ 		 "Maximum number of seconds that the SRP transport should"
+ 		 " insulate transport layer errors.\n"
+@@ -127,7 +154,11 @@ MODULE_PARM_DESC(dev_loss_tmo,
+ 		 "Should be between 1 and " __stringify(SCSI_DEVICE_BLOCK_MAX_TIMEOUT)
+ 		 " if fast_io_fail_tmo has not been set.\n"
+ 		 "                             "
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ 		 "\"off\" means that this functionality is disabled.");
++#else
++		 "(-1) means that this functionality is disabled.");
++#endif
+ 
+ static void srp_add_one(struct ib_device *device);
+ static void srp_remove_one(struct ib_device *device);
+@@ -146,6 +177,7 @@ static struct ib_client srp_client = {
+ 
+ static struct ib_sa_client srp_sa_client;
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ static int srp_tmo_get(char *buffer, const struct kernel_param *kp)
+ {
+ 	int tmo = *(int *)kp->arg;
+@@ -184,6 +216,7 @@ static struct kernel_param_ops srp_tmo_o
+ 	.get = srp_tmo_get,
+ 	.set = srp_tmo_set,
+ };
++#endif
+ 
+ static inline struct srp_target_port *host_to_target(struct Scsi_Host *host)
+ {
+@@ -1136,16 +1169,20 @@ static void srp_finish_req(struct srp_ta
+ static void srp_terminate_io(struct srp_rport *rport)
+ {
+ 	struct srp_target_port *target = rport->lld_data;
++#ifdef HAVE_REQUEST_QUEUE_REQUEST_FN_ACTIVE
+ 	struct Scsi_Host *shost = target->scsi_host;
+ 	struct scsi_device *sdev;
++#endif
+ 	int i;
+ 
+ 	/*
+ 	 * Invoking srp_terminate_io() while srp_queuecommand() is running
+ 	 * is not safe. Hence the warning statement below.
+ 	 */
++#ifdef HAVE_REQUEST_QUEUE_REQUEST_FN_ACTIVE
+ 	shost_for_each_device(sdev, shost)
+ 		WARN_ON_ONCE(sdev->request_queue->request_fn_active);
++#endif
+ 
+ 	for (i = 0; i < target->req_ring_size; ++i) {
+ 		struct srp_request *req = &target->req_ring[i];
+@@ -1918,7 +1955,50 @@ static void srp_send_completion(struct i
+ 	}
+ }
+ 
+-static int srp_queuecommand(struct Scsi_Host *shost, struct scsi_cmnd *scmnd)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)
++/*
++ * Kernel with host lock push-down patch. See also upstream commit
++ * f281233d3eba15fb225d21ae2e228fd4553d824a.
++ */
++#define SRP_QUEUECOMMAND srp_queuecommand
++#elif defined(RHEL_MAJOR) && RHEL_MAJOR -0 == 6 && RHEL_MINOR -0 >= 2
++/*
++ * Kernel with lockless SCSI command dispatching enabled.
++ * See also the RHEL 6.2 release notes (http://access.redhat.com/knowledge/docs/en-US/Red_Hat_Enterprise_Linux/6/html-single/6.2_Release_Notes/index.html).
++ */
++static int srp_queuecommand_wrk(struct Scsi_Host *shost,
++				struct scsi_cmnd *scmnd);
++static int srp_queuecommand(struct scsi_cmnd *scmnd,
++			    void (*done)(struct scsi_cmnd *))
++{
++	scmnd->scsi_done = done;
++	return srp_queuecommand_wrk(scmnd->device->host, scmnd);
++}
++#define SRP_QUEUECOMMAND srp_queuecommand_wrk
++#else
++/*
++ * Kernel that invokes srp_queuecommand with the SCSI host lock held.
++ */
++static int srp_queuecommand_wrk(struct Scsi_Host *shost,
++				struct scsi_cmnd *scmnd);
++static int srp_queuecommand(struct scsi_cmnd *scmnd,
++			    void (*done)(struct scsi_cmnd *))
++{
++	struct Scsi_Host *shost = scmnd->device->host;
++	int res;
++
++	spin_unlock_irq(shost->host_lock);
++
++	scmnd->scsi_done = done;
++	res = srp_queuecommand_wrk(shost, scmnd);
++
++	spin_lock_irq(shost->host_lock);
++	return res;
++}
++#define SRP_QUEUECOMMAND srp_queuecommand_wrk
++#endif
++
++static int SRP_QUEUECOMMAND(struct Scsi_Host *shost, struct scsi_cmnd *scmnd)
+ {
+ 	struct srp_target_port *target = host_to_target(shost);
+ 	struct srp_rport *rport = target->rport;
+@@ -2404,8 +2484,10 @@ static int srp_abort(struct scsi_cmnd *s
+ 	if (srp_send_tsk_mgmt(target, req->index, scmnd->device->lun,
+ 			      SRP_TSK_ABORT_TASK) == 0)
+ 		ret = SUCCESS;
++#if defined(SRP_NO_FAST_IO_FAIL)
+ 	else if (target->rport->state == SRP_RPORT_LOST)
+ 		ret = FAST_IO_FAIL;
++#endif
+ 	else
+ 		ret = FAILED;
+ 	srp_free_req(target, req, scmnd, 0);
+@@ -2625,6 +2707,9 @@ static struct scsi_host_template srp_tem
+ 	.proc_name			= DRV_NAME,
+ 	.slave_configure		= srp_slave_configure,
+ 	.info				= srp_target_info,
++#if defined(RHEL_MAJOR) && RHEL_MAJOR -0 == 6 && RHEL_MINOR -0 >= 2 && defined(CONFIG_IS_SCSI_LOCKLESS)
++	.lockless			= true,
++#endif
+ 	.queuecommand			= srp_queuecommand,
+ 	.eh_abort_handler		= srp_abort,
+ 	.eh_device_reset_handler	= srp_reset_device,
+@@ -3052,7 +3137,11 @@ static ssize_t srp_create_target(struct
+ 	if (ret)
+ 		goto err_free_mem;
+ 
++#ifdef HAVE_IB_QUERY_GID_ATTRS
++	ret = ib_query_gid(ibdev, host->port, 0, &target->path.sgid, NULL);
++#else
+ 	ret = ib_query_gid(ibdev, host->port, 0, &target->path.sgid);
++#endif
+ 	if (ret)
+ 		goto err_free_mem;
+ 

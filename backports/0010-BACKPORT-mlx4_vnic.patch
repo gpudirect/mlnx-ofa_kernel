@@ -1,0 +1,587 @@
+From: Alaa Hleihel <alaa@mellanox.com>
+Subject: [PATCH] BACKPORT: mlx4_vnic
+
+Signed-off-by: Alaa Hleihel <alaa@mellanox.com>
+---
+ drivers/net/ethernet/mellanox/mlx4_vnic/vnic.h     |  13 +++
+ .../mellanox/mlx4_vnic/vnic_data_ethtool.c         | 106 +++++++++++++++++++++
+ .../net/ethernet/mellanox/mlx4_vnic/vnic_data_ib.c |  25 ++++-
+ .../ethernet/mellanox/mlx4_vnic/vnic_data_main.c   |   4 +-
+ .../ethernet/mellanox/mlx4_vnic/vnic_data_netdev.c |  74 +++++++++++++-
+ .../net/ethernet/mellanox/mlx4_vnic/vnic_data_rx.c |  30 +++++-
+ drivers/net/ethernet/mellanox/mlx4_vnic/vnic_qp.c  |   2 +
+ 7 files changed, 242 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic.h
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic.h
+@@ -75,8 +75,11 @@
+ 
+ /* backports */
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0))
++/* LRO support was dropped from kernel 4.6 and up */
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ #define _BP_NO_GRO
+ #endif
++#endif
+ 
+ /* externs */
+ extern u32 vnic_msglvl;
+@@ -296,6 +299,7 @@ extern struct ib_sa_client vnic_sa_clien
+ #ifdef HAVE_NDO_SELECT_QUEUE
+ #define VNIC_TXQ_GET_HASH(_skb, _max)	(skb_get_queue_mapping(_skb))
+ #define VNIC_TXQ_ALLOC_NETDEV(sz, nm, sp, qm) alloc_netdev_mq(sz, nm, sp, qm)
++#if !defined (CONFIG_COMPAT_DISABLE_REAL_NUM_TXQ)
+ #define VNIC_TXQ_SET_ACTIVE(login, num) \
+             do { \
+                 rtnl_lock(); \
+@@ -303,6 +307,13 @@ extern struct ib_sa_client vnic_sa_clien
+                 rtnl_unlock(); \
+                 login->real_tx_rings_num = login->ndo_tx_rings_num = num; \
+             } while (0)
++#else
++#define VNIC_TXQ_SET_ACTIVE(login, num) \
++            do { \
++                login->dev->real_num_tx_queues = num; \
++                login->real_tx_rings_num = login->ndo_tx_rings_num = num; \
++            } while (0)
++#endif
+ #define VNIC_TXQ_GET_ACTIVE(login)	(login->real_tx_rings_num)
+ #define VNIC_TXQ_GET(tx_res)		netdev_get_tx_queue(tx_res->login->dev, tx_res->index)
+ #define VNIC_TXQ_STOP(tx_res) 		netif_tx_stop_queue(VNIC_TXQ_GET(tx_res))
+@@ -655,8 +666,10 @@ enum {
+ struct vnic_rx_res {
+ 	struct vnic_login *login;
+ 	struct ib_cq *cq;
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ 	struct net_lro_mgr lro;
+         struct net_lro_desc lro_desc[VNIC_MAX_LRO_DESCS];
++#endif
+ 	struct ib_wc recv_wc[VNIC_MAX_RX_CQE];
+ 	int index;
+ 	int stopped;
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_ethtool.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_ethtool.c
+@@ -147,6 +147,91 @@ static int vnic_set_coalesce(struct net_
+ 	return 0;
+ }
+ 
++#ifndef HAVE_NETDEV_HW_FEATURES
++
++static u32 vnic_get_rx_csum(struct net_device *dev)
++{
++	struct vnic_login *login = vnic_netdev_priv(dev);
++
++	return login->rx_csum;
++}
++
++static int vnic_set_rx_csum(struct net_device *dev, u32 data)
++{
++	struct vnic_login *login = vnic_netdev_priv(dev);
++
++	login->rx_csum = (data != 0);
++
++	return 0;
++}
++
++static u32 vnic_get_tx_csum(struct net_device *dev)
++{
++	return (dev->features & NETIF_F_IP_CSUM) != 0;
++}
++
++static int vnic_set_tx_csum(struct net_device *dev, u32 data)
++{
++	struct vnic_login *login = vnic_netdev_priv(dev);
++
++	/* check capability bit of SWP */
++	if (!(login->port->dev->mdev->dev->caps.flags & MLX4_DEV_CAP_FLAG_UD_SWP))
++		return -EPERM;
++
++	if (data)
++		dev->features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
++	else
++		dev->features &= ~(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM);
++
++	return 0;
++}
++
++static u32 vnic_get_tso(struct net_device *dev)
++{
++	return (dev->features & NETIF_F_TSO) != 0;
++}
++
++static int vnic_set_tso(struct net_device *dev, u32 data)
++{
++	if (data)
++		dev->features |= (NETIF_F_TSO | NETIF_F_TSO6);
++	else
++		dev->features &= ~(NETIF_F_TSO | NETIF_F_TSO6);
++
++	return 0;
++}
++
++#ifndef _BP_ETHTOOL_NO_GSFLAGS
++#if !(defined(NETIF_F_GRO) && !defined(_BP_NO_GRO))
++static int vnic_set_flags(struct net_device *dev, u32 data)
++{
++	int rc = 0, changed = 0;
++
++	if (data & ~ETH_FLAG_LRO)
++		return -EOPNOTSUPP;
++
++	if (data & ETH_FLAG_LRO) {
++		if (vnic_lro_num == 0)
++			return -EOPNOTSUPP;
++		if (!(dev->features & NETIF_F_LRO))
++			changed = 1;
++	} else if (dev->features & NETIF_F_LRO) {
++		changed = 1;
++	}
++
++	if (changed) {
++		dev->features ^= NETIF_F_LRO;
++		/* stop/start interface to cleanup any pending LRO sessions */
++		rc = vnic_restart(dev);
++	}
++
++	return rc;
++}
++#endif
++#endif
++
++#endif
++
+ static int vnic_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+ {
+ 	cmd->autoneg = AUTONEG_DISABLE;
+@@ -324,5 +409,26 @@ static struct ethtool_ops vnic_ethtool_o
+ 	.get_wol = vnic_get_wol,
+ 	.get_ringparam = vnic_get_ringparam,
+ 	.set_ringparam = NULL,
++#ifndef HAVE_NETDEV_HW_FEATURES
++	.get_sg = ethtool_op_get_sg,
++	.set_sg = ethtool_op_set_sg,
++	.get_tx_csum = vnic_get_tx_csum,
++	.set_tx_csum = vnic_set_tx_csum,
++	.get_rx_csum = vnic_get_rx_csum,
++	.set_rx_csum = vnic_set_rx_csum,
++	.get_ufo = ethtool_op_get_ufo,
++	.set_ufo = ethtool_op_set_ufo,
++#ifndef _BP_ETHTOOL_NO_GSFLAGS
++	.get_flags = ethtool_op_get_flags,
++#if !(defined(NETIF_F_GRO) && !defined(_BP_NO_GRO))
++	.set_flags = vnic_set_flags,
++#endif
++
++#ifdef NETIF_F_TSO
++	.get_tso = vnic_get_tso,
++	.set_tso = vnic_set_tso,
++#endif
++#endif
++#endif
+ };
+ 
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_ib.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_ib.c
+@@ -309,7 +309,7 @@ static void vnic_ib_handle_rx_wc_linear(
+ 
+ 		goto rx_repost;
+ 	}
+-#elif defined(NETIF_F_LRO)
++#elif defined(NETIF_F_LRO) && defined(CONFIG_COMPAT_LRO_ENABLED)
+ 	if (login->dev->features & NETIF_F_LRO && checksum_ok) {
+ 		struct vnic_rx_res *rx_res = &login->rx_res[rx_ring_index];
+ 
+@@ -396,10 +396,13 @@ static void vnic_ib_handle_rx_wc(struct
+ 	ib_dma_sync_single_for_cpu(ib_device,
+ 				   ring->rx_info[wr_id].dma_addr[0] + IB_GRH_BYTES,
+ 				   MAX_HEADER_SIZE, DMA_FROM_DEVICE);
+-
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 	va = page_address(ring->rx_info[wr_id].frags[0].page.p) +
+ 		ring->rx_info[wr_id].frags[0].page_offset + IB_GRH_BYTES;
+-
++#else
++	va = page_address(ring->rx_info[wr_id].frags[0].page) +
++		ring->rx_info[wr_id].frags[0].page_offset + IB_GRH_BYTES;
++#endif
+ 	/* check EoIB header signature and version */
+ 	eoib_hdr = (struct eoibhdr *)va;
+ 	if (unlikely(VNIC_EOIB_HDR_GET_SIG(eoib_hdr) != VNIC_EOIB_HDR_SIG ||
+@@ -500,7 +503,9 @@ static void vnic_ib_handle_rx_wc(struct
+ #elif defined(NETIF_F_LRO)
+ 	if (login->dev->features & NETIF_F_LRO && checksum_ok &&
+ 	    eth_type == ETH_P_IP && ip_type == IPPROTO_TCP) {
++#if defined(CONFIG_COMPAT_LRO_ENABLED)
+ 		struct vnic_rx_res *rx_res = &login->rx_res[rx_ring_index];
++#endif
+ 		int nr_frags;
+ 
+ 		/* unmap the needed fragment and reallocate them.
+@@ -515,8 +520,10 @@ static void vnic_ib_handle_rx_wc(struct
+ 		frags[0].size -= page_offset;
+ 
+ 		/* processed for LRO */
++#if defined(CONFIG_COMPAT_LRO_ENABLED)
+ 		lro_receive_frags(&rx_res->lro, frags, packet_length,
+ 				  packet_length, NULL, 0);
++#endif
+ 		VNIC_STATS_INC(login->port_stats.lro_aggregated);
+ 
+ 		goto rx_repost;
+@@ -643,7 +650,7 @@ static int vnic_drain_rx_cq(struct vnic_
+ 		vnic_ib_handle_rx_wc(login, &rx_res->recv_wc[i],
+ 				     rx_res_index);
+ 
+-#ifdef NETIF_F_LRO
++#if defined(NETIF_F_LRO) && defined(CONFIG_COMPAT_LRO_ENABLED)
+ 	/* Done CQ handling: flush all LRO sessions unconditionally */
+ 	if (login->dev->features & NETIF_F_LRO) {
+ 		VNIC_STATS_INC(login->port_stats.lro_flushed);
+@@ -1360,9 +1367,15 @@ static int vnic_dma_map_tx(struct ib_dev
+ 
+ 	for (i = 0; i < shinfo->nr_frags; ++i) {
+ 		skb_frag_t *frag = &shinfo->frags[i];
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 		mapping[i + off] = ib_dma_map_page(ca, frag->page.p,
+ 						   frag->page_offset,
+ 						   frag->size, DMA_TO_DEVICE);
++#else
++		mapping[i + off] = ib_dma_map_page(ca, frag->page,
++						   frag->page_offset,
++						   frag->size, DMA_TO_DEVICE);
++#endif
+ 		if (unlikely(ib_dma_mapping_error(ca, mapping[i + off])))
+ 			goto partial_error;
+ 	}
+@@ -1474,7 +1487,11 @@ void vnic_send(struct vnic_login *login,
+ 	} else {
+ 		VNIC_STATS_DO_ADD(tx_res->stats.tx_packets, tx_pkt_num);
+ 		VNIC_STATS_DO_ADD(tx_res->stats.tx_bytes, skb->len);
++#ifdef HAVE_ND_TRANS_START
+ 		login->dev->trans_start = jiffies;
++#else
++		netdev_get_tx_queue(login->dev, 0)->trans_start = jiffies;
++#endif
+ 		++tx_res->tx_head;
+ 
+ 
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_main.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_main.c
+@@ -901,7 +901,7 @@ static int _vnic_add_member_mgid(struct
+ {
+ 	struct vnic_mcast *mcaste, *mcaste_bcast;
+ 	int rc;
+-#ifndef _BP_NO_MC_LIST
++#ifndef HAVE_NETDEV_FOR_EACH_MC_ADDR
+ 	struct dev_mc_list *mclist;
+ #else
+ 	struct netdev_hw_addr *ha;
+@@ -949,7 +949,7 @@ static int _vnic_add_member_mgid(struct
+ 
+ 	/* hold the tx lock so set_multicast_list() won't change mc_list */
+ 	netif_tx_lock_bh(login->dev);
+-#ifndef _BP_NO_MC_LIST
++#ifndef HAVE_NETDEV_FOR_EACH_MC_ADDR
+ 	for (mclist = login->dev->mc_list; mclist; mclist = mclist->next) {
+ 		u8* mmac = mclist->dmi_addr;
+ #else
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_netdev.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_netdev.c
+@@ -35,20 +35,40 @@
+ 
+ extern struct net_device_stats *mlx4_vnic_stats_func_container(struct net_device *n);
+ 
++#if defined(HAVE_NDO_RX_ADD_VID_HAS_3_PARAMS)
++static int mlx4_vnic_vlan_rx_add_vid(struct net_device *dev, __be16 proto,
++				     unsigned short vid)
++#elif defined(HAVE_NDO_RX_ADD_VID_HAS_2_PARAMS_RET_INT)
+ static int mlx4_vnic_vlan_rx_add_vid(struct net_device *dev, unsigned short vid)
++#else
++static void mlx4_vnic_vlan_rx_add_vid(struct net_device *dev, unsigned short vid)
++#endif
+ {
+ 	struct vnic_login *login = vnic_netdev_priv(dev);
+ 
+ 	vnic_dbg_data(login->name, "add VLAN:%d was called\n", vid);
++#if (defined(HAVE_NDO_RX_ADD_VID_HAS_3_PARAMS) || \
++     defined(HAVE_NDO_RX_ADD_VID_HAS_2_PARAMS_RET_INT))
+ 	return 0;
++#endif
+ }
+ 
++#if defined(HAVE_NDO_RX_ADD_VID_HAS_3_PARAMS)
++static int mlx4_vnic_vlan_rx_kill_vid(struct net_device *dev, __be16 proto,
++				      unsigned short vid)
++#elif defined(HAVE_NDO_RX_ADD_VID_HAS_2_PARAMS_RET_INT)
+ static int mlx4_vnic_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
++#else
++static void mlx4_vnic_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
++#endif
+ {
+ 	struct vnic_login *login = vnic_netdev_priv(dev);
+ 
+ 	vnic_dbg_data(login->name, "Kill VID:%d was called\n", vid);
++#if (defined(HAVE_NDO_RX_ADD_VID_HAS_3_PARAMS) || \
++     defined(HAVE_NDO_RX_ADD_VID_HAS_2_PARAMS_RET_INT))
+ 	return 0;
++#endif
+ }
+ 
+ void vnic_carrier_update(struct vnic_login *login)
+@@ -349,7 +369,7 @@ static void vnic_mcast_reattach(struct w
+ 	struct vnic_gw_info *lag_member;
+ 	struct vnic_login *login;
+ 	struct net_device *dev;
+-#ifndef _BP_NO_MC_LIST
++#ifndef HAVE_NETDEV_FOR_EACH_MC_ADDR
+ 	struct dev_mc_list *mclist;
+ #else
+ 	struct netdev_hw_addr *ha;
+@@ -415,7 +435,7 @@ static void vnic_mcast_reattach(struct w
+ 
+ 	/* hold the tx lock so set_multicast_list() won't change mc_list */
+ 	netif_tx_lock_bh(dev);
+-#ifndef _BP_NO_MC_LIST
++#ifndef HAVE_NETDEV_FOR_EACH_MC_ADDR
+ 	for (mclist = login->dev->mc_list; mclist; mclist = mclist->next) {
+ 		u8* mmac = mclist->dmi_addr;
+ #else
+@@ -697,7 +717,11 @@ static int _vnic_stop(struct net_device
+ 	 * to avoid spurious transmit timeouts in the interval between
+ 	 * tx queue stopped and carrier down.
+ 	 */
++#ifdef HAVE_ND_TRANS_START
+ 	dev->trans_start = jiffies;
++#else
++	netdev_get_tx_queue(dev, 0)->trans_start = jiffies;
++#endif
+ 	dev->watchdog_timeo = 0x7fffffff;
+ 
+ 	VNIC_TXQ_STOP_ALL(login);
+@@ -793,7 +817,11 @@ static void vnic_tx_timeout(struct net_d
+ 		  "latency: %d msec,  stopped: %d, carrier_ok: %d,"
+ 		  "queue_stopped: %d, watchdog_timeo: %d msec\n",
+ 		  login->port->num,
++#ifdef HAVE_ND_TRANS_START
+ 		  jiffies_to_msecs(jiffies - dev->trans_start),
++#else
++		  jiffies_to_msecs(jiffies - dev_trans_start(dev)),
++#endif
+ 		  netif_queue_stopped(dev), netif_carrier_ok(dev),
+ 		  login->queue_stopped,
+ 		  jiffies_to_msecs(dev->watchdog_timeo));
+@@ -808,7 +836,16 @@ static void vnic_tx_timeout(struct net_d
+ }
+ 
+ #ifdef HAVE_NDO_SELECT_QUEUE
++#ifdef CONFIG_COMPAT_SELECT_QUEUE_ACCEL
++u16 vnic_select_queue(struct net_device *dev, struct sk_buff *skb,
++#ifdef CONFIG_COMPAT_SELECT_QUEUE_FALLBACK
++		      void *accel_priv, select_queue_fallback_t fallback)
++#else
++		      void *accel_priv)
++#endif
++#else /* CONFIG_COMPAT_SELECT_QUEUE_ACCEL */
+ u16 vnic_select_queue(struct net_device *dev, struct sk_buff *skb)
++#endif
+ {
+ 	/* Notes:
+ 	 * - In kernel 2.6.32 the skb->mac_header 0x1a is not set when
+@@ -834,7 +871,11 @@ static struct net_device_ops vnic_netdev
+ 	.ndo_stop = vnic_stop,
+ 	.ndo_start_xmit = vnic_tx,
+ 	.ndo_get_stats = vnic_get_stats,
+-	.ndo_set_rx_mode = vnic_set_multicast_list,
++#ifndef HAVE_NDO_SET_MULTICAST_LIST
++        .ndo_set_rx_mode = vnic_set_multicast_list,
++#else
++        .ndo_set_multicast_list = vnic_set_multicast_list,
++#endif
+ 	.ndo_change_mtu = vnic_change_mtu,
+ 	.ndo_tx_timeout = vnic_tx_timeout,
+ 	.ndo_set_mac_address = vnic_set_mac,
+@@ -879,12 +920,17 @@ static void vnic_setup(struct net_device
+ #endif // _BP_NO_NDO_OPS
+ }
+ 
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ static int vnic_get_frag_header(struct skb_frag_struct *frags, void **mac_hdr,
+ 				void **ip_hdr, void **tcpudp_hdr,
+ 				u64 *hdr_flags, void *priv)
+ {
+ 	struct iphdr *iph;
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 	*mac_hdr = page_address(frags->page.p) + frags->page_offset;
++#else
++	*mac_hdr = page_address(frags->page) + frags->page_offset;
++#endif
+ 	*ip_hdr = iph = (struct iphdr *)(*mac_hdr + ETH_HLEN);
+ 	*tcpudp_hdr = (struct tcphdr *)(iph + (iph->ihl << 2));
+ 	*hdr_flags = LRO_IPV4 | LRO_TCP;
+@@ -949,6 +995,7 @@ static void vnic_lro_disable(struct vnic
+ 	/* nop */
+ 	return;
+ }
++#endif
+ 
+ struct net_device *vnic_alloc_netdev(struct vnic_port *port)
+ {
+@@ -1018,11 +1065,22 @@ struct net_device *vnic_alloc_netdev(str
+ 
+ 	vnic_set_ethtool_ops(dev);
+ 	/* init ethtool */
++#ifdef HAVE_NETDEV_HW_FEATURES
+ 	dev->hw_features = NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
+ 	dev->hw_features |= NETIF_F_RXCSUM | NETIF_F_RXHASH;
+ 	dev->hw_features |= NETIF_F_TSO | NETIF_F_TSO6;
+ 	dev->features |= dev->hw_features;
+-
++#else
++	do {
++		login->dev->ethtool_ops->set_rx_csum(login->dev, 1);
++		if (login->dev->ethtool_ops->set_tx_csum(login->dev, 1))
++			break;
++		if (login->dev->ethtool_ops->set_sg(login->dev, 1))
++			break;
++		if (login->dev->ethtool_ops->set_tso(login->dev, 1))
++			break;
++	} while (0);
++#endif
+ 	/* init NAPI (must be before LRO init) */
+ 	login->napi_num = login->rx_rings_num;
+ 	for (i = 0; i < login->napi_num; ++i) {
+@@ -1034,23 +1092,27 @@ struct net_device *vnic_alloc_netdev(str
+ 
+ #if defined(NETIF_F_GRO) && !defined(_BP_NO_GRO)
+ 	login->dev->features |= NETIF_F_GRO;
+-#elif defined(NETIF_F_LRO)
++#elif defined(NETIF_F_LRO) && defined(CONFIG_COMPAT_LRO_ENABLED)
+ 	login->lro_num = vnic_lro_num;
+ 	login->lro_mng_num = vnic_lro_num ? login->rx_rings_num : 0;
+ 	login->dev->features |= vnic_lro_num ? NETIF_F_LRO : 0;
+ #endif
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ 	for (i = 0; i < login->lro_mng_num; ++i) {
+ 		if (vnic_lro_enable(login, i)) {
+ 			vnic_err(login->name, "vnic_lro_enable %d failed\n", i);
+ 			goto free_lro;
+ 		}
+ 	}
++#endif
+ 
+ 	return dev;
+ 
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ free_lro:
+ 	for (--i; i >= 0; --i)
+ 		vnic_lro_disable(login, i);
++#endif
+ 
+ 	i = login->napi_num;
+ free_napi:
+@@ -1070,8 +1132,10 @@ void vnic_free_netdev(struct vnic_login
+ 
+ 	vnic_dbg_func(login->name);
+ 
++#ifdef CONFIG_COMPAT_LRO_ENABLED
+ 	for (i = 0; i < login->lro_mng_num; ++i)
+ 		vnic_lro_disable(login, i);
++#endif
+ 	for (i = 0; i < login->napi_num; ++i)
+ 		vnic_napi_dealloc(login, i);
+ 	flush_workqueue(login->neigh_wq);
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_rx.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_data_rx.c
+@@ -33,6 +33,12 @@
+ #include "vnic.h"
+ #include "vnic_data.h"
+ 
++#ifndef HAVE_NETDEVICE__QUEUE_STATE_XOFF
++#define VNIC_QUEUE_STATE_OFF QUEUE_STATE_ANY_XOFF
++#else
++#define VNIC_QUEUE_STATE_OFF __QUEUE_STATE_XOFF
++#endif
++
+ static inline void free_single_frag(struct vnic_rx_ring *ring, int e,int i)
+ {
+ 		ib_dma_unmap_single(ring->port->dev->ca,
+@@ -40,7 +46,11 @@ static inline void free_single_frag(stru
+ 			ring->frag_info[i].frag_size,
+ 			PCI_DMA_FROMDEVICE);
+ 		ring->rx_info[e].dma_addr[i] = 0;
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 		put_page(ring->rx_info[e].frags[i].page.p);
++#else
++		put_page(ring->rx_info[e].frags[i].page);
++#endif
+ }
+ 
+ #ifdef HAVE_NDO_SELECT_QUEUE
+@@ -71,7 +81,7 @@ unlock:
+ 	for (--i; i >= 0; --i) {
+ 		struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
+ 		clear_bit(__QUEUE_STATE_FROZEN, &txq->state);
+-		if (!test_bit(QUEUE_STATE_ANY_XOFF, &txq->state))
++		if (!test_bit(VNIC_QUEUE_STATE_OFF, &txq->state))
+ 			__netif_schedule(txq->qdisc);
+ 	}
+ 	spin_unlock(&dev->tx_global_lock);
+@@ -283,20 +293,34 @@ static int vnic_alloc_frag(struct vnic_r
+ 			   ring->need_refill = 1; */
+ 			return -ENOMEM;
+ 		}
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 		skbf.page.p = page_alloc->page;
++#else
++		skbf.page =  page_alloc->page;
++#endif
+ 		skbf.page_offset = page_alloc->offset;
+ 	} else {
+ 		decision = 1;
+ 		page = page_alloc->page;
+ 		get_page(page);
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 		skbf.page.p = page;
++#else
++		skbf.page = page;
++#endif
+ 		skbf.page_offset = page_alloc->offset;
+ 	}
+ 
+ 	skbf.size = frag_info->frag_size;
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 	dma = ib_dma_map_single(ib_device, page_address(skbf.page.p) +
+ 			     skbf.page_offset, frag_info->frag_size,
+ 			     PCI_DMA_FROMDEVICE);
++#else
++	dma = ib_dma_map_single(ib_device, page_address(skbf.page) +
++			     skbf.page_offset, frag_info->frag_size,
++			     PCI_DMA_FROMDEVICE);
++#endif
+ 	if (unlikely(ib_dma_mapping_error(ib_device, dma))) {
+ 		vnic_dbg_data(ring->port->name,
+ 			      "ib_dma_map_single len %d failed\n",
+@@ -506,7 +530,11 @@ fail:
+ 	 * the descriptor) of this packet; remaining fragments are reused... */
+ 	while (nr > 0) {
+ 		nr--;
++#ifdef HAVE_SKB_FRAG_STRUCT_PAGE_P
+ 		put_page(skb_frags_rx[nr].page.p);
++#else
++		put_page(skb_frags_rx[nr].page);
++#endif
+ 	}
+ 
+ 	return 0;
+--- a/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_qp.c
++++ b/drivers/net/ethernet/mellanox/mlx4_vnic/vnic_qp.c
+@@ -604,7 +604,9 @@ static int create_qp_common(struct mlx4_
+ 	spin_lock_init(&qp->rq.lock);
+ 	INIT_LIST_HEAD(&qp->gid_list);
+ 	INIT_LIST_HEAD(&qp->steering_rules);
++#if 0
+ 	INIT_LIST_HEAD(&qp->rules_list);
++#endif
+ 
+ 	qp->state	 = IB_QPS_RESET;
+ 	if (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR)

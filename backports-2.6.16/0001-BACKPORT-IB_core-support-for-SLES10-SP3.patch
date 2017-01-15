@@ -1,0 +1,4041 @@
+From: Alaa Hleihel <alaa@mellanox.com>
+Subject: [PATCH] BACKPORT 2.6.16: IB_core support for SLES10-SP3
+
+Signed-off-by: Alaa Hleihel <alaa@mellanox.com>
+---
+ drivers/infiniband/core/Makefile         |   6 +-
+ drivers/infiniband/core/addr.c           |  98 ++++++++++
+ drivers/infiniband/core/cm.c             |  33 ++++
+ drivers/infiniband/core/cma.c            |  78 +++++++-
+ drivers/infiniband/core/cma_configfs.c   |   4 +
+ drivers/infiniband/core/cq.c             |   6 +
+ drivers/infiniband/core/device.c         |   6 +
+ drivers/infiniband/core/iwpm_msg.c       |  24 +++
+ drivers/infiniband/core/mad.c            | 130 +++++++++++++
+ drivers/infiniband/core/netlink.c        |   2 +
+ drivers/infiniband/core/peer_mem.c       |   3 +-
+ drivers/infiniband/core/roce_gid_cache.c |   2 +-
+ drivers/infiniband/core/roce_gid_mgmt.c  |   2 +
+ drivers/infiniband/core/sysfs.c          | 144 +++++++++++++-
+ drivers/infiniband/core/ucm.c            | 126 ++++++++++++
+ drivers/infiniband/core/ucma.c           |  52 +++++
+ drivers/infiniband/core/umem.c           | 316 ++++++++++++++++++++++++++++++-
+ drivers/infiniband/core/user_mad.c       | 275 ++++++++++++++++++++++++++-
+ drivers/infiniband/core/uverbs.h         |   7 +
+ drivers/infiniband/core/uverbs_cmd.c     |   4 +
+ drivers/infiniband/core/uverbs_main.c    | 227 +++++++++++++++++++++-
+ drivers/infiniband/core/verbs.c          |  24 ++-
+ include/linux/mlx4/cmd.h                 |   2 +
+ include/rdma/ib.h                        |   4 +
+ include/rdma/ib_addr.h                   |  24 +++
+ include/rdma/ib_cm.h                     |  14 ++
+ include/rdma/ib_pma.h                    |  12 ++
+ include/rdma/ib_smi.h                    |  20 ++
+ include/rdma/ib_umem.h                   |  28 ++-
+ include/rdma/ib_verbs.h                  |  15 ++
+ 30 files changed, 1674 insertions(+), 14 deletions(-)
+
+--- a/drivers/infiniband/core/Makefile
++++ b/drivers/infiniband/core/Makefile
+@@ -4,8 +4,8 @@ infiniband-$(CONFIG_INFINIBAND_ADDR_TRAN
+ user_access-$(CONFIG_INFINIBAND_ADDR_TRANS)	:= rdma_ucm.o
+ 
+ obj-$(CONFIG_INFINIBAND) +=		ib_core.o ib_mad.o ib_sa.o \
+-					ib_cm.o iw_cm.o ib_addr.o \
+-					ib_netlink.o $(infiniband-y)
++					ib_cm.o ib_addr.o \
++					$(infiniband-y)
+ obj-$(CONFIG_INFINIBAND_USER_MAD) +=	ib_umad.o
+ obj-$(CONFIG_INFINIBAND_USER_ACCESS) +=	ib_uverbs.o ib_ucm.o \
+ 					$(user_access-y)
+@@ -24,8 +24,6 @@ ib_netlink-y :=			netlink.o
+ 
+ ib_cm-y :=			cm.o
+ 
+-iw_cm-y :=			iwcm.o iwpm_util.o iwpm_msg.o
+-
+ rdma_cm-y :=			cma.o cma_configfs.o
+ 
+ rdma_ucm-y :=			ucma.o
+--- a/drivers/infiniband/core/addr.c
++++ b/drivers/infiniband/core/addr.c
+@@ -76,6 +76,7 @@ static LIST_HEAD(req_list);
+ static DECLARE_DELAYED_WORK(work, process_req);
+ static struct workqueue_struct *addr_wq;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct nla_policy ib_nl_addr_policy[LS_NLA_TYPE_MAX] = {
+ 	[LS_NLA_TYPE_DGID]		= {.type = NLA_BINARY,
+ 		.len = sizeof(struct rdma_nla_ls_gid)},
+@@ -207,6 +208,7 @@ static int ib_nl_ip_send_msg(struct rdma
+ 	 */
+ 	return -ENODATA;
+ }
++#endif
+ 
+ int rdma_addr_size(struct sockaddr *addr)
+ {
+@@ -223,7 +225,9 @@ int rdma_addr_size(struct sockaddr *addr
+ }
+ EXPORT_SYMBOL(rdma_addr_size);
+ 
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+ static struct rdma_addr_client self;
++#endif
+ 
+ void rdma_addr_register_client(struct rdma_addr_client *client)
+ {
+@@ -265,7 +269,11 @@ int rdma_translate_ip(struct sockaddr *a
+ 	int ret = -EADDRNOTAVAIL;
+ 
+ 	if (dev_addr->bound_dev_if) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev = dev_get_by_index(&init_net, dev_addr->bound_dev_if);
++#else
++		dev = dev_get_by_index(dev_addr->bound_dev_if);
++#endif
+ 		if (!dev)
+ 			return -ENODEV;
+ 		ret = rdma_copy_addr(dev_addr, dev, NULL);
+@@ -289,6 +297,7 @@ int rdma_translate_ip(struct sockaddr *a
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+ 	case AF_INET6:
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		rcu_read_lock();
+ 		for_each_netdev_rcu(&init_net, dev) {
+ 			if (ipv6_chk_addr(&init_net,
+@@ -301,6 +310,17 @@ int rdma_translate_ip(struct sockaddr *a
+ 			}
+ 		}
+ 		rcu_read_unlock();
++#else
++		read_lock(&dev_base_lock);
++		for (dev = dev_base; dev; dev = dev->next) {
++			if (ipv6_chk_addr(&((struct sockaddr_in6 *) addr)->sin6_addr,
++					  dev, 1)) {
++				ret = rdma_copy_addr(dev_addr, dev, NULL);
++				break;
++			}
++		}
++		read_unlock(&dev_base_lock);
++#endif
+ 		break;
+ #endif
+ 	}
+@@ -312,11 +332,18 @@ static void set_timeout(unsigned long ti
+ {
+ 	unsigned long delay;
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	cancel_delayed_work(&work);
++#endif
+ 	delay = time - jiffies;
+ 	if ((long)delay < 0)
+ 		delay = 0;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	mod_delayed_work(addr_wq, &work, delay);
++#else
++	queue_delayed_work(addr_wq, &work, delay);
++#endif
+ }
+ 
+ static void queue_req(struct addr_req *req)
+@@ -378,6 +405,7 @@ static int dst_fetch_ha(struct dst_entry
+ #endif
+ 
+ #ifdef HAVE_FLOWI_AF_SPECIFIC_INSTANCES
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int ib_nl_fetch_ha(struct dst_entry *dst, struct rdma_dev_addr *dev_addr,
+ 			  const void *daddr, u32 seq, u16 family)
+ {
+@@ -388,6 +416,7 @@ static int ib_nl_fetch_ha(struct dst_ent
+ 	rdma_copy_addr(dev_addr, dst->dev, NULL);
+ 	return ib_nl_ip_send_msg(dev_addr, daddr, seq, family);
+ }
++#endif
+ 
+ static bool has_gateway(struct dst_entry *dst, const void *daddr, sa_family_t family)
+ {
+@@ -419,6 +448,7 @@ static int fetch_ha(struct dst_entry *ds
+ 		(const void *)&dst_in6->sin6_addr;
+ 	sa_family_t family = dst_in->sa_family;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	/* Gateway + ARPHRD_INFINIBAND -> IB router */
+ 	if (
+ #ifndef HAVE_RT_USES_GATEWAY
+@@ -427,6 +457,7 @@ static int fetch_ha(struct dst_entry *ds
+ 	    has_gateway(dst, daddr, family) && dst->dev->type == ARPHRD_INFINIBAND)
+ 		return ib_nl_fetch_ha(dst, dev_addr, daddr, seq, family);
+ 	else
++#endif
+ #ifdef HAVE_DST_NEIGH_LOOKUP
+ 		return dst_fetch_ha(dst, dev_addr, daddr);
+ #else
+@@ -513,6 +544,7 @@ static int addr4_resolve(struct sockaddr
+ 		goto put;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (seq && !ibnl_chk_listeners(RDMA_NL_GROUP_LS)) {
+ #ifdef HAVE_RTABLE_IDEV
+ 		rdma_copy_addr(addr, rt->idev->dev, NULL);
+@@ -525,6 +557,7 @@ static int addr4_resolve(struct sockaddr
+ 		ret  = -ENODATA;
+ 		goto put;
+ 	}
++#endif
+ #ifdef HAVE_RTABLE_IDEV
+ 		neigh = neigh_lookup(&arp_tbl, &rt->rt_gateway, rt->idev->dev);
+ #else
+@@ -575,14 +608,22 @@ static int addr6_resolve(struct sockaddr
+ 	fl6.saddr = src_in->sin6_addr;
+ 	fl6.flowi6_oif = addr->bound_dev_if;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 	dst = ip6_route_output(&init_net, NULL, &fl6);
++#else
++	dst = ip6_route_output(NULL, &fl6);
++#endif
+ 	if ((ret = dst->error))
+ 		goto put;
+ 
+ 	rt = (struct rt6_info *)dst;
+ 	if (ipv6_addr_any(&fl6.saddr)) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 		ret = ipv6_dev_get_saddr(&init_net, ip6_dst_idev(dst)->dev,
+ 					 &fl6.daddr, 0, &fl6.saddr);
++#else
++		ret = ipv6_get_saddr(dst, &fl6.fl6_dst, &fl6.fl6_src);
++#endif
+ 		if (ret)
+ 			goto put;
+ 
+@@ -595,14 +636,22 @@ static int addr6_resolve(struct sockaddr
+ 	ipv6_addr_copy(&fl.fl6_src, &src_in->sin6_addr);
+ 	fl.oif = addr->bound_dev_if;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 	dst = ip6_route_output(&init_net, NULL, &fl);
++#else
++	dst = ip6_route_output(NULL, &fl);
++#endif
+ 	if ((ret = dst->error))
+ 		goto put;
+ 
+ 	rt = (struct rt6_info *)dst;
+ 	if (ipv6_addr_any(&fl.fl6_src)) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 		ret = ipv6_dev_get_saddr(&init_net, ip6_dst_idev(dst)->dev,
+ 					 &fl.fl6_dst, 0, &fl.fl6_src);
++#else
++		ret = ipv6_get_saddr(dst, &fl.fl6_dst, &fl.fl6_src);
++#endif
+ 		if (ret)
+ 			goto put;
+ 
+@@ -630,6 +679,7 @@ static int addr6_resolve(struct sockaddr
+ #ifdef HAVE_FLOWI_AF_SPECIFIC_INSTANCES
+ 	ret = fetch_ha(dst, addr, (struct sockaddr *)dst_in, seq);
+ #else
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (rt->rt6i_flags & RTF_GATEWAY &&
+ 	    dst->dev->type == ARPHRD_INFINIBAND) {
+ 		if (!ibnl_chk_listeners(RDMA_NL_GROUP_LS)) {
+@@ -643,6 +693,7 @@ static int addr6_resolve(struct sockaddr
+ 		}
+ 		goto put;
+ 	}
++#endif
+ 
+ 	neigh = dst->neighbour;
+ 	if (!neigh || !(neigh->nud_state & NUD_VALID)) {
+@@ -697,6 +748,7 @@ static void process_req(struct work_stru
+ 			req->status = addr_resolve(src_in, dst_in, req->addr,
+ 						   req->seq);
+ 			if (req->status && time_after_eq(jiffies, req->timeout)) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifndef HAVE_RT_USES_GATEWAY
+ 				if (req->seq &&
+ 				    !ibnl_chk_listeners(RDMA_NL_GROUP_LS)) {
+@@ -710,6 +762,7 @@ static void process_req(struct work_stru
+ 					}
+ 				} else
+ #endif
++#endif
+ 					req->status = -ETIMEDOUT;
+ 			} else if (req->status == -ENODATA)
+ 				continue;
+@@ -768,10 +821,12 @@ int rdma_resolve_ip(struct rdma_addr_cli
+ 	req->client = client;
+ 	atomic_inc(&client->refcount);
+ 	req->seq = (u32)atomic_inc_return(&ib_nl_addr_request_seq);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifndef HAVE_RT_USES_GATEWAY
+ 	if (!req->seq)
+ 		req->seq = (u32)atomic_inc_return(&ib_nl_addr_request_seq);
+ #endif
++#endif
+ 
+ 	req->status = addr_resolve(src_in, dst_in, addr, req->seq);
+ 	switch (req->status) {
+@@ -813,6 +868,7 @@ void rdma_addr_cancel(struct rdma_dev_ad
+ }
+ EXPORT_SYMBOL(rdma_addr_cancel);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ struct resolve_cb_context {
+ 	struct rdma_dev_addr *addr;
+ 	struct completion comp;
+@@ -929,21 +985,63 @@ static int __init addr_init(void)
+ 	atomic_set(&ib_nl_addr_request_seq, 0);
+ 	register_netevent_notifier(&nb);
+ 	rdma_addr_register_client(&self);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (ibnl_add_client(RDMA_NL_LS, RDMA_NL_LS_NUM_OPS,
+ 			    ib_addr_cb_table)) {
+ 		pr_warn("RDMA ADDR: failed to add netlink callback\n");
+ 	}
++#endif
+ 
+ 	return 0;
+ }
+ 
+ static void __exit addr_cleanup(void)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	ibnl_remove_client(RDMA_NL_LS, RDMA_NL_LS_NUM_OPS, ib_addr_cb_table);
++#endif
+ 	rdma_addr_unregister_client(&self);
+ 	unregister_netevent_notifier(&nb);
+ 	destroy_workqueue(addr_wq);
+ }
++#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
++static int addr_arp_recv(struct sk_buff *skb, struct net_device *dev,
++			 struct packet_type *pkt, struct net_device *orig_dev)
++{
++	struct arphdr *arp_hdr;
++
++	arp_hdr = (struct arphdr *) skb->nh.raw;
++
++	if (arp_hdr->ar_op == htons(ARPOP_REQUEST) ||
++	    arp_hdr->ar_op == htons(ARPOP_REPLY))
++		set_timeout(jiffies);
++
++	kfree_skb(skb);
++	return 0;
++}
++
++static struct packet_type addr_arp = {
++	.type           = __constant_htons(ETH_P_ARP),
++	.func           = addr_arp_recv,
++	.af_packet_priv = (void*) 1,
++};
++
++static int addr_init(void)
++{
++	addr_wq = create_singlethread_workqueue("ib_addr");
++	if (!addr_wq)
++		return -ENOMEM;
++
++	dev_add_pack(&addr_arp);
++	return 0;
++}
++
++static void addr_cleanup(void)
++{
++	dev_remove_pack(&addr_arp);
++	destroy_workqueue(addr_wq);
++}
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ module_init(addr_init);
+ module_exit(addr_cleanup);
+--- a/drivers/infiniband/core/cm.c
++++ b/drivers/infiniband/core/cm.c
+@@ -171,7 +171,11 @@ struct cm_port {
+ struct cm_device {
+ 	struct list_head list;
+ 	struct ib_device *ib_device;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct device *device;
++#else
++	struct class_device *device;
++#endif
+ 	u8 ack_delay;
+ 	int going_down;
+ 	struct cm_port *port[0];
+@@ -3862,6 +3866,7 @@ static struct kobj_type cm_port_obj_type
+ 	.release = cm_release_port_obj
+ };
+ 
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ #ifdef HAVE_CLASS_DEVNODE_UMODE_T
+ static char *cm_devnode(struct device *dev, umode_t *mode)
+ #else
+@@ -3872,11 +3877,16 @@ static char *cm_devnode(struct device *d
+ 		*mode = 0666;
+ 	return kasprintf(GFP_KERNEL, "infiniband/%s", dev_name(dev));
+ }
++#endif
+ 
+ struct class cm_class = {
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 	.owner   = THIS_MODULE,
+ 	.name    = "infiniband_cm",
+ 	.devnode = cm_devnode,
++#else
++	.name    = "infiniband_cm",
++#endif
+ };
+ EXPORT_SYMBOL(cm_class);
+ 
+@@ -3905,8 +3915,13 @@ static int cm_create_port_fs(struct cm_p
+ 
+ error:
+ 	while (i--)
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 		kobject_put(&port->counter_group[i].obj);
+ 	kobject_put(&port->port_obj);
++#else
++		kobject_unregister(&port->counter_group[i].obj);
++	kobject_unregister(&port->port_obj);
++#endif
+ 	return ret;
+ 
+ }
+@@ -3916,9 +3931,15 @@ static void cm_remove_port_fs(struct cm_
+ 	int i;
+ 
+ 	for (i = 0; i < CM_COUNTER_GROUPS; i++)
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 		kobject_put(&port->counter_group[i].obj);
+ 
+ 	kobject_put(&port->port_obj);
++#else
++		kobject_unregister(&port->counter_group[i].obj);
++
++	kobject_unregister(&port->port_obj);
++#endif
+ }
+ 
+ static void cm_add_one(struct ib_device *ib_device)
+@@ -3947,7 +3968,11 @@ static void cm_add_one(struct ib_device
+ 	cm_dev->ib_device = ib_device;
+ 	cm_get_ack_delay(cm_dev);
+ 	cm_dev->going_down = 0;
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 	cm_dev->device = device_create(&cm_class, &ib_device->dev,
++#else
++	cm_dev->device = class_device_create(&cm_class, &ib_device->class_dev,
++#endif
+ 				       MKDEV(0, 0), NULL,
+ 				       "%s", ib_device->name);
+ 	if (IS_ERR(cm_dev->device)) {
+@@ -4007,7 +4032,11 @@ error1:
+ 		ib_unregister_mad_agent(port->mad_agent);
+ 		cm_remove_port_fs(port);
+ 	}
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 	device_unregister(cm_dev->device);
++#else
++	class_device_unregister(cm_dev->device);
++#endif
+ 	kfree(cm_dev);
+ }
+ 
+@@ -4061,7 +4090,11 @@ static void cm_remove_one(struct ib_devi
+ 		cm_remove_port_fs(port);
+ 	}
+ 
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16)
+ 	device_unregister(cm_dev->device);
++#else
++	class_device_unregister(cm_dev->device);
++#endif
+ 	kfree(cm_dev);
+ }
+ 
+--- a/drivers/infiniband/core/cma.c
++++ b/drivers/infiniband/core/cma.c
+@@ -543,7 +543,11 @@ static int cma_acquire_dev(struct rdma_i
+ 							 &iboe_gid,
+ 							 gid_type,
+ 							 port,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 							 &init_net,
++#else
++							 NULL,
++#endif
+ 							 if_index,
+ 							 NULL);
+ 		} else {
+@@ -579,7 +583,11 @@ static int cma_acquire_dev(struct rdma_i
+ 									 &iboe_gid,
+ 									 gid_type,
+ 									 port,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 									 &init_net,
++#else
++									 NULL,
++#endif
+ 									 if_index,
+ 									 NULL);
+ 				} else {
+@@ -798,7 +806,9 @@ static int cma_modify_qp_rtr(struct rdma
+ {
+ 	struct ib_qp_attr qp_attr;
+ 	int qp_attr_mask, ret;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 	union ib_gid sgid;
++#endif
+ 
+ 	mutex_lock(&id_priv->qp_mutex);
+ 	if (!id_priv->id.qp) {
+@@ -821,10 +831,12 @@ static int cma_modify_qp_rtr(struct rdma
+ 	if (ret)
+ 		goto out;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 	ret = ib_query_gid(id_priv->id.device, id_priv->id.port_num,
+ 			   qp_attr.ah_attr.grh.sgid_index, &sgid, NULL);
+ 	if (ret)
+ 		goto out;
++#endif
+ 
+ 	if (conn_param)
+ 		qp_attr.max_dest_rd_atomic = conn_param->responder_resources;
+@@ -936,6 +948,7 @@ int rdma_init_qp_attr(struct rdma_cm_id
+ 		if (qp_attr->qp_state == IB_QPS_RTR)
+ 			qp_attr->rq_psn = id_priv->seq_num;
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		if (!id_priv->cm_id.iw) {
+@@ -945,6 +958,7 @@ int rdma_init_qp_attr(struct rdma_cm_id
+ 			ret = iw_cm_init_qp_attr(id_priv->cm_id.iw, qp_attr,
+ 						 qp_attr_mask);
+ 		break;
++#endif
+ 	default:
+ 		ret = -ENOSYS;
+ 		break;
+@@ -1245,8 +1259,12 @@ static void cma_leave_mc_groups(struct r
+ 				struct net_device *ndev = NULL;
+ 
+ 				if (dev_addr->bound_dev_if)
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 					ndev = dev_get_by_index(&init_net,
+ 								dev_addr->bound_dev_if);
++#else
++					ndev = dev_get_by_index(dev_addr->bound_dev_if);
++#endif
+ 				if (ndev) {
+ 					cma_igmp_send(ndev,
+ 						      &mc->multicast.ib->rec.mgid,
+@@ -1284,11 +1302,13 @@ void rdma_destroy_id(struct rdma_cm_id *
+ 			if (id_priv->cm_id.ib)
+ 				ib_destroy_cm_id(id_priv->cm_id.ib);
+ 			break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		case RDMA_TRANSPORT_IWARP:
+ 		case RDMA_EXP_TRANSPORT_SCIF:
+ 			if (id_priv->cm_id.iw)
+ 				iw_destroy_cm_id(id_priv->cm_id.iw);
+ 			break;
++#endif
+ 		default:
+ 			break;
+ 		}
+@@ -1696,6 +1716,7 @@ static void cma_set_compare_data(enum rd
+ 	}
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_iw_handler(struct iw_cm_id *iw_id, struct iw_cm_event *iw_event)
+ {
+ 	struct rdma_id_private *id_priv = iw_id->context;
+@@ -1846,6 +1867,7 @@ out:
+ 	mutex_unlock(&listen_id->handler_mutex);
+ 	return ret;
+ }
++#endif
+ 
+ static int cma_ib_listen(struct rdma_id_private *id_priv)
+ {
+@@ -1878,6 +1900,7 @@ static int cma_ib_listen(struct rdma_id_
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_iw_listen(struct rdma_id_private *id_priv, int backlog)
+ {
+ 	int ret;
+@@ -1903,6 +1926,7 @@ static int cma_iw_listen(struct rdma_id_
+ 
+ 	return ret;
+ }
++#endif
+ 
+ static int cma_listen_handler(struct rdma_cm_id *id,
+ 			      struct rdma_cm_event *event)
+@@ -2192,6 +2216,7 @@ err:
+ }
+ EXPORT_SYMBOL(rdma_set_ib_paths);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_resolve_iw_route(struct rdma_id_private *id_priv, int timeout_ms)
+ {
+ 	struct cma_work *work;
+@@ -2208,6 +2233,7 @@ static int cma_resolve_iw_route(struct r
+ 	queue_work(cma_wq, &work->work);
+ 	return 0;
+ }
++#endif
+ 
+ #if defined(HAVE_VLAN_DEV_GET_EGRESS_QOS_MASK)
+ static u8 iboe_tos_to_sl(struct net_device *ndev, u8 tos)
+@@ -2288,8 +2314,13 @@ static int cma_resolve_iboe_route(struct
+ 	if (addr->dev_addr.bound_dev_if) {
+ 		unsigned long supported_gids;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 		ndev = dev_get_by_index(&init_net, addr->dev_addr.bound_dev_if);
+ 		route->path_rec->net = &init_net;
++#else
++		ndev = dev_get_by_index(addr->dev_addr.bound_dev_if);
++		route->path_rec->net = NULL;
++#endif
+ 		route->path_rec->ifindex = addr->dev_addr.bound_dev_if;
+ 		supported_gids = gid_type_mask_support(id_priv->id.device,
+ 						       id_priv->id.port_num);
+@@ -2378,10 +2409,12 @@ int rdma_resolve_route(struct rdma_cm_id
+ 			ret = -ENOSYS;
+ 		}
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		ret = cma_resolve_iw_route(id_priv, timeout_ms);
+ 		break;
++#endif
+ 	default:
+ 		ret = -ENOSYS;
+ 		break;
+@@ -3016,12 +3049,14 @@ int rdma_listen(struct rdma_cm_id *id, i
+ 			if (ret)
+ 				goto err;
+ 			break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		case RDMA_TRANSPORT_IWARP:
+ 		case RDMA_EXP_TRANSPORT_SCIF:
+ 			ret = cma_iw_listen(id_priv, backlog);
+ 			if (ret)
+ 				goto err;
+ 			break;
++#endif
+ 		default:
+ 			ret = -ENOSYS;
+ 			goto err;
+@@ -3065,6 +3100,7 @@ int rdma_bind_addr(struct rdma_cm_id *id
+ 			goto err1;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (!(id_priv->options & (1 << CMA_OPTION_AFONLY))) {
+ 		if (addr->sa_family == AF_INET)
+ 			id_priv->afonly = 1;
+@@ -3073,6 +3109,7 @@ int rdma_bind_addr(struct rdma_cm_id *id
+ 			id_priv->afonly = init_net.ipv6.sysctl.bindv6only;
+ #endif
+ 	}
++#endif
+ 	ret = cma_get_port(id_priv);
+ 	if (ret)
+ 		goto err2;
+@@ -3326,6 +3363,7 @@ out:
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_connect_iw(struct rdma_id_private *id_priv,
+ 			  struct rdma_conn_param *conn_param)
+ {
+@@ -3366,6 +3404,7 @@ out:
+ 	}
+ 	return ret;
+ }
++#endif
+ 
+ int rdma_connect(struct rdma_cm_id *id, struct rdma_conn_param *conn_param)
+ {
+@@ -3388,10 +3427,12 @@ int rdma_connect(struct rdma_cm_id *id,
+ 		else
+ 			ret = cma_connect_ib(id_priv, conn_param);
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		ret = cma_connect_iw(id_priv, conn_param);
+ 		break;
++#endif
+ 	default:
+ 		ret = -ENOSYS;
+ 		break;
+@@ -3438,6 +3479,7 @@ out:
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_accept_iw(struct rdma_id_private *id_priv,
+ 		  struct rdma_conn_param *conn_param)
+ {
+@@ -3459,6 +3501,7 @@ static int cma_accept_iw(struct rdma_id_
+ 
+ 	return iw_cm_accept(id_priv->cm_id.iw, &iw_param);
+ }
++#endif
+ 
+ static int cma_send_sidr_rep(struct rdma_id_private *id_priv,
+ 			     enum ib_cm_sidr_status status, u32 qkey,
+@@ -3518,10 +3561,12 @@ int rdma_accept(struct rdma_cm_id *id, s
+ 				ret = cma_rep_recv(id_priv);
+ 		}
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		ret = cma_accept_iw(id_priv, conn_param);
+ 		break;
++#endif
+ 	default:
+ 		ret = -ENOSYS;
+ 		break;
+@@ -3581,11 +3626,13 @@ int rdma_reject(struct rdma_cm_id *id, c
+ 					     0, private_data, private_data_len);
+ 		}
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		ret = iw_cm_reject(id_priv->cm_id.iw,
+ 				   private_data, private_data_len);
+ 		break;
++#endif
+ 	default:
+ 		ret = -ENOSYS;
+ 		break;
+@@ -3614,10 +3661,12 @@ int rdma_disconnect(struct rdma_cm_id *i
+ 			ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0);
+ 		}
+ 		break;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case RDMA_TRANSPORT_IWARP:
+ 	case RDMA_EXP_TRANSPORT_SCIF:
+ 		ret = iw_cm_disconnect(id_priv->cm_id.iw, 0);
+ 		break;
++#endif
+ 	default:
+ 		ret = -EINVAL;
+ 		break;
+@@ -3690,7 +3739,11 @@ static void cma_set_mgid(struct rdma_id_
+ 	} else if (addr->sa_family == AF_IB) {
+ 		memcpy(mgid, &((struct sockaddr_ib *) addr)->sib_addr, sizeof *mgid);
+ 	} else if ((addr->sa_family == AF_INET6)) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ipv6_ib_mc_map(&sin6->sin6_addr, dev_addr->broadcast, mc_map);
++#else
++		ipv6_ib_mc_map(&sin6->sin6_addr, mc_map);
++#endif
+ 		if (id_priv->id.ps == RDMA_PS_UDP)
+ 			mc_map[7] = 0x01;	/* Use RDMA CM signature */
+ 		*mgid = *(union ib_gid *) (mc_map + 4);
+@@ -3743,11 +3796,18 @@ static int cma_join_ib_multicast(struct
+ 						id_priv->id.port_num, &rec,
+ 						comp_mask, GFP_KERNEL,
+ 						cma_ib_mc_handler, mc);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifdef HAVE_PTR_ERR_OR_ZERO
+ 	return PTR_ERR_OR_ZERO(mc->multicast.ib);
+ #else
+ 	return PTR_RET(mc->multicast.ib);
+-#endif
++#endif /* HAVE_PTR_ERR_OR_ZERO */
++#else
++	if (IS_ERR(mc->multicast.ib))
++		return PTR_ERR(mc->multicast.ib);
++
++	return 0;
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ }
+ 
+ static void iboe_mcast_work_handler(struct work_struct *work)
+@@ -3817,7 +3877,11 @@ static int cma_iboe_join_multicast(struc
+ 		mc->multicast.ib->rec.qkey = cpu_to_be32(RDMA_UDP_QKEY);
+ 
+ 	if (dev_addr->bound_dev_if)
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ndev = dev_get_by_index(&init_net, dev_addr->bound_dev_if);
++#else
++		ndev = dev_get_by_index(dev_addr->bound_dev_if);
++#endif
+ 	if (!ndev) {
+ 		err = -ENODEV;
+ 		goto out2;
+@@ -3946,8 +4010,12 @@ void rdma_leave_multicast(struct rdma_cm
+ 						struct net_device *ndev = NULL;
+ 
+ 						if (dev_addr->bound_dev_if)
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 							ndev = dev_get_by_index(&init_net,
+ 										dev_addr->bound_dev_if);
++#else
++							ndev = dev_get_by_index(dev_addr->bound_dev_if);
++#endif
+ 						if (ndev) {
+ 							cma_igmp_send(ndev,
+ 								      &mc->multicast.ib->rec.mgid,
+@@ -4047,8 +4115,10 @@ static int cma_netdev_callback(struct no
+ 	struct rdma_id_private *id_priv;
+ 	int ret = NOTIFY_DONE;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (dev_net(ndev) != &init_net)
+ 		return NOTIFY_DONE;
++#endif
+ 
+ 	if (event != NETDEV_BONDING_FAILOVER &&
+ 	    event != NETDEV_UNREGISTER)
+@@ -4154,6 +4224,7 @@ static void cma_remove_one(struct ib_dev
+ 	kfree(cma_dev);
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int cma_get_id_stats(struct sk_buff *skb, struct netlink_callback *cb)
+ {
+ 	struct nlmsghdr *nlh;
+@@ -4232,6 +4303,7 @@ static const struct ibnl_client_cbs cma_
+ 	[RDMA_NL_RDMA_CM_ID_STATS] = { .dump = cma_get_id_stats,
+ 				       .module = THIS_MODULE },
+ };
++#endif
+ 
+ static int __init cma_init(void)
+ {
+@@ -4249,8 +4321,10 @@ static int __init cma_init(void)
+ 	if (ret)
+ 		goto err;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (ibnl_add_client(RDMA_NL_RDMA_CM, RDMA_NL_RDMA_CM_NUM_OPS, cma_cb_table))
+ 		printk(KERN_WARNING "RDMA CMA: failed to add netlink callback\n");
++#endif
+ 	cma_configfs_init();
+ 
+ 	return 0;
+@@ -4266,8 +4340,10 @@ err:
+ static void __exit cma_cleanup(void)
+ {
+ 	cma_configfs_exit();
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	ibnl_remove_client(RDMA_NL_RDMA_CM,
+ 			   RDMA_NL_RDMA_CM_NUM_OPS, cma_cb_table);
++#endif
+ 	ib_unregister_client(&cma_client);
+ 	unregister_netdevice_notifier(&cma_nb);
+ 	rdma_addr_unregister_client(&addr_client);
+--- a/drivers/infiniband/core/cma_configfs.c
++++ b/drivers/infiniband/core/cma_configfs.c
+@@ -425,7 +425,11 @@ static struct configfs_subsystem cma_sub
+ int __init cma_configfs_init(void)
+ {
+ 	config_group_init(&cma_subsys.su_group);
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+ 	mutex_init(&cma_subsys.su_mutex);
++#else
++	init_MUTEX(&cma_subsys.su_sem);
++#endif
+ 	return configfs_register_subsystem(&cma_subsys);
+ }
+ 
+--- a/drivers/infiniband/core/cq.c
++++ b/drivers/infiniband/core/cq.c
+@@ -96,6 +96,7 @@ static void ib_cq_completion_softirq(str
+ }
+ #endif
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static void ib_cq_poll_work(struct work_struct *work)
+ {
+ 	struct ib_cq *cq = container_of(work, struct ib_cq, work);
+@@ -111,6 +112,7 @@ static void ib_cq_completion_workqueue(s
+ {
+ 	queue_work(ib_comp_wq, &cq->work);
+ }
++#endif
+ 
+ /**
+  * ib_alloc_cq - allocate a completion queue
+@@ -162,11 +164,13 @@ struct ib_cq *ib_alloc_cq(struct ib_devi
+ 		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
+ 		break;
+ #endif
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case IB_POLL_WORKQUEUE:
+ 		cq->comp_handler = ib_cq_completion_workqueue;
+ 		INIT_WORK(&cq->work, ib_cq_poll_work);
+ 		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
+ 		break;
++#endif
+ 	default:
+ 		ret = -EINVAL;
+ 		goto out_free_wc;
+@@ -201,9 +205,11 @@ void ib_free_cq(struct ib_cq *cq)
+ 		irq_poll_disable(&cq->iop);
+ 		break;
+ #endif
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	case IB_POLL_WORKQUEUE:
+ 		flush_work(&cq->work);
+ 		break;
++#endif
+ 	default:
+ 		WARN_ON_ONCE(1);
+ 	}
+--- a/drivers/infiniband/core/device.c
++++ b/drivers/infiniband/core/device.c
+@@ -38,7 +38,11 @@
+ #include <linux/slab.h>
+ #include <linux/init.h>
+ #include <linux/mutex.h>
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <rdma/rdma_netlink.h>
++#else
++#include <linux/workqueue.h>
++#endif
+ #include <rdma/ib_addr.h>
+ #include <rdma/ib_cache.h>
+ 
+@@ -801,6 +805,7 @@ int ib_modify_port(struct ib_device *dev
+ }
+ EXPORT_SYMBOL(ib_modify_port);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ /**
+  * ib_find_gid - Returns the port number and GID table index where
+  *   a specified GID value occurs.
+@@ -848,6 +853,7 @@ int ib_find_gid(struct ib_device *device
+ 	return -ENOENT;
+ }
+ EXPORT_SYMBOL(ib_find_gid);
++#endif
+ 
+ /**
+  * ib_find_pkey - Returns the PKey table index where a specified
+--- a/drivers/infiniband/core/iwpm_msg.c
++++ b/drivers/infiniband/core/iwpm_msg.c
+@@ -334,9 +334,17 @@ EXPORT_SYMBOL(iwpm_remove_mapping);
+ static const struct nla_policy resp_reg_policy[IWPM_NLA_RREG_PID_MAX] = {
+ 	[IWPM_NLA_RREG_PID_SEQ]     = { .type = NLA_U32 },
+ 	[IWPM_NLA_RREG_IBDEV_NAME]  = { .type = NLA_STRING,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 					.len = IWPM_DEVNAME_SIZE - 1 },
++#else
++					.minlen = IWPM_DEVNAME_SIZE - 1 },
++#endif
+ 	[IWPM_NLA_RREG_ULIB_NAME]   = { .type = NLA_STRING,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 					.len = IWPM_ULIBNAME_SIZE - 1 },
++#else
++					.minlen = IWPM_ULIBNAME_SIZE - 1 },
++#endif
+ 	[IWPM_NLA_RREG_ULIB_VER]    = { .type = NLA_U16 },
+ 	[IWPM_NLA_RREG_PID_ERR]     = { .type = NLA_U16 }
+ };
+@@ -402,8 +410,13 @@ EXPORT_SYMBOL(iwpm_register_pid_cb);
+ /* netlink attribute policy for the received response to add mapping request */
+ static const struct nla_policy resp_add_policy[IWPM_NLA_RMANAGE_MAPPING_MAX] = {
+ 	[IWPM_NLA_MANAGE_MAPPING_SEQ]     = { .type = NLA_U32 },
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	[IWPM_NLA_MANAGE_ADDR]            = { .len = sizeof(struct sockaddr_storage) },
+ 	[IWPM_NLA_MANAGE_MAPPED_LOC_ADDR] = { .len = sizeof(struct sockaddr_storage) },
++#else
++	[IWPM_NLA_MANAGE_ADDR]            = { .minlen = sizeof(struct sockaddr_storage) },
++	[IWPM_NLA_MANAGE_MAPPED_LOC_ADDR] = { .minlen = sizeof(struct sockaddr_storage) },
++#endif
+ 	[IWPM_NLA_RMANAGE_MAPPING_ERR]	  = { .type = NLA_U16 }
+ };
+ 
+@@ -471,10 +484,17 @@ EXPORT_SYMBOL(iwpm_add_mapping_cb);
+ /* netlink attribute policy for the response to add and query mapping request */
+ static const struct nla_policy resp_query_policy[IWPM_NLA_RQUERY_MAPPING_MAX] = {
+ 	[IWPM_NLA_QUERY_MAPPING_SEQ]      = { .type = NLA_U32 },
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	[IWPM_NLA_QUERY_LOCAL_ADDR]       = { .len = sizeof(struct sockaddr_storage) },
+ 	[IWPM_NLA_QUERY_REMOTE_ADDR]      = { .len = sizeof(struct sockaddr_storage) },
+ 	[IWPM_NLA_RQUERY_MAPPED_LOC_ADDR] = { .len = sizeof(struct sockaddr_storage) },
+ 	[IWPM_NLA_RQUERY_MAPPED_REM_ADDR] = { .len = sizeof(struct sockaddr_storage) },
++#else
++	[IWPM_NLA_QUERY_LOCAL_ADDR]       = { .minlen = sizeof(struct sockaddr_storage) },
++	[IWPM_NLA_QUERY_REMOTE_ADDR]      = { .minlen = sizeof(struct sockaddr_storage) },
++	[IWPM_NLA_RQUERY_MAPPED_LOC_ADDR] = { .minlen = sizeof(struct sockaddr_storage) },
++	[IWPM_NLA_RQUERY_MAPPED_REM_ADDR] = { .minlen = sizeof(struct sockaddr_storage) },
++#endif
+ 	[IWPM_NLA_RQUERY_MAPPING_ERR]	  = { .type = NLA_U16 }
+ };
+ 
+@@ -562,7 +582,11 @@ EXPORT_SYMBOL(iwpm_add_and_query_mapping
+ /* netlink attribute policy for the received request for mapping info */
+ static const struct nla_policy resp_mapinfo_policy[IWPM_NLA_MAPINFO_REQ_MAX] = {
+ 	[IWPM_NLA_MAPINFO_ULIB_NAME] = { .type = NLA_STRING,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 					.len = IWPM_ULIBNAME_SIZE - 1 },
++#else
++					.minlen = IWPM_ULIBNAME_SIZE - 1 },
++#endif
+ 	[IWPM_NLA_MAPINFO_ULIB_VER]  = { .type = NLA_U16 }
+ };
+ 
+--- a/drivers/infiniband/core/mad.c
++++ b/drivers/infiniband/core/mad.c
+@@ -68,6 +68,7 @@ static struct kmem_cache *ib_mad_cache;
+ static struct list_head ib_mad_port_list;
+ static u32 ib_mad_client_id = 0;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ /*
+  * Timeout FIFO (tf) param
+  */
+@@ -92,6 +93,7 @@ enum {
+ 	SA_CC_MIN_QUEUE_SIZE = 16,
+ 	SA_CC_MAX_QUEUE_SIZE = 1 << 20,
+ };
++#endif
+ 
+ /* Port list lock */
+ static DEFINE_SPINLOCK(ib_mad_port_list_lock);
+@@ -113,6 +115,7 @@ static int add_nonoui_reg_req(struct ib_
+ 			      u8 mgmt_class);
+ static int add_oui_reg_req(struct ib_mad_reg_req *mad_reg_req,
+ 			   struct ib_mad_agent_private *agent_priv);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static int send_sa_cc_mad(struct ib_mad_send_wr_private *mad_send_wr,
+ 			  u32 timeout_ms, u32 retries_left);
+ 
+@@ -639,6 +642,7 @@ static void sa_cc_destroy(struct sa_cc_d
+ 	}
+ 	tf_free(cc_obj->tf);
+ }
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ /*
+  * Returns a ib_mad_port_private structure or NULL for a device/port
+@@ -901,11 +905,21 @@ struct ib_mad_agent *ib_register_mad_age
+ 	}
+ 
+ 	if (mad_reg_req) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		reg_req = kmemdup(mad_reg_req, sizeof *reg_req, GFP_KERNEL);
+ 		if (!reg_req) {
+ 			ret = ERR_PTR(-ENOMEM);
+ 			goto error3;
+ 		}
++#else
++		reg_req = kmalloc(sizeof *reg_req, GFP_KERNEL);
++		if (!reg_req) {
++			ret = ERR_PTR(-ENOMEM);
++			goto error3;
++		}
++		/* Make a copy of the MAD registration request */
++		memcpy(reg_req, mad_reg_req, sizeof *reg_req);
++#endif
+ 	}
+ 
+ 	/* Now, fill in the various structures */
+@@ -1023,14 +1037,28 @@ static int register_snoop_agent(struct i
+ 
+ 	if (i == qp_info->snoop_table_size) {
+ 		/* Grow table. */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		new_snoop_table = krealloc(qp_info->snoop_table,
+ 					   sizeof mad_snoop_priv *
+ 					   (qp_info->snoop_table_size + 1),
+ 					   GFP_ATOMIC);
++#else
++		new_snoop_table = kmalloc(sizeof mad_snoop_priv *
++					  (qp_info->snoop_table_size + 1),
++					  GFP_ATOMIC);
++#endif
+ 		if (!new_snoop_table) {
+ 			i = -ENOMEM;
+ 			goto out;
+ 		}
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++		if (qp_info->snoop_table) {
++			memcpy(new_snoop_table, qp_info->snoop_table,
++			       sizeof mad_snoop_priv *
++			       qp_info->snoop_table_size);
++			kfree(qp_info->snoop_table);
++		}
++#endif
+ 
+ 		qp_info->snoop_table = new_snoop_table;
+ 		qp_info->snoop_table_size++;
+@@ -1676,6 +1704,7 @@ int ib_send_mad(struct ib_mad_send_wr_pr
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ /*
+  * Send SA MAD that passed congestion control
+  */
+@@ -1714,6 +1743,7 @@ static int send_sa_cc_mad(struct ib_mad_
+ 
+ 	return ret;
+ }
++#endif
+ 
+ /*
+  * ib_post_send_mad - Posts MAD(s) to the send queue of the QP associated
+@@ -1778,6 +1808,7 @@ int ib_post_send_mad(struct ib_mad_send_
+ 		mad_send_wr->refcount = 1 + (mad_send_wr->timeout > 0);
+ 		mad_send_wr->status = IB_WC_SUCCESS;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (is_sa_cc_mad(mad_send_wr)) {
+ 			mad_send_wr->is_sa_cc_mad = 1;
+ 			ret = sa_cc_mad_send(mad_send_wr);
+@@ -1807,6 +1838,29 @@ int ib_post_send_mad(struct ib_mad_send_
+ 				goto error;
+ 			}
+ 		}
++#else
++		/* Reference MAD agent until send completes */
++		atomic_inc(&mad_agent_priv->refcount);
++		spin_lock_irqsave(&mad_agent_priv->lock, flags);
++		list_add_tail(&mad_send_wr->agent_list,
++			      &mad_agent_priv->send_list);
++		spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
++
++		if (mad_agent_priv->agent.rmpp_version) {
++			ret = ib_send_rmpp_mad(mad_send_wr);
++			if (ret >= 0 && ret != IB_RMPP_RESULT_CONSUMED)
++				ret = ib_send_mad(mad_send_wr);
++		} else
++			ret = ib_send_mad(mad_send_wr);
++		if (ret < 0) {
++			/* Fail send request */
++			spin_lock_irqsave(&mad_agent_priv->lock, flags);
++			list_del(&mad_send_wr->agent_list);
++			spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
++			atomic_dec(&mad_agent_priv->refcount);
++			goto error;
++		}
++#endif
+ 	}
+ 	return 0;
+ error:
+@@ -1868,7 +1922,14 @@ static int method_in_use(struct ib_mad_m
+ {
+ 	int i;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	for_each_set_bit(i, mad_reg_req->method_mask, IB_MGMT_MAX_METHODS) {
++#else
++	for (i = find_first_bit(mad_reg_req->method_mask, IB_MGMT_MAX_METHODS);
++	     i < IB_MGMT_MAX_METHODS;
++	     i = find_next_bit(mad_reg_req->method_mask, IB_MGMT_MAX_METHODS,
++			       1+i)) {
++#endif
+ 		if ((*method)->agent[i]) {
+ 			pr_err("Method %d already in use\n", i);
+ 			return -EINVAL;
+@@ -2001,8 +2062,18 @@ static int add_nonoui_reg_req(struct ib_
+ 		goto error3;
+ 
+ 	/* Finally, add in methods being registered */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	for_each_set_bit(i, mad_reg_req->method_mask, IB_MGMT_MAX_METHODS)
+ 		(*method)->agent[i] = agent_priv;
++#else
++	for (i = find_first_bit(mad_reg_req->method_mask,
++				IB_MGMT_MAX_METHODS);
++	     i < IB_MGMT_MAX_METHODS;
++	     i = find_next_bit(mad_reg_req->method_mask, IB_MGMT_MAX_METHODS,
++			       1+i)) {
++		(*method)->agent[i] = agent_priv;
++	}
++#endif
+ 
+ 	return 0;
+ 
+@@ -2096,8 +2167,18 @@ check_in_use:
+ 		goto error4;
+ 
+ 	/* Finally, add in methods being registered */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	for_each_set_bit(i, mad_reg_req->method_mask, IB_MGMT_MAX_METHODS)
+ 		(*method)->agent[i] = agent_priv;
++#else
++	for (i = find_first_bit(mad_reg_req->method_mask,
++				IB_MGMT_MAX_METHODS);
++	     i < IB_MGMT_MAX_METHODS;
++	     i = find_next_bit(mad_reg_req->method_mask, IB_MGMT_MAX_METHODS,
++			       1+i)) {
++		(*method)->agent[i] = agent_priv;
++	}
++#endif
+ 
+ 	return 0;
+ 
+@@ -2703,11 +2784,20 @@ static void adjust_timeout(struct ib_mad
+ 		if (time_after(mad_agent_priv->timeout,
+ 			       mad_send_wr->timeout)) {
+ 			mad_agent_priv->timeout = mad_send_wr->timeout;
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++			cancel_delayed_work(&mad_agent_priv->timed_work);
++#endif
+ 			delay = mad_send_wr->timeout - jiffies;
+ 			if ((long)delay <= 0)
+ 				delay = 1;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 			mod_delayed_work(mad_agent_priv->qp_info->port_priv->wq,
+ 					 &mad_agent_priv->timed_work, delay);
++#else
++			queue_delayed_work(mad_agent_priv->qp_info->
++					   port_priv->wq,
++					   &mad_agent_priv->timed_work, delay);
++#endif
+ 		}
+ 	}
+ }
+@@ -2740,9 +2830,17 @@ static void wait_for_response(struct ib_
+ 	list_add(&mad_send_wr->agent_list, list_item);
+ 
+ 	/* Reschedule a work item if we have a shorter timeout */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (mad_agent_priv->wait_list.next == &mad_send_wr->agent_list)
+ 		mod_delayed_work(mad_agent_priv->qp_info->port_priv->wq,
+ 				 &mad_agent_priv->timed_work, delay);
++#else
++	if (mad_agent_priv->wait_list.next == &mad_send_wr->agent_list) {
++		cancel_delayed_work(&mad_agent_priv->timed_work);
++		queue_delayed_work(mad_agent_priv->qp_info->port_priv->wq,
++				   &mad_agent_priv->timed_work, delay);
++	}
++#endif
+ }
+ 
+ void ib_reset_mad_timeout(struct ib_mad_send_wr_private *mad_send_wr,
+@@ -2795,8 +2893,10 @@ void ib_mad_complete_send_wr(struct ib_m
+ 	if (ret == IB_RMPP_RESULT_INTERNAL)
+ 		ib_rmpp_send_handler(mad_send_wc);
+ 	else {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (mad_send_wr->is_sa_cc_mad)
+ 			sa_cc_mad_done(get_cc_obj(mad_send_wr));
++#endif
+ 		mad_agent_priv->agent.send_handler(&mad_agent_priv->agent,
+ 						   mad_send_wc);
+ 	}
+@@ -2990,7 +3090,9 @@ static void cancel_mads(struct ib_mad_ag
+ 
+ 	INIT_LIST_HEAD(&cancel_list);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	cancel_sa_cc_mads(mad_agent_priv);
++#endif
+ 	spin_lock_irqsave(&mad_agent_priv->lock, flags);
+ 	mad_agent_priv->send_list_closed = 1;
+ 	list_for_each_entry_safe(mad_send_wr, temp_mad_send_wr,
+@@ -3013,8 +3115,10 @@ static void cancel_mads(struct ib_mad_ag
+ 				 &cancel_list, agent_list) {
+ 		mad_send_wc.send_buf = &mad_send_wr->send_buf;
+ 		list_del(&mad_send_wr->agent_list);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (mad_send_wr->is_sa_cc_mad)
+ 			sa_cc_mad_done(get_cc_obj(mad_send_wr));
++#endif
+ 		mad_agent_priv->agent.send_handler(&mad_agent_priv->agent,
+ 						   &mad_send_wc);
+ 		atomic_dec(&mad_agent_priv->refcount);
+@@ -3054,6 +3158,7 @@ int ib_modify_mad(struct ib_mad_agent *m
+ 				      agent);
+ 	spin_lock_irqsave(&mad_agent_priv->lock, flags);
+ 	mad_send_wr = find_send_wr(mad_agent_priv, send_buf);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (!mad_send_wr) {
+ 		spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
+ 		if (modify_sa_cc_mad(mad_agent_priv, send_buf, timeout_ms))
+@@ -3064,6 +3169,12 @@ int ib_modify_mad(struct ib_mad_agent *m
+ 		spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
+ 		return -EINVAL;
+ 	}
++#else
++	if (!mad_send_wr || mad_send_wr->status != IB_WC_SUCCESS) {
++		spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
++		return -EINVAL;
++	}
++#endif
+ 
+ 	active = (!mad_send_wr->timeout || mad_send_wr->refcount > 1);
+ 	if (!timeout_ms) {
+@@ -3245,8 +3356,10 @@ static void timeout_sends(struct work_st
+ 		else
+ 			mad_send_wc.status = mad_send_wr->status;
+ 		mad_send_wc.send_buf = &mad_send_wr->send_buf;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (mad_send_wr->is_sa_cc_mad)
+ 			sa_cc_mad_done(get_cc_obj(mad_send_wr));
++#endif
+ 		mad_agent_priv->agent.send_handler(&mad_agent_priv->agent,
+ 						   &mad_send_wc);
+ 
+@@ -3614,9 +3727,11 @@ static int ib_mad_port_open(struct ib_de
+ 	}
+ 	INIT_WORK(&port_priv->work, ib_mad_completion_handler);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	ret = sa_cc_init(&port_priv->sa_cc);
+ 	if (ret)
+ 		goto error_cc;
++#endif
+ 
+ 
+ 	spin_lock_irqsave(&ib_mad_port_list_lock, flags);
+@@ -3636,8 +3751,10 @@ error_start:
+ 	list_del_init(&port_priv->port_list);
+ 	spin_unlock_irqrestore(&ib_mad_port_list_lock, flags);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	sa_cc_destroy(&port_priv->sa_cc);
+ error_cc:
++#endif
+ 	destroy_workqueue(port_priv->wq);
+ error_wq:
+ 	destroy_mad_qp(&port_priv->qp_info[1]);
+@@ -3679,7 +3796,9 @@ static int ib_mad_port_close(struct ib_d
+ 	spin_unlock_irqrestore(&ib_mad_port_list_lock, flags);
+ 
+ 	destroy_workqueue(port_priv->wq);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	sa_cc_destroy(&port_priv->sa_cc);
++#endif
+ 	destroy_mad_qp(&port_priv->qp_info[1]);
+ 	destroy_mad_qp(&port_priv->qp_info[0]);
+ 	ib_dereg_mr(port_priv->mr);
+@@ -3701,10 +3820,12 @@ static void ib_mad_init_device(struct ib
+ 	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+ 		return;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (init_sa_cc_sysfs(device)) {
+ 		dev_err(&device->dev, "Couldn't open mad congestion control sysfs\n");
+ 		return;
+ 	}
++#endif
+ 
+ 	if (device->node_type == RDMA_NODE_IB_SWITCH) {
+ 		start = 0;
+@@ -3742,7 +3863,9 @@ error:
+ 			dev_err(&device->dev, "Couldn't close port %d\n", i);
+ 		i--;
+ 	}
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	cleanup_sa_cc_sysfs(device);
++#endif
+ }
+ 
+ static void ib_mad_remove_device(struct ib_device *device)
+@@ -3752,7 +3875,9 @@ static void ib_mad_remove_device(struct
+ 	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+ 		return;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	cleanup_sa_cc_sysfs(device);
++#endif
+ 
+ 	if (device->node_type == RDMA_NODE_IB_SWITCH) {
+ 		num_ports = 1;
+@@ -3788,6 +3913,9 @@ static int __init ib_mad_init_module(voi
+ 	mad_sendq_size = min(mad_sendq_size, IB_MAD_QP_MAX_SIZE);
+ 	mad_sendq_size = max(mad_sendq_size, IB_MAD_QP_MIN_SIZE);
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	spin_lock_init(&ib_mad_port_list_lock);
++#endif
+ 	ib_mad_cache = kmem_cache_create("ib_mad",
+ 					 sizeof(struct ib_mad_private),
+ 					 0,
+@@ -3821,6 +3949,7 @@ static void __exit ib_mad_cleanup_module
+ 	kmem_cache_destroy(ib_mad_cache);
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ struct sa_cc_attribute {
+ 	struct attribute attr;
+ 	ssize_t (*show)(struct sa_cc_data *, char *buf);
+@@ -4017,6 +4146,7 @@ static int init_sa_cc_sysfs(struct ib_de
+ 
+ 	return 0;
+ }
++#endif
+ 
+ module_init(ib_mad_init_module);
+ module_exit(ib_mad_cleanup_module);
+--- a/drivers/infiniband/core/netlink.c
++++ b/drivers/infiniband/core/netlink.c
+@@ -30,6 +30,7 @@
+  * SOFTWARE.
+  */
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifdef pr_fmt
+ #undef pr_fmt
+ #endif
+@@ -314,3 +315,4 @@ void __exit ibnl_cleanup(void)
+ 
+ module_init(ibnl_init);
+ module_exit(ibnl_cleanup);
++#endif
+--- a/drivers/infiniband/core/peer_mem.c
++++ b/drivers/infiniband/core/peer_mem.c
+@@ -30,6 +30,7 @@
+  * SOFTWARE.
+  */
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <rdma/ib_peer_mem.h>
+ #include <rdma/ib_verbs.h>
+ #include <rdma/ib_umem.h>
+@@ -417,4 +418,4 @@ void ib_put_peer_client(struct ib_peer_m
+ 	return;
+ }
+ EXPORT_SYMBOL(ib_put_peer_client);
+-
++#endif
+--- a/drivers/infiniband/core/roce_gid_cache.c
++++ b/drivers/infiniband/core/roce_gid_cache.c
+@@ -439,7 +439,7 @@ static int get_netdev_from_ifindex(struc
+ 		gid_attr_val->ndev = dev_get_by_index_rcu(net, if_index);
+ #else
+ 		gid_attr_val->ndev = __dev_get_by_index(net, if_index);
+-#endif
++#endif /* HAVE_DEV_GET_BY_INDEX_RCU */
+ 		rcu_read_unlock();
+ 		if (gid_attr_val->ndev)
+ 			return GID_ATTR_FIND_MASK_NETDEV;
+--- a/drivers/infiniband/core/roce_gid_mgmt.c
++++ b/drivers/infiniband/core/roce_gid_mgmt.c
+@@ -745,6 +745,7 @@ static void enum_all_gids_of_dev_cb(stru
+ 				    struct net_device *idev,
+ 				    void *cookie)
+ {
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+ 	struct net *net;
+ 	struct net_device *ndev;
+ 
+@@ -757,6 +758,7 @@ static void enum_all_gids_of_dev_cb(stru
+ 			if (is_eth_port_of_netdev(ib_dev, port, idev, ndev))
+ 				add_netdev_ips(ib_dev, port, idev, ndev);
+ 	rtnl_unlock();
++#endif
+ }
+ 
+ /* This function will rescan all of the network devices in the system
+--- a/drivers/infiniband/core/sysfs.c
++++ b/drivers/infiniband/core/sysfs.c
+@@ -460,7 +460,19 @@ static ssize_t show_port_gid(struct ib_p
+ 	if (ret)
+ 		return ret;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	return sprintf(buf, "%pI6\n", gid.raw);
++#else
++	return sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
++		       be16_to_cpu(((__be16 *) gid.raw)[0]),
++		       be16_to_cpu(((__be16 *) gid.raw)[1]),
++		       be16_to_cpu(((__be16 *) gid.raw)[2]),
++		       be16_to_cpu(((__be16 *) gid.raw)[3]),
++		       be16_to_cpu(((__be16 *) gid.raw)[4]),
++		       be16_to_cpu(((__be16 *) gid.raw)[5]),
++		       be16_to_cpu(((__be16 *) gid.raw)[6]),
++		       be16_to_cpu(((__be16 *) gid.raw)[7]));
++#endif
+ }
+ 
+ static ssize_t show_port_gid_attr_ndev(struct ib_port *p,
+@@ -713,6 +725,7 @@ static struct kobj_type gid_attr_type =
+ 	.release	= ib_port_gid_attr_release
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static void ib_device_release(struct device *device)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
+@@ -734,6 +747,32 @@ static int ib_device_uevent(struct devic
+ 
+ 	return 0;
+ }
++#else
++static void ib_device_release(struct class_device *cdev)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++
++	kfree(dev);
++}
++
++static int ib_device_uevent(struct class_device *cdev, char **envp,
++			    int num_envp, char *buf, int size)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++	int i = 0, len = 0;
++
++	if (add_uevent_var(envp, num_envp, &i, buf, size, &len,
++			   "NAME=%s", dev->name))
++		return -ENOMEM;
++
++	/*
++	 * It would be nice to pass the node GUID with the event...
++	 */
++
++	envp[i] = NULL;
++	return 0;
++}
++#endif
+ 
+ static struct attribute **
+ alloc_group_attrs(ssize_t (*show)(struct ib_port *,
+@@ -764,7 +803,9 @@ alloc_group_attrs(ssize_t (*show)(struct
+ 		element->attr.attr.mode  = S_IRUGO;
+ 		element->attr.show       = show;
+ 		element->index		 = i;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		sysfs_attr_init(&element->attr.attr);
++#endif
+ 
+ 		tab_attr[i] = &element->attr.attr;
+ 	}
+@@ -945,10 +986,16 @@ err_put:
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_node_type(struct device *device,
+ 			      struct device_attribute *attr, char *buf)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
++#else
++static ssize_t show_node_type(struct class_device *cdev, char *buf)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++#endif
+ 
+ 	switch (dev->node_type) {
+ 	case RDMA_NODE_IB_CA:	  return sprintf(buf, "%d: CA\n", dev->node_type);
+@@ -963,10 +1010,16 @@ static ssize_t show_node_type(struct dev
+ 	}
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_sys_image_guid(struct device *device,
+ 				   struct device_attribute *dev_attr, char *buf)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
++#else
++static ssize_t show_sys_image_guid(struct class_device *cdev, char *buf)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++#endif
+ 	struct ib_device_attr attr;
+ 	ssize_t ret;
+ 
+@@ -981,10 +1034,16 @@ static ssize_t show_sys_image_guid(struc
+ 		       be16_to_cpu(((__be16 *) &attr.sys_image_guid)[3]));
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_node_guid(struct device *device,
+ 			      struct device_attribute *attr, char *buf)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
++#else
++static ssize_t show_node_guid(struct class_device *cdev, char *buf)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++#endif
+ 
+ 	return sprintf(buf, "%04x:%04x:%04x:%04x\n",
+ 		       be16_to_cpu(((__be16 *) &dev->node_guid)[0]),
+@@ -993,19 +1052,32 @@ static ssize_t show_node_guid(struct dev
+ 		       be16_to_cpu(((__be16 *) &dev->node_guid)[3]));
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_node_desc(struct device *device,
+ 			      struct device_attribute *attr, char *buf)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
++#else
++static ssize_t show_node_desc(struct class_device *cdev, char *buf)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++#endif
+ 
+ 	return sprintf(buf, "%.64s\n", dev->node_desc);
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t set_node_desc(struct device *device,
+ 			     struct device_attribute *attr,
+ 			     const char *buf, size_t count)
+ {
+ 	struct ib_device *dev = container_of(device, struct ib_device, dev);
++#else
++static ssize_t set_node_desc(struct class_device *cdev, const char *buf,
++			      size_t count)
++{
++	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
++#endif
+ 	struct ib_device_modify desc = {};
+ 	int ret;
+ 
+@@ -1020,6 +1092,7 @@ static ssize_t set_node_desc(struct devi
+ 	return count;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static DEVICE_ATTR(node_type, S_IRUGO, show_node_type, NULL);
+ static DEVICE_ATTR(sys_image_guid, S_IRUGO, show_sys_image_guid, NULL);
+ static DEVICE_ATTR(node_guid, S_IRUGO, show_node_guid, NULL);
+@@ -1037,6 +1110,25 @@ static struct class ib_class = {
+ 	.dev_release = ib_device_release,
+ 	.dev_uevent = ib_device_uevent,
+ };
++#else
++static CLASS_DEVICE_ATTR(node_type, S_IRUGO, show_node_type, NULL);
++static CLASS_DEVICE_ATTR(sys_image_guid, S_IRUGO, show_sys_image_guid, NULL);
++static CLASS_DEVICE_ATTR(node_guid, S_IRUGO, show_node_guid, NULL);
++static CLASS_DEVICE_ATTR(node_desc, S_IRUGO | S_IWUSR, show_node_desc, set_node_desc);
++
++static struct class_device_attribute *ib_class_attributes[] = {
++	&class_device_attr_node_type,
++	&class_device_attr_sys_image_guid,
++	&class_device_attr_node_guid,
++	&class_device_attr_node_desc
++};
++
++static struct class ib_class = {
++	.name    = "infiniband",
++	.release = ib_device_release,
++	.uevent = ib_device_uevent,
++};
++#endif
+ 
+ /* Show a given an attribute in the statistics group */
+ static ssize_t show_protocol_stat(const struct device *device,
+@@ -1167,17 +1259,27 @@ static void free_port_list_attributes(st
+ 				   &port->gid_attr_group->ndev);
+ 		sysfs_remove_group(&port->gid_attr_group->kobj,
+ 				   &port->gid_attr_group->type);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		kobject_put(&port->gid_attr_group->kobj);
+ 		kobject_put(p);
++#else
++		kobject_unregister(&port->gid_attr_group->kobj);
++		kobject_unregister(p);
++#endif
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	kobject_put(device->ports_parent);
++#else
++	kobject_unregister(device->ports_parent);
++#endif
+ }
+ 
+ int ib_device_register_sysfs(struct ib_device *device,
+ 			     int (*port_callback)(struct ib_device *,
+ 						  u8, struct kobject *))
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct device *class_dev = &device->dev;
+ 	int ret;
+ 	int i;
+@@ -1198,6 +1300,28 @@ int ib_device_register_sysfs(struct ib_d
+ 		if (ret)
+ 			goto err_unregister;
+ 	}
++#else
++	struct class_device *class_dev = &device->class_dev;
++	int ret;
++	int i;
++
++	class_dev->class      = &ib_class;
++	class_dev->class_data = device;
++	class_dev->dev	      = device->dma_device;
++	strlcpy(class_dev->class_id, device->name, BUS_ID_SIZE);
++
++	INIT_LIST_HEAD(&device->port_list);
++
++	ret = class_device_register(class_dev);
++	if (ret)
++		goto err;
++
++	for (i = 0; i < ARRAY_SIZE(ib_class_attributes); ++i) {
++		ret = class_device_create_file(class_dev, ib_class_attributes[i]);
++		if (ret)
++			goto err_unregister;
++	}
++#endif
+ 
+ 	device->ports_parent = kobject_create_and_add("ports",
+ 						      &class_dev->kobj);
+@@ -1230,7 +1354,11 @@ err_put:
+ 	free_port_list_attributes(device);
+ 
+ err_unregister:
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	device_unregister(class_dev);
++#else
++	class_device_unregister(class_dev);
++#endif
+ 
+ err:
+ 	return ret;
+@@ -1238,8 +1366,12 @@ err:
+ 
+ void ib_device_unregister_sysfs(struct ib_device *device)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	/* Hold kobject until ib_dealloc_device() */
+ 	struct kobject *kobj_dev = kobject_get(&device->dev.kobj);
++#else
++	struct kobject *kobj_dev = &device->dev.kobj;
++#endif
+ 	int i;
+ 
+ 	if (device->node_type == RDMA_NODE_RNIC && device->get_protocol_stats)
+@@ -1248,9 +1380,17 @@ void ib_device_unregister_sysfs(struct i
+ 	free_port_list_attributes(device);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(ib_class_attributes); ++i)
+-		device_remove_file(&device->dev, ib_class_attributes[i]);
+-
+-	device_unregister(&device->dev);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
++ 		device_remove_file(&device->dev, ib_class_attributes[i]);
++#else
++		class_device_remove_file(&device->class_dev, ib_class_attributes[i]);
++#endif
++
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
++ 	device_unregister(&device->dev);
++#else
++	class_device_unregister(&device->class_dev);
++#endif
+ }
+ 
+ int ib_sysfs_setup(void)
+--- a/drivers/infiniband/core/ucm.c
++++ b/drivers/infiniband/core/ucm.c
+@@ -59,8 +59,13 @@ MODULE_LICENSE("Dual BSD/GPL");
+ 
+ struct ib_ucm_device {
+ 	int			devnum;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct cdev		cdev;
+ 	struct device		dev;
++#else
++	struct cdev		dev;
++	struct class_device	class_dev;
++#endif
+ 	struct ib_device	*ib_dev;
+ };
+ 
+@@ -107,6 +112,10 @@ enum {
+ 	IB_UCM_MAX_DEVICES = 32
+ };
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++/* ib_cm and ib_user_cm modules share /sys/class/infiniband_cm */
++extern struct class cm_class;
++#endif
+ #define IB_UCM_BASE_DEV MKDEV(IB_UCM_MAJOR, IB_UCM_BASE_MINOR)
+ 
+ static void ib_ucm_add_one(struct ib_device *device);
+@@ -411,6 +420,9 @@ static ssize_t ib_ucm_event(struct ib_uc
+ 	struct ib_ucm_event_get cmd;
+ 	struct ib_ucm_event *uevent;
+ 	int result = 0;
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	DEFINE_WAIT(wait);
++#endif
+ 
+ 	if (out_len < sizeof(struct ib_ucm_event_resp))
+ 		return -ENOSPC;
+@@ -716,9 +728,20 @@ static int ib_ucm_alloc_data(const void
+ 	if (!len)
+ 		return 0;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	data = memdup_user((void __user *)(unsigned long)src, len);
+ 	if (IS_ERR(data))
+ 		return PTR_ERR(data);
++#else
++	data = kmalloc(len, GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	if (copy_from_user(data, (void __user *)(unsigned long)src, len)) {
++		kfree(data);
++		return -EFAULT;
++	}
++#endif
+ 
+ 	*dest = data;
+ 	return 0;
+@@ -1187,9 +1210,15 @@ static int ib_ucm_open(struct inode *ino
+ 
+ 	filp->private_data = file;
+ 	file->filp = filp;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	file->device = container_of(inode->i_cdev, struct ib_ucm_device, cdev);
+ 
+ 	return nonseekable_open(inode, filp);
++#else
++	file->device = container_of(inode->i_cdev, struct ib_ucm_device, dev);
++
++	return 0;
++#endif
+ }
+ 
+ static int ib_ucm_close(struct inode *inode, struct file *filp)
+@@ -1218,6 +1247,7 @@ static int ib_ucm_close(struct inode *in
+ 	return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static void ib_ucm_release_dev(struct device *dev)
+ {
+ 	struct ib_ucm_device *ucm_dev;
+@@ -1343,6 +1373,100 @@ static void ib_ucm_remove_one(struct ib_
+ 
+ 	device_unregister(&ucm_dev->dev);
+ }
++#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
++static void ucm_release_class_dev(struct class_device *class_dev)
++{
++	struct ib_ucm_device *dev;
++
++	dev = container_of(class_dev, struct ib_ucm_device, class_dev);
++	cdev_del(&dev->dev);
++	clear_bit(dev->devnum, dev_map);
++	kfree(dev);
++}
++
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
++static const struct file_operations ucm_fops = {
++#else
++static struct file_operations ucm_fops = {
++#endif
++	.owner 	 = THIS_MODULE,
++	.open 	 = ib_ucm_open,
++	.release = ib_ucm_close,
++	.write 	 = ib_ucm_write,
++	.poll    = ib_ucm_poll,
++};
++
++static ssize_t show_ibdev(struct class_device *class_dev, char *buf)
++{
++	struct ib_ucm_device *dev;
++
++	dev = container_of(class_dev, struct ib_ucm_device, class_dev);
++	return sprintf(buf, "%s\n", dev->ib_dev->name);
++}
++static CLASS_DEVICE_ATTR(ibdev, S_IRUGO, show_ibdev, NULL);
++
++static void ib_ucm_add_one(struct ib_device *device)
++{
++	struct ib_ucm_device *ucm_dev;
++
++	if (!device->alloc_ucontext ||
++	    rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
++		return;
++
++	ucm_dev = kzalloc(sizeof *ucm_dev, GFP_KERNEL);
++	if (!ucm_dev)
++		return;
++
++	ucm_dev->ib_dev = device;
++
++	ucm_dev->devnum = find_first_zero_bit(dev_map, IB_UCM_MAX_DEVICES);
++	if (ucm_dev->devnum >= IB_UCM_MAX_DEVICES)
++		goto err;
++
++	set_bit(ucm_dev->devnum, dev_map);
++
++	cdev_init(&ucm_dev->dev, &ucm_fops);
++	ucm_dev->dev.owner = THIS_MODULE;
++	kobject_set_name(&ucm_dev->dev.kobj, "ucm%d", ucm_dev->devnum);
++	if (cdev_add(&ucm_dev->dev, IB_UCM_BASE_DEV + ucm_dev->devnum, 1))
++		goto err;
++
++	ucm_dev->class_dev.class = &cm_class;
++	ucm_dev->class_dev.dev = device->dma_device;
++	ucm_dev->class_dev.devt = ucm_dev->dev.dev;
++	ucm_dev->class_dev.release = ucm_release_class_dev;
++	snprintf(ucm_dev->class_dev.class_id, BUS_ID_SIZE, "ucm%d",
++		 ucm_dev->devnum);
++	if (class_device_register(&ucm_dev->class_dev))
++		goto err_cdev;
++
++	if (class_device_create_file(&ucm_dev->class_dev,
++				     &class_device_attr_ibdev))
++		goto err_class;
++
++	ib_set_client_data(device, &ucm_client, ucm_dev);
++	return;
++
++err_class:
++	class_device_unregister(&ucm_dev->class_dev);
++err_cdev:
++	cdev_del(&ucm_dev->dev);
++	clear_bit(ucm_dev->devnum, dev_map);
++err:
++	kfree(ucm_dev);
++	return;
++}
++
++static void ib_ucm_remove_one(struct ib_device *device)
++{
++	struct ib_ucm_device *ucm_dev = ib_get_client_data(device, &ucm_client);
++
++	if (!ucm_dev)
++		return;
++
++	class_device_unregister(&ucm_dev->class_dev);
++}
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ #ifdef HAVE_CLASS_ATTR_STRING
+ static CLASS_ATTR_STRING(abi_version, S_IRUGO,
+@@ -1404,8 +1528,10 @@ static void __exit ib_ucm_cleanup(void)
+ 	class_remove_file(&cm_class, &class_attr_abi_version);
+ #endif
+ 	unregister_chrdev_region(IB_UCM_BASE_DEV, IB_UCM_MAX_DEVICES);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (overflow_maj)
+ 		unregister_chrdev_region(overflow_maj, IB_UCM_MAX_DEVICES);
++#endif
+ 	idr_destroy(&ctx_id_table);
+ }
+ 
+--- a/drivers/infiniband/core/ucma.c
++++ b/drivers/infiniband/core/ucma.c
+@@ -56,6 +56,7 @@ MODULE_LICENSE("Dual BSD/GPL");
+ 
+ static unsigned int max_backlog = 1024;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifndef CONFIG_SYSCTL_SYSCALL_CHECK
+ static struct ctl_table_header *ucma_ctl_table_hdr;
+ static struct ctl_table ucma_ctl_table[] = {
+@@ -76,6 +77,7 @@ static struct ctl_path ucma_ctl_path[] =
+ };
+ #endif
+ #endif
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ struct ucma_file {
+ 	struct mutex		mut;
+@@ -1339,6 +1341,7 @@ static ssize_t ucma_set_option(struct uc
+ 	if (IS_ERR(ctx))
+ 		return PTR_ERR(ctx);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	optval = memdup_user((void __user *) (unsigned long) cmd.optval,
+ 			     cmd.optlen);
+ 	if (IS_ERR(optval)) {
+@@ -1353,6 +1356,27 @@ static ssize_t ucma_set_option(struct uc
+ out:
+ 	ucma_put_ctx(ctx);
+ 	return ret;
++#else
++	optval = kmalloc(cmd.optlen, GFP_KERNEL);
++	if (!optval) {
++		ret = -ENOMEM;
++		goto out1;
++	}
++
++	if (copy_from_user(optval, (void __user *) (unsigned long) cmd.optval,
++			   cmd.optlen)) {
++		ret = -EFAULT;
++		goto out2;
++	}
++
++	ret = ucma_set_option_level(ctx, cmd.level, cmd.optname, optval,
++				    cmd.optlen);
++out2:
++	kfree(optval);
++out1:
++	ucma_put_ctx(ctx);
++	return ret;
++#endif
+ }
+ 
+ static ssize_t ucma_notify(struct ucma_file *file, const char __user *inbuf,
+@@ -1755,7 +1779,11 @@ static int ucma_close(struct inode *inod
+ 	return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations ucma_fops = {
++#else
++static struct file_operations ucma_fops = {
++#endif
+ 	.owner 	 = THIS_MODULE,
+ 	.open 	 = ucma_open,
+ 	.release = ucma_close,
+@@ -1767,11 +1795,14 @@ static const struct file_operations ucma
+ static struct miscdevice ucma_misc = {
+ 	.minor		= MISC_DYNAMIC_MINOR,
+ 	.name		= "rdma_cm",
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.nodename	= "infiniband/rdma_cm",
+ 	.mode		= 0666,
++#endif
+ 	.fops		= &ucma_fops,
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_abi_version(struct device *dev,
+ 				struct device_attribute *attr,
+ 				char *buf)
+@@ -1779,6 +1810,13 @@ static ssize_t show_abi_version(struct d
+ 	return sprintf(buf, "%d\n", RDMA_USER_CM_ABI_VERSION);
+ }
+ static DEVICE_ATTR(abi_version, S_IRUGO, show_abi_version, NULL);
++#else
++static ssize_t show_abi_version(struct class_device *class_dev, char *buf)
++{
++	return sprintf(buf, "%d\n", RDMA_USER_CM_ABI_VERSION);
++}
++static CLASS_DEVICE_ATTR(abi_version, S_IRUGO, show_abi_version, NULL);
++#endif
+ 
+ static int __init ucma_init(void)
+ {
+@@ -1788,12 +1826,18 @@ static int __init ucma_init(void)
+ 	if (ret)
+ 		return ret;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	ret = device_create_file(ucma_misc.this_device, &dev_attr_abi_version);
++#else
++	ret = class_device_create_file(ucma_misc.class,
++				       &class_device_attr_abi_version);
++#endif
+ 	if (ret) {
+ 		printk(KERN_ERR "rdma_ucm: couldn't create abi_version attr\n");
+ 		goto err1;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifndef CONFIG_SYSCTL_SYSCALL_CHECK
+ #ifdef HAVE_REGISTER_NET_SYSCTL
+ 	ucma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_ucm", ucma_ctl_table);
+@@ -1811,6 +1855,9 @@ static int __init ucma_init(void)
+ err2:
+ 	device_remove_file(ucma_misc.this_device, &dev_attr_abi_version);
+ #endif
++#else
++	return 0;
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ err1:
+ 	misc_deregister(&ucma_misc);
+ 	return ret;
+@@ -1818,6 +1865,7 @@ err1:
+ 
+ static void __exit ucma_cleanup(void)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifndef CONFIG_SYSCTL_SYSCALL_CHECK
+ #ifdef HAVE_REGISTER_NET_SYSCTL
+ 	unregister_net_sysctl_table(ucma_ctl_table_hdr);
+@@ -1826,6 +1874,10 @@ static void __exit ucma_cleanup(void)
+ #endif
+ #endif
+ 	device_remove_file(ucma_misc.this_device, &dev_attr_abi_version);
++#else
++	class_device_remove_file(ucma_misc.class,
++				 &class_device_attr_abi_version);
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 	misc_deregister(&ucma_misc);
+ 	idr_destroy(&ctx_idr);
+ }
+--- a/drivers/infiniband/core/umem.c
++++ b/drivers/infiniband/core/umem.c
+@@ -32,6 +32,7 @@
+  * SOFTWARE.
+  */
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <linux/mm.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/sched.h>
+@@ -43,6 +44,7 @@
+ #include <linux/slab.h>
+ #include <rdma/ib_umem_odp.h>
+ 
++#include <linux/printk.h>
+ #include "uverbs.h"
+ 
+ 
+@@ -1082,7 +1084,6 @@ int ib_umem_page_count(struct ib_umem *u
+ 	return n;
+ }
+ EXPORT_SYMBOL(ib_umem_page_count);
+-
+ /*
+  * Copy from the given ib_umem's pages to the given buffer.
+  *
+@@ -1116,3 +1117,316 @@ int ib_umem_copy_from(void *dst, struct
+ 		return 0;
+ }
+ EXPORT_SYMBOL(ib_umem_copy_from);
++#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
++
++#include <linux/mm.h>
++#include <linux/dma-mapping.h>
++#include <linux/sched.h>
++#include <linux/hugetlb.h>
++#include <linux/dma-attrs.h>
++
++#include "uverbs.h"
++
++#define IB_UMEM_MAX_PAGE_CHUNK						\
++	((PAGE_SIZE - offsetof(struct ib_umem_chunk, page_list)) /	\
++	 ((void *) &((struct ib_umem_chunk *) 0)->page_list[1] -	\
++	  (void *) &((struct ib_umem_chunk *) 0)->page_list[0]))
++
++#ifdef __ia64__
++extern int dma_map_sg_hp_wa;
++
++static int dma_map_sg_ia64(struct ib_device *ibdev,
++			   struct scatterlist *sg,
++			   int nents,
++			   enum dma_data_direction dir)
++{
++	int i, rc, j, lents = 0;
++	struct device *dev;
++
++	if (!dma_map_sg_hp_wa)
++		return ib_dma_map_sg(ibdev, sg, nents, dir);
++
++	dev = ibdev->dma_device;
++	for (i = 0; i < nents; ++i) {
++		rc = dma_map_sg(dev, sg + i, 1, dir);
++		if (rc <= 0) {
++			for (j = 0; j < i; ++j)
++				dma_unmap_sg(dev, sg + j, 1, dir);
++
++			return 0;
++		}
++		lents += rc;
++	}
++
++	return lents;
++}
++
++static void dma_unmap_sg_ia64(struct ib_device *ibdev,
++			      struct scatterlist *sg,
++			      int nents,
++			      enum dma_data_direction dir)
++{
++	int i;
++	struct device *dev;
++
++	if (!dma_map_sg_hp_wa)
++		return ib_dma_unmap_sg(ibdev, sg, nents, dir);
++
++	dev = ibdev->dma_device;
++	for (i = 0; i < nents; ++i)
++		dma_unmap_sg(dev, sg + i, 1, dir);
++}
++
++#define ib_dma_map_sg(dev, sg, nents, dir) dma_map_sg_ia64(dev, sg, nents, dir)
++#define ib_dma_unmap_sg(dev, sg, nents, dir) dma_unmap_sg_ia64(dev, sg, nents, dir)
++
++#endif
++
++static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty)
++{
++	struct ib_umem_chunk *chunk, *tmp;
++	int i;
++
++	list_for_each_entry_safe(chunk, tmp, &umem->chunk_list, list) {
++		ib_dma_unmap_sg(dev, chunk->page_list,
++				chunk->nents, DMA_BIDIRECTIONAL);
++		for (i = 0; i < chunk->nents; ++i) {
++			struct page *page = sg_page(&chunk->page_list[i]);
++
++			if (umem->writable && dirty)
++				set_page_dirty_lock(page);
++			put_page(page);
++		}
++
++		kfree(chunk);
++	}
++}
++
++/**
++ * ib_umem_get - Pin and DMA map userspace memory.
++ * @context: userspace context to pin memory for
++ * @addr: userspace virtual address to start at
++ * @size: length of region to pin
++ * @access: IB_ACCESS_xxx flags for memory being pinned
++ * @dmasync: flush in-flight DMA when the memory region is written
++ */
++struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
++			    size_t size, int access, int dmasync)
++{
++	struct ib_umem *umem;
++	struct page **page_list;
++	struct vm_area_struct **vma_list;
++	struct ib_umem_chunk *chunk;
++	unsigned long locked;
++	unsigned long lock_limit;
++	unsigned long cur_base;
++	unsigned long npages;
++	int ret;
++	int off;
++	int i;
++	DEFINE_DMA_ATTRS(attrs);
++
++	if (dmasync)
++		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
++
++	if (!can_do_mlock())
++		return ERR_PTR(-EPERM);
++
++	umem = kmalloc(sizeof *umem, GFP_KERNEL);
++	if (!umem)
++		return ERR_PTR(-ENOMEM);
++
++	umem->context   = context;
++	umem->length    = size;
++	umem->address    = addr;
++	umem->page_size = PAGE_SIZE;
++	/*
++	 * We ask for writable memory if any access flags other than
++	 * "remote read" are set.  "Local write" and "remote write"
++	 * obviously require write access.  "Remote atomic" can do
++	 * things like fetch and add, which will modify memory, and
++	 * "MW bind" can change permissions by binding a window.
++	 */
++	umem->writable  = !!(access & ~IB_ACCESS_REMOTE_READ);
++
++	/* We assume the memory is from hugetlb until proved otherwise */
++	umem->hugetlb   = 1;
++
++	INIT_LIST_HEAD(&umem->chunk_list);
++
++	page_list = (struct page **) __get_free_page(GFP_KERNEL);
++	if (!page_list) {
++		kfree(umem);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	/*
++	 * if we can't alloc the vma_list, it's not so bad;
++	 * just assume the memory is not hugetlb memory
++	 */
++	vma_list = (struct vm_area_struct **) __get_free_page(GFP_KERNEL);
++	if (!vma_list)
++		umem->hugetlb = 0;
++
++	npages = ib_umem_num_pages(umem);
++
++	down_write(&current->mm->mmap_sem);
++
++	locked     = npages + current->mm->locked_vm;
++	lock_limit = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >> PAGE_SHIFT;
++
++	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	cur_base = addr & PAGE_MASK;
++
++	ret = 0;
++	while (npages) {
++		ret = get_user_pages(current, current->mm, cur_base,
++				     min_t(unsigned long, npages,
++					   PAGE_SIZE / sizeof (struct page *)),
++				     1, !umem->writable, page_list, vma_list);
++
++		if (ret < 0)
++			goto out;
++
++		cur_base += ret * PAGE_SIZE;
++		npages   -= ret;
++
++		off = 0;
++
++		while (ret) {
++			chunk = kmalloc(sizeof *chunk + sizeof (struct scatterlist) *
++					min_t(int, ret, IB_UMEM_MAX_PAGE_CHUNK),
++					GFP_KERNEL);
++			if (!chunk) {
++				ret = -ENOMEM;
++				goto out;
++			}
++
++			chunk->nents = min_t(int, ret, IB_UMEM_MAX_PAGE_CHUNK);
++			sg_init_table(chunk->page_list, chunk->nents);
++			for (i = 0; i < chunk->nents; ++i) {
++				if (vma_list &&
++				    !is_vm_hugetlb_page(vma_list[i + off]))
++					umem->hugetlb = 0;
++				sg_set_page(&chunk->page_list[i], page_list[i + off], PAGE_SIZE, 0);
++			}
++
++			chunk->nmap = ib_dma_map_sg_attrs(context->device,
++							  &chunk->page_list[0],
++							  chunk->nents,
++							  DMA_BIDIRECTIONAL,
++							  &attrs);
++			if (chunk->nmap <= 0) {
++				for (i = 0; i < chunk->nents; ++i)
++					put_page(sg_page(&chunk->page_list[i]));
++				kfree(chunk);
++
++				ret = -ENOMEM;
++				goto out;
++			}
++
++			ret -= chunk->nents;
++			off += chunk->nents;
++			list_add_tail(&chunk->list, &umem->chunk_list);
++		}
++
++		ret = 0;
++	}
++
++out:
++	if (ret < 0) {
++		__ib_umem_release(context->device, umem, 0);
++		kfree(umem);
++	} else
++		current->mm->locked_vm = locked;
++
++	up_write(&current->mm->mmap_sem);
++	if (vma_list)
++		free_page((unsigned long) vma_list);
++	free_page((unsigned long) page_list);
++
++	return ret < 0 ? ERR_PTR(ret) : umem;
++}
++EXPORT_SYMBOL(ib_umem_get);
++
++static void ib_umem_account(struct work_struct *work)
++{
++	struct ib_umem *umem = container_of(work, struct ib_umem, work);
++
++	down_write(&umem->mm->mmap_sem);
++	umem->mm->locked_vm -= umem->diff;
++	up_write(&umem->mm->mmap_sem);
++	mmput(umem->mm);
++	kfree(umem);
++}
++
++/**
++ * ib_umem_release - release memory pinned with ib_umem_get
++ * @umem: umem struct to release
++ */
++void ib_umem_release(struct ib_umem *umem)
++{
++	struct ib_ucontext *context = umem->context;
++	struct mm_struct *mm;
++	unsigned long diff;
++
++	__ib_umem_release(umem->context->device, umem, 1);
++
++	mm = get_task_mm(current);
++	if (!mm) {
++		kfree(umem);
++		return;
++	}
++
++	diff = ib_umem_num_pages(umem);
++
++	/*
++	 * We may be called with the mm's mmap_sem already held.  This
++	 * can happen when a userspace munmap() is the call that drops
++	 * the last reference to our file and calls our release
++	 * method.  If there are memory regions to destroy, we'll end
++	 * up here and not be able to take the mmap_sem.  In that case
++	 * we defer the vm_locked accounting to the system workqueue.
++	 */
++	if (context->closing) {
++		if (!down_write_trylock(&mm->mmap_sem)) {
++			INIT_WORK(&umem->work, ib_umem_account);
++			umem->mm   = mm;
++			umem->diff = diff;
++
++			schedule_work(&umem->work);
++			return;
++		}
++	} else
++		down_write(&mm->mmap_sem);
++
++	current->mm->locked_vm -= diff;
++	up_write(&mm->mmap_sem);
++	mmput(mm);
++	kfree(umem);
++}
++EXPORT_SYMBOL(ib_umem_release);
++
++int ib_umem_page_count(struct ib_umem *umem)
++{
++	struct ib_umem_chunk *chunk;
++	int shift;
++	int i;
++	int n;
++
++	shift = ilog2(umem->page_size);
++
++	n = 0;
++	list_for_each_entry(chunk, &umem->chunk_list, list)
++		for (i = 0; i < chunk->nmap; ++i)
++			n += sg_dma_len(&chunk->page_list[i]) >> shift;
++
++	return n;
++}
++EXPORT_SYMBOL(ib_umem_page_count);
++
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+--- a/drivers/infiniband/core/user_mad.c
++++ b/drivers/infiniband/core/user_mad.c
+@@ -92,11 +92,19 @@ enum {
+  */
+ 
+ struct ib_umad_port {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct cdev           cdev;
+ 	struct device	      *dev;
+ 
+ 	struct cdev           sm_cdev;
+ 	struct device	      *sm_dev;
++#else
++	struct cdev           *dev;
++	struct class_device   *class_dev;
++
++	struct cdev           *sm_dev;
++	struct class_device   *sm_class_dev;
++#endif
+ 	struct semaphore       sm_sem;
+ 
+ 	struct mutex	       file_mutex;
+@@ -147,11 +155,15 @@ static struct class *umad_class;
+ static const dev_t base_dev = MKDEV(IB_UMAD_MAJOR, IB_UMAD_MINOR_BASE);
+ 
+ static DEFINE_SPINLOCK(port_lock);
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++static struct ib_umad_port *umad_port[IB_UMAD_MAX_PORTS];
++#endif
+ static DECLARE_BITMAP(dev_map, IB_UMAD_MAX_PORTS);
+ 
+ static void ib_umad_add_one(struct ib_device *device);
+ static void ib_umad_remove_one(struct ib_device *device);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static void ib_umad_release_dev(struct kobject *kobj)
+ {
+ 	struct ib_umad_device *dev =
+@@ -163,6 +175,7 @@ static void ib_umad_release_dev(struct k
+ static struct kobj_type ib_umad_dev_ktype = {
+ 	.release = ib_umad_release_dev,
+ };
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ static int hdr_size(struct ib_umad_file *file)
+ {
+@@ -695,7 +708,16 @@ static void update_mgmt_threshold(struct
+ 	int i;
+ 
+ 	/*Update managers' class rx threshold*/
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		for_each_set_bit(i, req.method_mask, IB_MGMT_MAX_METHODS) {
++#else
++		for (i = find_first_bit(req.method_mask, IB_MGMT_MAX_METHODS);
++		     i < IB_MGMT_MAX_METHODS;
++		     i = find_next_bit(req.method_mask,
++				       IB_MGMT_MAX_METHODS,
++				       1+i)) {
++
++#endif
+ 			if (i == IB_MGMT_METHOD_GET ||
+ 			    i == IB_MGMT_METHOD_SET ||
+ 			    i == IB_MGMT_METHOD_REPORT ||
+@@ -720,8 +742,10 @@ static int ib_umad_reg_agent(struct ib_u
+ 	mutex_lock(&file->mutex);
+ 
+ 	if (!file->port->ib_dev) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev_notice(file->port->dev,
+ 			   "ib_umad_reg_agent: invalid device\n");
++#endif
+ 		ret = -EPIPE;
+ 		goto out;
+ 	}
+@@ -732,9 +756,11 @@ static int ib_umad_reg_agent(struct ib_u
+ 	}
+ 
+ 	if (ureq.qpn != 0 && ureq.qpn != 1) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev_notice(file->port->dev,
+ 			   "ib_umad_reg_agent: invalid QPN %d specified\n",
+ 			   ureq.qpn);
++#endif
+ 		ret = -EINVAL;
+ 		goto out;
+ 	}
+@@ -743,9 +769,11 @@ static int ib_umad_reg_agent(struct ib_u
+ 		if (!__get_agent(file, agent_id))
+ 			goto found;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	dev_notice(file->port->dev,
+ 		   "ib_umad_reg_agent: Max Agents (%u) reached\n",
+ 		   IB_UMAD_MAX_AGENTS);
++#endif
+ 	ret = -ENOMEM;
+ 	goto out;
+ 
+@@ -789,6 +817,7 @@ found:
+ 
+ 	if (!file->already_used) {
+ 		file->already_used = 1;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (!file->use_pkey_index) {
+ 			dev_warn(file->port->dev,
+ 				"process %s did not enable P_Key index support.\n",
+@@ -796,6 +825,7 @@ found:
+ 			dev_warn(file->port->dev,
+ 				"   Documentation/infiniband/user_mad.txt has info on the new ABI.\n");
+ 		}
++#endif
+ 	}
+ 
+ 	file->agent[agent_id] = agent;
+@@ -824,8 +854,10 @@ static int ib_umad_reg_agent2(struct ib_
+ 	mutex_lock(&file->mutex);
+ 
+ 	if (!file->port->ib_dev) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev_notice(file->port->dev,
+ 			   "ib_umad_reg_agent2: invalid device\n");
++#endif
+ 		ret = -EPIPE;
+ 		goto out;
+ 	}
+@@ -836,17 +868,21 @@ static int ib_umad_reg_agent2(struct ib_
+ 	}
+ 
+ 	if (ureq.qpn != 0 && ureq.qpn != 1) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev_notice(file->port->dev,
+ 			   "ib_umad_reg_agent2: invalid QPN %d specified\n",
+ 			   ureq.qpn);
++#endif
+ 		ret = -EINVAL;
+ 		goto out;
+ 	}
+ 
+ 	if (ureq.flags & ~IB_USER_MAD_REG_FLAGS_CAP) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		dev_notice(file->port->dev,
+ 			   "ib_umad_reg_agent2 failed: invalid registration flags specified 0x%x; supported 0x%x\n",
+ 			   ureq.flags, IB_USER_MAD_REG_FLAGS_CAP);
++#endif
+ 		ret = -EINVAL;
+ 
+ 		if (put_user((u32)IB_USER_MAD_REG_FLAGS_CAP,
+@@ -861,9 +897,11 @@ static int ib_umad_reg_agent2(struct ib_
+ 		if (!__get_agent(file, agent_id))
+ 			goto found;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	dev_notice(file->port->dev,
+ 		   "ib_umad_reg_agent2: Max Agents (%u) reached\n",
+ 		   IB_UMAD_MAX_AGENTS);
++#endif
+ 	ret = -ENOMEM;
+ 	goto out;
+ 
+@@ -873,9 +911,11 @@ found:
+ 		req.mgmt_class         = ureq.mgmt_class;
+ 		req.mgmt_class_version = ureq.mgmt_class_version;
+ 		if (ureq.oui & 0xff000000) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 			dev_notice(file->port->dev,
+ 				   "ib_umad_reg_agent2 failed: oui invalid 0x%08x\n",
+ 				   ureq.oui);
++#endif
+ 			ret = -EINVAL;
+ 			goto out;
+ 		}
+@@ -1037,12 +1077,14 @@ static long ib_umad_compat_ioctl(struct
+ }
+ #endif
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static void init_recv_list(struct counted_list *recv_list)
+ {
+ 	INIT_LIST_HEAD(&recv_list->list);
+ 	recv_list->count = 0;
+ 	recv_list->threshold = IB_UMAD_RX_THRESHOLD;
+ }
++#endif
+ 
+ /*
+  * ib_umad_open() does not need the BKL:
+@@ -1057,6 +1099,7 @@ static int ib_umad_open(struct inode *in
+ {
+ 	struct ib_umad_port *port;
+ 	struct ib_umad_file *file;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int ret = -ENXIO;
+ 
+ 	port = container_of(inode->i_cdev, struct ib_umad_port, cdev);
+@@ -1073,7 +1116,7 @@ static int ib_umad_open(struct inode *in
+ 
+ 	mutex_init(&file->mutex);
+ 	spin_lock_init(&file->send_lock);
+-	init_recv_list(&file->recv_list);
++	init_recv_list(&file->recv_list.list);
+ 	INIT_LIST_HEAD(&file->send_list);
+ 	init_waitqueue_head(&file->recv_wait);
+ 
+@@ -1090,6 +1133,44 @@ static int ib_umad_open(struct inode *in
+ 	}
+ 
+ 	kobject_get(&port->umad_dev->kobj);
++#else
++	int ret = 0;
++
++	spin_lock(&port_lock);
++	port = umad_port[iminor(inode) - IB_UMAD_MINOR_BASE];
++	if (port)
++		kobject_get(&port->umad_dev->kobj);
++	spin_unlock(&port_lock);
++
++	if (!port)
++		return -ENXIO;
++
++	mutex_lock(&port->file_mutex);
++
++	if (!port->ib_dev) {
++		ret = -ENXIO;
++		goto out;
++	}
++
++	file = kzalloc(sizeof *file, GFP_KERNEL);
++	if (!file) {
++		kobject_put(&port->umad_dev->kobj);
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	mutex_init(&file->mutex);
++	spin_lock_init(&file->send_lock);
++	INIT_LIST_HEAD(&file->recv_list.list);
++	INIT_LIST_HEAD(&file->send_list);
++	init_waitqueue_head(&file->recv_wait);
++
++	file->port = port;
++	filp->private_data = file;
++
++	list_add_tail(&file->port_list, &port->file_list);
++
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ out:
+ 	mutex_unlock(&port->file_mutex);
+@@ -1133,7 +1214,11 @@ static int ib_umad_close(struct inode *i
+ 	return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations umad_fops = {
++#else
++static struct file_operations umad_fops = {
++#endif
+ 	.owner		= THIS_MODULE,
+ 	.read		= ib_umad_read,
+ 	.write		= ib_umad_write,
+@@ -1144,7 +1229,9 @@ static const struct file_operations umad
+ #endif
+ 	.open		= ib_umad_open,
+ 	.release	= ib_umad_close,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.llseek		= no_llseek,
++#endif
+ };
+ 
+ static int ib_umad_sm_open(struct inode *inode, struct file *filp)
+@@ -1155,7 +1242,15 @@ static int ib_umad_sm_open(struct inode
+ 	};
+ 	int ret;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	port = container_of(inode->i_cdev, struct ib_umad_port, sm_cdev);
++#else
++	spin_lock(&port_lock);
++	port = umad_port[iminor(inode) - IB_UMAD_MINOR_BASE - IB_UMAD_MAX_PORTS];
++	if (port)
++		kobject_get(&port->umad_dev->kobj);
++	spin_unlock(&port_lock);
++#endif
+ 
+ 	if (filp->f_flags & O_NONBLOCK) {
+ 		if (down_trylock(&port->sm_sem)) {
+@@ -1214,11 +1309,17 @@ static int ib_umad_sm_close(struct inode
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations umad_sm_fops = {
++#else
++static struct file_operations umad_sm_fops = {
++#endif
+ 	.owner	 = THIS_MODULE,
+ 	.open	 = ib_umad_sm_open,
+ 	.release = ib_umad_sm_close,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.llseek	 = no_llseek,
++#endif
+ };
+ 
+ static struct ib_client umad_client = {
+@@ -1227,6 +1328,7 @@ static struct ib_client umad_client = {
+ 	.remove = ib_umad_remove_one
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_ibdev(struct device *dev, struct device_attribute *attr,
+ 			  char *buf)
+ {
+@@ -1250,6 +1352,29 @@ static ssize_t show_port(struct device *
+ 	return sprintf(buf, "%d\n", port->port_num);
+ }
+ static DEVICE_ATTR(port, S_IRUGO, show_port, NULL);
++#else
++static ssize_t show_ibdev(struct class_device *class_dev, char *buf)
++{
++	struct ib_umad_port *port = class_get_devdata(class_dev);
++
++	if (!port)
++		return -ENODEV;
++
++	return sprintf(buf, "%s\n", port->ib_dev->name);
++}
++static CLASS_DEVICE_ATTR(ibdev, S_IRUGO, show_ibdev, NULL);
++
++static ssize_t show_port(struct class_device *class_dev, char *buf)
++{
++	struct ib_umad_port *port = class_get_devdata(class_dev);
++
++	if (!port)
++		return -ENODEV;
++
++	return sprintf(buf, "%d\n", port->port_num);
++}
++static CLASS_DEVICE_ATTR(port, S_IRUGO, show_port, NULL);
++#endif
+ 
+ #ifdef HAVE_CLASS_ATTR_STRING
+ static CLASS_ATTR_STRING(abi_version, S_IRUGO,
+@@ -1262,6 +1387,7 @@ static ssize_t show_abi_version(struct c
+ static CLASS_ATTR(abi_version, S_IRUGO, show_abi_version, NULL);
+ #endif
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static dev_t overflow_maj;
+ static DECLARE_BITMAP(overflow_map, IB_UMAD_MAX_PORTS);
+ static int find_overflow_devnum(struct ib_device *device)
+@@ -1284,11 +1410,13 @@ static int find_overflow_devnum(struct i
+ 
+ 	return ret;
+ }
++#endif
+ 
+ static int ib_umad_init_port(struct ib_device *device, int port_num,
+ 			     struct ib_umad_device *umad_dev,
+ 			     struct ib_umad_port *port)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int devnum;
+ 	dev_t base;
+ 
+@@ -1371,6 +1499,84 @@ err_cdev:
+ 		clear_bit(devnum, dev_map);
+ 	else
+ 		clear_bit(devnum, overflow_map);
++#else
++	spin_lock(&port_lock);
++	port->dev_num = find_first_zero_bit(dev_map, IB_UMAD_MAX_PORTS);
++	if (port->dev_num >= IB_UMAD_MAX_PORTS) {
++		spin_unlock(&port_lock);
++		return -1;
++	}
++	set_bit(port->dev_num, dev_map);
++	spin_unlock(&port_lock);
++
++	port->ib_dev   = device;
++	port->port_num = port_num;
++	init_MUTEX(&port->sm_sem);
++	mutex_init(&port->file_mutex);
++	INIT_LIST_HEAD(&port->file_list);
++
++	port->dev = cdev_alloc();
++	if (!port->dev)
++		return -1;
++	port->dev->owner = THIS_MODULE;
++	port->dev->ops   = &umad_fops;
++	kobject_set_name(&port->dev->kobj, "umad%d", port->dev_num);
++	if (cdev_add(port->dev, base_dev + port->dev_num, 1))
++		goto err_cdev;
++
++	port->class_dev = class_device_create(umad_class, NULL, port->dev->dev,
++					      device->dma_device,
++					      "umad%d", port->dev_num);
++	if (IS_ERR(port->class_dev))
++		goto err_cdev;
++
++	if (class_device_create_file(port->class_dev, &class_device_attr_ibdev))
++		goto err_class;
++	if (class_device_create_file(port->class_dev, &class_device_attr_port))
++		goto err_class;
++
++	port->sm_dev = cdev_alloc();
++	if (!port->sm_dev)
++		goto err_class;
++	port->sm_dev->owner = THIS_MODULE;
++	port->sm_dev->ops   = &umad_sm_fops;
++	kobject_set_name(&port->sm_dev->kobj, "issm%d", port->dev_num);
++	if (cdev_add(port->sm_dev, base_dev + port->dev_num + IB_UMAD_MAX_PORTS, 1))
++		goto err_sm_cdev;
++
++	port->sm_class_dev = class_device_create(umad_class, NULL, port->sm_dev->dev,
++						 device->dma_device,
++						 "issm%d", port->dev_num);
++	if (IS_ERR(port->sm_class_dev))
++		goto err_sm_cdev;
++
++	class_set_devdata(port->class_dev,    port);
++	class_set_devdata(port->sm_class_dev, port);
++
++	if (class_device_create_file(port->sm_class_dev, &class_device_attr_ibdev))
++		goto err_sm_class;
++	if (class_device_create_file(port->sm_class_dev, &class_device_attr_port))
++		goto err_sm_class;
++
++	spin_lock(&port_lock);
++	umad_port[port->dev_num] = port;
++	spin_unlock(&port_lock);
++
++	return 0;
++
++err_sm_class:
++	class_device_destroy(umad_class, port->sm_dev->dev);
++
++err_sm_cdev:
++	cdev_del(port->sm_dev);
++
++err_class:
++	class_device_destroy(umad_class, port->dev->dev);
++
++err_cdev:
++	cdev_del(port->dev);
++	clear_bit(port->dev_num, dev_map);
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ 	return -1;
+ }
+@@ -1378,6 +1584,7 @@ err_cdev:
+ static void ib_umad_kill_port(struct ib_umad_port *port)
+ {
+ 	struct ib_umad_file *file;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int id;
+ 
+ 	dev_set_drvdata(port->dev,    NULL);
+@@ -1409,6 +1616,42 @@ static void ib_umad_kill_port(struct ib_
+ 		clear_bit(port->dev_num, dev_map);
+ 	else
+ 		clear_bit(port->dev_num - IB_UMAD_MAX_PORTS, overflow_map);
++#else
++	int already_dead;
++	int id;
++
++	class_set_devdata(port->class_dev,    NULL);
++	class_set_devdata(port->sm_class_dev, NULL);
++
++	class_device_destroy(umad_class, port->dev->dev);
++	class_device_destroy(umad_class, port->sm_dev->dev);
++
++	cdev_del(port->dev);
++	cdev_del(port->sm_dev);
++
++	spin_lock(&port_lock);
++	umad_port[port->dev_num] = NULL;
++	spin_unlock(&port_lock);
++
++	mutex_lock(&port->file_mutex);
++
++	port->ib_dev = NULL;
++
++	list_for_each_entry(file, &port->file_list, port_list) {
++		mutex_lock(&file->mutex);
++		already_dead = file->agents_dead;
++		file->agents_dead = 1;
++		mutex_unlock(&file->mutex);
++
++		for (id = 0; id < IB_UMAD_MAX_AGENTS; ++id)
++			if (file->agent[id])
++				ib_unregister_mad_agent(file->agent[id]);
++	}
++
++	mutex_unlock(&port->file_mutex);
++
++	clear_bit(port->dev_num, dev_map);
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ }
+ 
+ static void ib_umad_add_one(struct ib_device *device)
+@@ -1432,7 +1675,11 @@ static void ib_umad_add_one(struct ib_de
+ 	if (!umad_dev)
+ 		return;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	kobject_init(&umad_dev->kobj, &ib_umad_dev_ktype);
++#else
++	kobject_init(&umad_dev->kobj);
++#endif
+ 
+ 	umad_dev->start_port = s;
+ 	umad_dev->end_port   = e;
+@@ -1440,9 +1687,15 @@ static void ib_umad_add_one(struct ib_de
+ 	for (i = s; i <= e; ++i) {
+ 		umad_dev->port[i - s].umad_dev = umad_dev;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (ib_umad_init_port(device, i, umad_dev,
+ 				      &umad_dev->port[i - s]))
+ 			goto err;
++#else
++		if (rdma_port_get_link_layer(device, i) == IB_LINK_LAYER_INFINIBAND)
++			if (ib_umad_init_port(device, i, umad_dev, &umad_dev->port[i - s]))
++				goto err;
++#endif
+ 	}
+ 
+ 	ib_set_client_data(device, &umad_client, umad_dev);
+@@ -1451,9 +1704,16 @@ static void ib_umad_add_one(struct ib_de
+ 
+ err:
+ 	while (--i >= s)
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ib_umad_kill_port(&umad_dev->port[i - s]);
+ 
+ 	kobject_put(&umad_dev->kobj);
++#else
++		if (rdma_port_get_link_layer(device, i) == IB_LINK_LAYER_INFINIBAND)
++			ib_umad_kill_port(&umad_dev->port[i - s]);
++
++	kobject_put(&umad_dev->kobj);
++#endif
+ }
+ 
+ static void ib_umad_remove_one(struct ib_device *device)
+@@ -1465,11 +1725,19 @@ static void ib_umad_remove_one(struct ib
+ 		return;
+ 
+ 	for (i = 0; i <= umad_dev->end_port - umad_dev->start_port; ++i)
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ib_umad_kill_port(&umad_dev->port[i]);
+ 
+ 	kobject_put(&umad_dev->kobj);
++#else
++		if (rdma_port_get_link_layer(device, i + 1) == IB_LINK_LAYER_INFINIBAND)
++			ib_umad_kill_port(&umad_dev->port[i]);
++
++	kobject_put(&umad_dev->kobj);
++#endif
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifdef HAVE_CLASS_DEVNODE_UMODE_T
+ static char *umad_devnode(struct device *dev, umode_t *mode)
+ #else
+@@ -1478,6 +1746,7 @@ static char *umad_devnode(struct device
+ {
+ 	return kasprintf(GFP_KERNEL, "infiniband/%s", dev_name(dev));
+ }
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ static int __init ib_umad_init(void)
+ {
+@@ -1497,7 +1766,9 @@ static int __init ib_umad_init(void)
+ 		goto out_chrdev;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	umad_class->devnode = umad_devnode;
++#endif
+ 
+ #ifdef HAVE_CLASS_ATTR_STRING
+ 	ret = class_create_file(umad_class, &class_attr_abi_version.attr);
+@@ -1532,8 +1803,10 @@ static void __exit ib_umad_cleanup(void)
+ 	ib_unregister_client(&umad_client);
+ 	class_destroy(umad_class);
+ 	unregister_chrdev_region(base_dev, IB_UMAD_MAX_PORTS * 2);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (overflow_maj)
+ 		unregister_chrdev_region(overflow_maj, IB_UMAD_MAX_PORTS * 2);
++#endif
+ }
+ 
+ module_init(ib_umad_init);
+--- a/drivers/infiniband/core/uverbs.h
++++ b/drivers/infiniband/core/uverbs.h
+@@ -86,10 +86,17 @@ struct ib_uverbs_device {
+ 	struct kref				ref;
+ 	int					num_comp_vectors;
+ 	struct completion			comp;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct device			       *dev;
++#endif
+ 	struct ib_device		       *ib_dev;
+ 	int					devnum;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct cdev			        cdev;
++#else
++	struct cdev			       *dev;
++	struct class_device		       *class_dev;
++#endif
+ 	struct rb_root				xrcd_tree;
+ 	struct mutex				xrcd_tree_mutex;
+ 	struct mutex				disassociate_mutex; /* protect lists of files. */
+--- a/drivers/infiniband/core/uverbs_cmd.c
++++ b/drivers/infiniband/core/uverbs_cmd.c
+@@ -2603,9 +2603,11 @@ static ssize_t __uverbs_modify_qp(struct
+ 	}
+ 
+ 	if (qp->real_qp == qp) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ret = ib_resolve_eth_dmac(qp, attr, &cmd->attr_mask);
+ 		if (ret)
+ 			goto out;
++#endif
+ 		ret = qp->device->modify_qp(qp, attr,
+ 			modify_qp_mask(qp->qp_type, cmd->attr_mask | exp_mask), udata);
+ 		if (!ret && (cmd->attr_mask & IB_QP_PORT))
+@@ -2699,9 +2701,11 @@ ssize_t ib_uverbs_modify_qp(struct ib_uv
+ 	attr->alt_ah_attr.port_num 	    = cmd.alt_dest.port_num;
+ 
+ 	if (qp->real_qp == qp) {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		ret = ib_resolve_eth_dmac(qp, attr, &cmd.attr_mask);
+ 		if (ret)
+ 			goto release_qp;
++#endif
+ 		ret = qp->device->modify_qp(qp, attr,
+ 			modify_qp_mask(qp->qp_type, cmd.attr_mask), &udata);
+ 	} else {
+--- a/drivers/infiniband/core/uverbs_main.c
++++ b/drivers/infiniband/core/uverbs_main.c
+@@ -43,7 +43,9 @@
+ #include <linux/sched.h>
+ #include <linux/file.h>
+ #include <linux/cdev.h>
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <linux/anon_inodes.h>
++#endif
+ #include <linux/slab.h>
+ 
+ #include <asm/uaccess.h>
+@@ -58,6 +60,10 @@ MODULE_AUTHOR("Roland Dreier");
+ MODULE_DESCRIPTION("InfiniBand userspace verbs access");
+ MODULE_LICENSE("Dual BSD/GPL");
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++#define INFINIBANDEVENTFS_MAGIC	0x49426576	/* "IBev" */
++#endif
++
+ enum {
+ 	IB_UVERBS_MAJOR       = 231,
+ 	IB_UVERBS_BASE_MINOR  = 192,
+@@ -108,7 +114,12 @@ DEFINE_IDR(ib_uverbs_dct_idr);
+ DEFINE_IDR(ib_uverbs_wq_idr);
+ DEFINE_IDR(ib_uverbs_rwq_ind_tbl_idr);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static DEFINE_SPINLOCK(map_lock);
++#else
++static spinlock_t map_lock;
++static struct ib_uverbs_device *dev_table[IB_UVERBS_MAX_DEVICES];
++#endif
+ static DECLARE_BITMAP(dev_map, IB_UVERBS_MAX_DEVICES);
+ 
+ static ssize_t (*uverbs_cmd_table[])(struct ib_uverbs_file *file,
+@@ -187,6 +198,9 @@ static uverbs_ex_cmd uverbs_exp_cmd_tabl
+ 	[IB_USER_VERBS_EXP_CMD_CREATE_FLOW]	= ib_uverbs_exp_create_flow,
+ };
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++static struct vfsmount *uverbs_event_mnt;
++#endif
+ static void ib_uverbs_add_one(struct ib_device *device);
+ static void ib_uverbs_remove_one(struct ib_device *device);
+ 
+@@ -526,6 +540,9 @@ static int ib_uverbs_event_close(struct
+ 		kfree(entry);
+ 	}
+ 	spin_unlock_irq(&file->lock);
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	ib_uverbs_event_fasync(-1, filp, 0);
++#endif
+ 
+ 	mutex_lock(&file->uverbs_file->device->disassociate_mutex);
+ 	if (!file->uverbs_file->device->disassociated) {
+@@ -541,13 +558,19 @@ static int ib_uverbs_event_close(struct
+ 	return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations uverbs_event_fops = {
++#else
++static struct file_operations uverbs_event_fops = {
++#endif
+ 	.owner	 = THIS_MODULE,
+ 	.read	 = ib_uverbs_event_read,
+ 	.poll    = ib_uverbs_event_poll,
+ 	.release = ib_uverbs_event_close,
+ 	.fasync  = ib_uverbs_event_fasync,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.llseek	 = no_llseek,
++#endif
+ };
+ 
+ void ib_uverbs_comp_handler(struct ib_cq *cq, void *cq_context)
+@@ -698,12 +721,33 @@ struct file *ib_uverbs_alloc_event_file(
+ 	ev_file->is_async    = is_async;
+ 	ev_file->is_closed   = 0;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	filp = anon_inode_getfile("[infinibandevent]", &uverbs_event_fops,
+ 				  ev_file, O_RDONLY);
+ 	if (IS_ERR(filp)) {
+ 		kfree(ev_file);
+ 		return filp;
+ 	}
++#else
++	filp = get_empty_filp();
++	if (!filp) {
++		kfree(ev_file);
++		return ERR_PTR(-ENFILE);
++	}
++
++	/*
++	 * fops_get() can't fail here, because we're coming from a
++	 * system call on a uverbs file, which will already have a
++	 * module reference.
++	 */
++	filp->f_op	   = fops_get(&uverbs_event_fops);
++	filp->f_vfsmnt	   = mntget(uverbs_event_mnt);
++	filp->f_dentry	   = dget(uverbs_event_mnt->mnt_root);
++	filp->f_mapping    = filp->f_dentry->d_inode->i_mapping;
++	filp->f_flags	   = O_RDONLY;
++	filp->f_mode	   = FMODE_READ;
++	filp->private_data = ev_file;
++#endif
+ 
+ 	mutex_lock(&uverbs_file->device->disassociate_mutex);
+ 	if (!uverbs_file->device->disassociated) {
+@@ -751,9 +795,13 @@ out:
+ 	return ev_file;
+ #else
+ 	struct file *filp;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int fput_needed;
+ 
+ 	filp = fget_light(fd, &fput_needed);
++#else
++	filp = fget(fd);
++#endif
+ 	if (!filp)
+ 		return NULL;
+ 
+@@ -769,7 +817,11 @@ out:
+ 	kref_get(&ev_file->ref);
+ 
+ out:
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	fput_light(filp, fput_needed);
++#else
++	fput(filp);
++#endif
+ 	return ev_file;
+ #endif
+ }
+@@ -991,6 +1043,7 @@ out:
+ 	return ret;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static unsigned long ib_uverbs_get_unmapped_area(struct file *filp,
+ 		unsigned long addr,
+ 		unsigned long len, unsigned long pgoff, unsigned long flags)
+@@ -1022,7 +1075,7 @@ out:
+ 	srcu_read_unlock(&file->device->disassociate_srcu, srcu_key);
+ 	return ret;
+ }
+-
++#endif
+ 
+ static long ib_uverbs_ioctl(struct file *filp,
+ 			    unsigned int cmd, unsigned long arg)
+@@ -1073,11 +1126,22 @@ static int ib_uverbs_open(struct inode *
+ 	int ret;
+ 	int module_dependent;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	dev = container_of(inode->i_cdev, struct ib_uverbs_device, cdev);
+ 	if (dev)
+ 		kref_get(&dev->ref);
+ 	else
+ 		return -ENXIO;
++#else
++	spin_lock(&map_lock);
++	dev = dev_table[iminor(inode) - IB_UVERBS_BASE_MINOR];
++	if (dev)
++		kref_get(&dev->ref);
++	spin_unlock(&map_lock);
++
++	if (!dev)
++		return -ENXIO;
++#endif
+ 
+ 	mutex_lock(&dev->disassociate_mutex);
+ 	if (dev->disassociated) {
+@@ -1158,23 +1222,35 @@ static int ib_uverbs_close(struct inode
+ 	return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations uverbs_fops = {
++#else
++static struct file_operations uverbs_fops = {
++#endif
+ 	.owner	 = THIS_MODULE,
+ 	.write	 = ib_uverbs_write,
+ 	.open	 = ib_uverbs_open,
+ 	.release = ib_uverbs_close,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.llseek	 = no_llseek,
++#endif
+ 	.unlocked_ioctl = ib_uverbs_ioctl,
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static const struct file_operations uverbs_mmap_fops = {
++#else
++static struct file_operations uverbs_mmap_fops = {
++#endif
+ 	.owner	 = THIS_MODULE,
+ 	.write	 = ib_uverbs_write,
+ 	.mmap    = ib_uverbs_mmap,
+ 	.open	 = ib_uverbs_open,
+ 	.release = ib_uverbs_close,
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	.llseek	 = no_llseek,
+ 	.get_unmapped_area = ib_uverbs_get_unmapped_area,
++#endif
+ 	.unlocked_ioctl = ib_uverbs_ioctl,
+ };
+ 
+@@ -1184,6 +1260,7 @@ static struct ib_client uverbs_client =
+ 	.remove = ib_uverbs_remove_one
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static ssize_t show_ibdev(struct device *device, struct device_attribute *attr,
+ 			  char *buf)
+ {
+@@ -1219,6 +1296,48 @@ static ssize_t show_abi_version(struct c
+ static CLASS_ATTR(abi_version, S_IRUGO, show_abi_version, NULL);
+ #endif
+ 
++#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
++static ssize_t show_ibdev(struct class_device *class_dev, char *buf)
++{
++	struct ib_uverbs_device *dev = class_get_devdata(class_dev);
++
++	if (!dev)
++		return -ENODEV;
++
++	return sprintf(buf, "%s\n", dev->ib_dev->name);
++}
++static CLASS_DEVICE_ATTR(ibdev, S_IRUGO, show_ibdev, NULL);
++
++static ssize_t show_dev_abi_version(struct class_device *class_dev, char *buf)
++{
++	struct ib_uverbs_device *dev = class_get_devdata(class_dev);
++
++	if (!dev)
++		return -ENODEV;
++
++	return sprintf(buf, "%d\n", dev->ib_dev->uverbs_abi_ver);
++}
++static CLASS_DEVICE_ATTR(abi_version, S_IRUGO, show_dev_abi_version, NULL);
++
++static ssize_t show_abi_version(struct class *class, char *buf)
++{
++	return sprintf(buf, "%d\n", IB_USER_VERBS_ABI_VERSION);
++}
++static CLASS_ATTR(abi_version, S_IRUGO, show_abi_version, NULL);
++
++static ssize_t show_dev_ref_cnt(struct class_device *class_dev, char *buf)
++{
++	struct ib_uverbs_device *dev = class_get_devdata(class_dev);
++
++	if (!dev)
++		return -ENODEV;
++
++	return sprintf(buf, "%d\n",  atomic_read(&dev->ref.refcount));
++}
++static CLASS_DEVICE_ATTR(ref_cnt, S_IRUGO, show_dev_ref_cnt, NULL);
++
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
++
+ static dev_t overflow_maj;
+ static DECLARE_BITMAP(overflow_map, IB_UVERBS_MAX_DEVICES);
+ 
+@@ -1295,6 +1414,7 @@ static void ib_uverbs_add_one(struct ib_
+ 	uverbs_dev->ib_dev           = device;
+ 	uverbs_dev->num_comp_vectors = device->num_comp_vectors;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	cdev_init(&uverbs_dev->cdev, NULL);
+ 	uverbs_dev->cdev.owner = THIS_MODULE;
+ 	uverbs_dev->cdev.ops = device->mmap ? &uverbs_mmap_fops : &uverbs_fops;
+@@ -1312,6 +1432,36 @@ static void ib_uverbs_add_one(struct ib_
+ 		goto err_class;
+ 	if (device_create_file(uverbs_dev->dev, &dev_attr_abi_version))
+ 		goto err_class;
++#else
++	uverbs_dev->dev = cdev_alloc();
++	if (!uverbs_dev->dev)
++		goto err;
++	uverbs_dev->dev->owner = THIS_MODULE;
++	uverbs_dev->dev->ops = device->mmap ? &uverbs_mmap_fops : &uverbs_fops;
++	kobject_set_name(&uverbs_dev->dev->kobj, "uverbs%d", uverbs_dev->devnum);
++	if (cdev_add(uverbs_dev->dev, IB_UVERBS_BASE_DEV + uverbs_dev->devnum, 1))
++		goto err_cdev;
++
++	uverbs_dev->class_dev = class_device_create(uverbs_class, NULL,
++						    uverbs_dev->dev->dev,
++						    device->dma_device,
++						    "uverbs%d", uverbs_dev->devnum);
++	if (IS_ERR(uverbs_dev->class_dev))
++		goto err_cdev;
++
++	class_set_devdata(uverbs_dev->class_dev, uverbs_dev);
++
++	if (class_device_create_file(uverbs_dev->class_dev, &class_device_attr_ibdev))
++		goto err_class;
++	if (class_device_create_file(uverbs_dev->class_dev, &class_device_attr_abi_version))
++		goto err_class;
++	if (class_device_create_file(uverbs_dev->class_dev, &class_device_attr_ref_cnt))
++		goto err_class;
++
++	spin_lock(&map_lock);
++	dev_table[uverbs_dev->devnum] = uverbs_dev;
++	spin_unlock(&map_lock);
++#endif
+ 
+ 	if (device->disassociate_ucontext)
+ 		uverbs_dev->flags |= UVERBS_FLAG_DISASSOCIATE;
+@@ -1324,10 +1474,18 @@ static void ib_uverbs_add_one(struct ib_
+ 	return;
+ 
+ err_class:
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	device_destroy(uverbs_class, uverbs_dev->cdev.dev);
++#else
++	class_device_destroy(uverbs_class, uverbs_dev->dev->dev);
++#endif
+ 
+ err_cdev:
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	cdev_del(&uverbs_dev->cdev);
++#else
++	cdev_del(uverbs_dev->dev);
++#endif
+ 	if (uverbs_dev->devnum < IB_UVERBS_MAX_DEVICES)
+ 		clear_bit(devnum, dev_map);
+ 	else
+@@ -1403,9 +1561,19 @@ static void ib_uverbs_remove_one(struct
+ 	if (!uverbs_dev)
+ 		return;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	dev_set_drvdata(uverbs_dev->dev, NULL);
+ 	device_destroy(uverbs_class, uverbs_dev->cdev.dev);
+ 	cdev_del(&uverbs_dev->cdev);
++#else
++	class_set_devdata(uverbs_dev->class_dev, NULL);
++	class_device_destroy(uverbs_class, uverbs_dev->dev->dev);
++	cdev_del(uverbs_dev->dev);
++
++	spin_lock(&map_lock);
++	dev_table[uverbs_dev->devnum] = NULL;
++	spin_unlock(&map_lock);
++#endif
+ 
+ 	if (uverbs_dev->devnum < IB_UVERBS_MAX_DEVICES)
+ 		clear_bit(uverbs_dev->devnum, dev_map);
+@@ -1437,6 +1605,23 @@ static void ib_uverbs_remove_one(struct
+ 	}
+ }
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++static struct super_block *uverbs_event_get_sb(struct file_system_type *fs_type, int flags,
++			       const char *dev_name, void *data)
++{
++	return get_sb_pseudo(fs_type, "infinibandevent:", NULL,
++			     INFINIBANDEVENTFS_MAGIC);
++}
++
++static struct file_system_type uverbs_event_fs = {
++	/* No owner field so module can be unloaded */
++	.name    = "infinibandeventfs",
++	.get_sb  = uverbs_event_get_sb,
++	.kill_sb = kill_litter_super
++};
++#endif
++
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #ifdef HAVE_CLASS_DEVNODE_UMODE_T
+ static char *uverbs_devnode(struct device *dev, umode_t *mode)
+ #else
+@@ -1447,11 +1632,16 @@ static char *uverbs_devnode(struct devic
+ 		*mode = 0666;
+ 	return kasprintf(GFP_KERNEL, "infiniband/%s", dev_name(dev));
+ }
++#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16) */
+ 
+ static int __init ib_uverbs_init(void)
+ {
+ 	int ret;
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	spin_lock_init(&map_lock);
++#endif
++
+ 	ret = register_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES,
+ 				     "infiniband_verbs");
+ 	if (ret) {
+@@ -1466,7 +1656,9 @@ static int __init ib_uverbs_init(void)
+ 		goto out_chrdev;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 	uverbs_class->devnode = uverbs_devnode;
++#endif
+ 
+ #ifdef HAVE_CLASS_ATTR_STRING
+ 	ret = class_create_file(uverbs_class, &class_attr_abi_version.attr);
+@@ -1478,14 +1670,40 @@ static int __init ib_uverbs_init(void)
+ 		goto out_class;
+ 	}
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,16))
++	ret = register_filesystem(&uverbs_event_fs);
++	if (ret) {
++		printk(KERN_ERR "user_verbs: couldn't register infinibandeventfs\n");
++		goto out_class;
++	}
++
++	uverbs_event_mnt = kern_mount(&uverbs_event_fs);
++	if (IS_ERR(uverbs_event_mnt)) {
++		ret = PTR_ERR(uverbs_event_mnt);
++		printk(KERN_ERR "user_verbs: couldn't mount infinibandeventfs\n");
++		goto out_fs;
++	}
++#endif
++
+ 	ret = ib_register_client(&uverbs_client);
+ 	if (ret) {
+ 		printk(KERN_ERR "user_verbs: couldn't register client\n");
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,16))
+ 		goto out_class;
++#else
++		goto out_mnt;
++#endif
+ 	}
+ 
+ 	return 0;
+ 
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,16))
++out_mnt:
++	mntput(uverbs_event_mnt);
++
++out_fs:
++	unregister_filesystem(&uverbs_event_fs);
++#endif
+ out_class:
+ 	class_destroy(uverbs_class);
+ 
+@@ -1499,8 +1717,15 @@ out:
+ static void __exit ib_uverbs_cleanup(void)
+ {
+ 	ib_unregister_client(&uverbs_client);
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,16))
++	mntput(uverbs_event_mnt);
++	unregister_filesystem(&uverbs_event_fs);
++#endif
+ 	class_destroy(uverbs_class);
+ 	unregister_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES);
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,16))
++	flush_scheduled_work();
++#endif
+ 	if (overflow_maj)
+ 		unregister_chrdev_region(overflow_maj, IB_UVERBS_MAX_DEVICES);
+ 	idr_destroy(&ib_uverbs_pd_idr);
+--- a/drivers/infiniband/core/verbs.c
++++ b/drivers/infiniband/core/verbs.c
+@@ -199,6 +199,7 @@ struct ib_ah *ib_create_ah(struct ib_pd
+ }
+ EXPORT_SYMBOL(ib_create_ah);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ int ib_get_grh_header_version(const void *h)
+ {
+ 	const struct iphdr *ip4h = (struct iphdr *)(h + 20);
+@@ -243,12 +244,14 @@ static enum rdma_network_type ib_get_net
+ 
+ 	return RDMA_NETWORK_IB;
+ }
++#endif
+ 
+ struct find_gid_index_context {
+ 	u16 vlan_id;
+ 	enum ib_gid_type gid_type;
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static bool find_gid_index(const union ib_gid *gid,
+ 			   const struct ib_gid_attr *gid_attr,
+ 			   void *context)
+@@ -278,6 +281,7 @@ static int get_sgid_index_from_eth(struc
+ 	return ib_find_gid_by_filter(device, sgid, port_num, find_gid_index,
+ 				     &context, gid_index);
+ }
++#endif
+ 
+ int ib_get_gids_from_grh(struct ib_grh *grh, enum rdma_network_type net_type,
+ 			 union ib_gid *sgid, union ib_gid *dgid)
+@@ -318,16 +322,21 @@ int ib_init_ah_from_wc(struct ib_device
+ 		       struct ib_grh *grh, struct ib_ah_attr *ah_attr)
+ {
+ 	u32 flow_class;
+-	u16 gid_index;
++	u16 gid_index = 0;
+ 	int ret;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int is_eth = (rdma_port_get_link_layer(device, port_num) ==
+ 			IB_LINK_LAYER_ETHERNET);
++#endif
+ 	enum rdma_network_type net_type = RDMA_NETWORK_IB;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	enum ib_gid_type gid_type = IB_GID_TYPE_IB;
++#endif
+ 	union ib_gid dgid;
+ 	union ib_gid sgid;
+ 
+ 	memset(ah_attr, 0, sizeof *ah_attr);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (is_eth) {
+ 		if (wc->wc_flags & IB_WC_WITH_NETWORK_HDR_TYPE)
+ 			net_type = wc->network_hdr_type;
+@@ -335,10 +344,12 @@ int ib_init_ah_from_wc(struct ib_device
+ 			net_type = ib_get_net_type_by_grh(device, port_num, grh);
+ 		gid_type = ib_network_to_gid_type(net_type, grh);
+ 	}
++#endif
+ 	ret = ib_get_gids_from_grh(grh, net_type, &sgid, &dgid);
+ 	if (ret)
+ 		return ret;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	if (is_eth) {
+ 		u16 vlan_id = wc->wc_flags & IB_WC_WITH_VLAN ?
+ 				wc->vlan_id : 0xffff;
+@@ -365,6 +376,7 @@ int ib_init_ah_from_wc(struct ib_device
+ 		if (wc->wc_flags & IB_WC_WITH_SMAC)
+ 			memcpy(ah_attr->dmac, wc->smac, ETH_ALEN);
+ 	}
++#endif
+ 
+ 	ah_attr->dlid = wc->slid;
+ 	ah_attr->sl = wc->sl;
+@@ -375,6 +387,7 @@ int ib_init_ah_from_wc(struct ib_device
+ 		ah_attr->ah_flags = IB_AH_GRH;
+ 		ah_attr->grh.dgid = sgid;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 		if (!is_eth) {
+ 			if (dgid.global.interface_id != cpu_to_be64(IB_SA_WELL_KNOWN_GUID)) {
+ 				ret = ib_find_cached_gid_by_port(device, &dgid,
+@@ -387,6 +400,7 @@ int ib_init_ah_from_wc(struct ib_device
+ 				gid_index = 0;
+ 			}
+ 		}
++#endif
+ 
+ 		ah_attr->grh.sgid_index = (u8) gid_index;
+ 		flow_class = be32_to_cpu(grh->version_tclass_flow);
+@@ -1119,6 +1133,7 @@ int ib_modify_qp_is_ok(enum ib_qp_state
+ }
+ EXPORT_SYMBOL(ib_modify_qp_is_ok);
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ int ib_resolve_eth_dmac(struct ib_qp *qp,
+ 			struct ib_qp_attr *qp_attr, int *qp_attr_mask)
+ {
+@@ -1160,10 +1175,12 @@ int ib_resolve_eth_dmac(struct ib_qp *qp
+ 
+ 			rcu_read_unlock();
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 			ret = rdma_addr_find_dmac_by_grh(&sgid,
+ 							 &qp_attr->ah_attr.grh.dgid,
+ 							 qp_attr->ah_attr.dmac,
+ 							 NULL, ifindex);
++#endif
+ 
+ 			dev_put(sgid_attr.ndev);
+ 		}
+@@ -1172,13 +1189,16 @@ out:
+ 	return ret;
+ }
+ EXPORT_SYMBOL(ib_resolve_eth_dmac);
++#endif
+ 
+ 
+ int ib_modify_qp(struct ib_qp *qp,
+ 		 struct ib_qp_attr *qp_attr,
+ 		 int qp_attr_mask)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	int ret;
++#endif
+ 
+ 	if (qp->qpg_type == IB_QPG_PARENT) {
+ 		struct ib_qpg_attr *pattr = &qp->qpg_attr.parent_attr;
+@@ -1188,10 +1208,12 @@ int ib_modify_qp(struct ib_qp *qp,
+ 			return -EINVAL;
+ 	}
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	ret = ib_resolve_eth_dmac(qp, qp_attr, &qp_attr_mask);
+ 
+ 	if (ret)
+ 		return ret;
++#endif
+ 
+ 	return qp->device->modify_qp(qp->real_qp, qp_attr, qp_attr_mask, NULL);
+ }
+--- a/include/linux/mlx4/cmd.h
++++ b/include/linux/mlx4/cmd.h
+@@ -34,7 +34,9 @@
+ #define MLX4_CMD_H
+ 
+ #include <linux/dma-mapping.h>
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <linux/if_link.h>
++#endif
+ #include <linux/netdevice.h>
+ 
+ enum {
+--- a/include/rdma/ib.h
++++ b/include/rdma/ib.h
+@@ -99,7 +99,11 @@ struct sockaddr_ib {
+  */
+ static inline bool ib_safe_file_access(struct file *filp)
+ {
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	return filp->f_cred == current_cred() && segment_eq(get_fs(), USER_DS);
++#else
++	return true;
++#endif
+ }
+ 
+ #endif /* _RDMA_IB_H */
+--- a/include/rdma/ib_addr.h
++++ b/include/rdma/ib_addr.h
+@@ -48,6 +48,9 @@
+ #include <rdma/ib_verbs.h>
+ #include <rdma/ib_pack.h>
+ #include <net/ipv6.h>
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++#include <linux/ethtool.h>
++#endif
+ 
+ struct rdma_addr_client {
+ 	atomic_t refcount;
+@@ -184,7 +187,11 @@ static inline void iboe_addr_get_sgid(st
+ 	struct net_device *dev;
+ 	struct in_device *ip4;
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	dev = dev_get_by_index(&init_net, dev_addr->bound_dev_if);
++#else
++	dev = dev_get_by_index(dev_addr->bound_dev_if);
++#endif
+ 	if (dev) {
+ 		ip4 = (struct in_device *)dev->ip_ptr;
+ 		if (ip4 && ip4->ifa_list && ip4->ifa_list->ifa_address)
+@@ -248,6 +255,7 @@ static inline int iboe_get_rate(struct n
+ #else
+ 	struct ethtool_link_ksettings cmd;
+ #endif
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	u32 speed;
+ 	int err;
+ 
+@@ -276,6 +284,22 @@ static inline int iboe_get_rate(struct n
+ 		return IB_RATE_10_GBPS;
+ 	else
+ 		return IB_RATE_PORT_CURRENT;
++#else
++	if (!dev->ethtool_ops || !dev->ethtool_ops->get_settings ||
++	    dev->ethtool_ops->get_settings(dev, &cmd))
++		return IB_RATE_PORT_CURRENT;
++
++	if (cmd.speed >= 40000)
++		return IB_RATE_40_GBPS;
++	else if (cmd.speed >= 30000)
++		return IB_RATE_30_GBPS;
++	else if (cmd.speed >= 20000)
++		return IB_RATE_20_GBPS;
++	else if (cmd.speed >= 10000)
++		return IB_RATE_10_GBPS;
++	else
++		return IB_RATE_PORT_CURRENT;
++#endif
+ }
+ 
+ static inline int rdma_link_local_addr(struct in6_addr *addr)
+--- a/include/rdma/ib_cm.h
++++ b/include/rdma/ib_cm.h
+@@ -262,6 +262,7 @@ struct ib_cm_event {
+ 	void			*private_data;
+ };
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #define CM_REQ_ATTR_ID		cpu_to_be16(0x0010)
+ #define CM_MRA_ATTR_ID		cpu_to_be16(0x0011)
+ #define CM_REJ_ATTR_ID		cpu_to_be16(0x0012)
+@@ -273,6 +274,19 @@ struct ib_cm_event {
+ #define CM_SIDR_REP_ATTR_ID	cpu_to_be16(0x0018)
+ #define CM_LAP_ATTR_ID		cpu_to_be16(0x0019)
+ #define CM_APR_ATTR_ID		cpu_to_be16(0x001A)
++#else
++#define CM_REQ_ATTR_ID		__constant_htons(0x0010)
++#define CM_MRA_ATTR_ID		__constant_htons(0x0011)
++#define CM_REJ_ATTR_ID		__constant_htons(0x0012)
++#define CM_REP_ATTR_ID		__constant_htons(0x0013)
++#define CM_RTU_ATTR_ID		__constant_htons(0x0014)
++#define CM_DREQ_ATTR_ID		__constant_htons(0x0015)
++#define CM_DREP_ATTR_ID		__constant_htons(0x0016)
++#define CM_SIDR_REQ_ATTR_ID	__constant_htons(0x0017)
++#define CM_SIDR_REP_ATTR_ID	__constant_htons(0x0018)
++#define CM_LAP_ATTR_ID		__constant_htons(0x0019)
++#define CM_APR_ATTR_ID		__constant_htons(0x001A)
++#endif
+ 
+ /**
+  * ib_cm_handler - User-defined callback to process communication events.
+--- a/include/rdma/ib_pma.h
++++ b/include/rdma/ib_pma.h
+@@ -59,6 +59,7 @@
+ /*
+  * PMA class portinfo capability mask bits
+  */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #define IB_PMA_CLASS_CAP_ALLPORTSELECT  cpu_to_be16(1 << 8)
+ #define IB_PMA_CLASS_CAP_EXT_WIDTH      cpu_to_be16(1 << 9)
+ #define IB_PMA_CLASS_CAP_XMIT_WAIT      cpu_to_be16(1 << 12)
+@@ -69,6 +70,17 @@
+ #define IB_PMA_PORT_COUNTERS            cpu_to_be16(0x0012)
+ #define IB_PMA_PORT_COUNTERS_EXT        cpu_to_be16(0x001D)
+ #define IB_PMA_PORT_SAMPLES_RESULT_EXT  cpu_to_be16(0x001E)
++#else
++#define IB_PMA_CLASS_CAP_ALLPORTSELECT  0x0001
++#define IB_PMA_CLASS_CAP_EXT_WIDTH      0x0002
++#define IB_PMA_CLASS_CAP_XMIT_WAIT      0x0010
++#define IB_PMA_CLASS_PORT_INFO          0x0100
++#define IB_PMA_PORT_SAMPLES_CONTROL     0x1000
++#define IB_PMA_PORT_SAMPLES_RESULT      0x1100
++#define IB_PMA_PORT_COUNTERS            0x1200
++#define IB_PMA_PORT_COUNTERS_EXT        0x1d00
++#define IB_PMA_PORT_SAMPLES_RESULT_EXT  0x1e00
++#endif
+ 
+ struct ib_pma_mad {
+ 	struct ib_mad_hdr mad_hdr;
+--- a/include/rdma/ib_smi.h
++++ b/include/rdma/ib_smi.h
+@@ -38,6 +38,7 @@
+ #define IB_SMI_H
+ 
+ #include <rdma/ib_mad.h>
++#include <asm/byteorder.h>
+ 
+ #define IB_SMP_DATA_SIZE			64
+ #define IB_SMP_MAX_PATH_HOPS			64
+@@ -66,6 +67,7 @@ struct ib_smp {
+ #define IB_SMP_DIRECTION			cpu_to_be16(0x8000)
+ 
+ /* Subnet management attributes */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #define IB_SMP_ATTR_NOTICE			cpu_to_be16(0x0002)
+ #define IB_SMP_ATTR_NODE_DESC			cpu_to_be16(0x0010)
+ #define IB_SMP_ATTR_NODE_INFO			cpu_to_be16(0x0011)
+@@ -82,6 +84,24 @@ struct ib_smp {
+ #define IB_SMP_ATTR_VENDOR_DIAG			cpu_to_be16(0x0030)
+ #define IB_SMP_ATTR_LED_INFO			cpu_to_be16(0x0031)
+ #define IB_SMP_ATTR_VENDOR_MASK			cpu_to_be16(0xFF00)
++#else
++#define IB_SMP_ATTR_NOTICE			0x0200
++#define IB_SMP_ATTR_NODE_DESC			0x1000
++#define IB_SMP_ATTR_NODE_INFO			0x1100
++#define IB_SMP_ATTR_SWITCH_INFO			0x1200
++#define IB_SMP_ATTR_GUID_INFO			0x1400
++#define IB_SMP_ATTR_PORT_INFO			0x1500
++#define IB_SMP_ATTR_PKEY_TABLE			0x1600
++#define IB_SMP_ATTR_SL_TO_VL_TABLE		0x1700
++#define IB_SMP_ATTR_VL_ARB_TABLE		0x1800
++#define IB_SMP_ATTR_LINEAR_FORWARD_TABLE	0x1900
++#define IB_SMP_ATTR_RANDOM_FORWARD_TABLE	0x1a00
++#define IB_SMP_ATTR_MCAST_FORWARD_TABLE		0x1b00
++#define IB_SMP_ATTR_SM_INFO			0x2000
++#define IB_SMP_ATTR_VENDOR_DIAG			0x3000
++#define IB_SMP_ATTR_LED_INFO			0x3100
++#define IB_SMP_ATTR_VENDOR_MASK			0x00ff
++#endif
+ 
+ struct ib_port_info {
+ 	__be64 mkey;
+--- a/include/rdma/ib_umem.h
++++ b/include/rdma/ib_umem.h
+@@ -36,9 +36,12 @@
+ #include <linux/list.h>
+ #include <linux/scatterlist.h>
+ #include <linux/workqueue.h>
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ #include <rdma/ib_peer_mem.h>
++#endif
+ 
+ struct ib_ucontext;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ struct ib_umem_odp;
+ struct ib_umem;
+ 
+@@ -56,6 +59,7 @@ struct invalidation_ctx {
+ 	int peer_invalidated;
+ 	struct completion comp;
+ };
++#endif
+ 
+ struct ib_umem {
+ 	struct ib_ucontext     *context;
+@@ -64,12 +68,16 @@ struct ib_umem {
+ 	int			page_size;
+ 	int                     writable;
+ 	int                     hugetlb;
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	struct list_head        chunk_list;
++#endif
+ 	struct work_struct	work;
+ #if defined(HAVE_PUT_TASK_STRUCT_EXPORTED) && defined(HAVE_GET_TASK_PID_EXPORTED) && defined(HAVE_GET_PID_TASK_EXPORTED)
+ 	struct pid             *pid;
+ #endif
+ 	struct mm_struct       *mm;
+ 	unsigned long		diff;
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ 	struct ib_umem_odp     *odp_data;
+ 	struct sg_table sg_head;
+ 	int             nmap;
+@@ -80,6 +88,7 @@ struct ib_umem {
+ 	int peer_mem_srcu_key;
+ 	/* peer memory private context */
+ 	void *peer_mem_client_context;
++#endif
+ };
+ 
+ /* Returns the offset of the umem start relative to the first page. */
+@@ -105,6 +114,7 @@ static inline size_t ib_umem_num_pages(s
+ 	return (ib_umem_end(umem) - ib_umem_start(umem)) >> PAGE_SHIFT;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ /* contiguous memory structure */
+ struct ib_cmem {
+ 
+@@ -133,19 +143,29 @@ struct ib_cmem_block {
+ 	*/
+ 	struct page            *page;
+ };
+-
++#else
++struct ib_umem_chunk {
++	struct list_head	list;
++	int                     nents;
++	int                     nmap;
++	struct scatterlist      page_list[0];
++};
++#endif
++ /* Returns the offset of the umem start relative to the first page. */
+ 
+ 
+ #ifdef CONFIG_INFINIBAND_USER_MEM
+ 
+ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
+ 			    size_t size, int access, int dmasync);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
+ 			    size_t size, int access, int dmasync,
+ 			    int invalidation_supported);
+ void  ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
+ 					       umem_invalidate_func_t func,
+ 					       void *cookie);
++#endif
+ void ib_umem_release(struct ib_umem *umem);
+ int ib_umem_page_count(struct ib_umem *umem);
+ int ib_umem_copy_from(void *dst, struct ib_umem *umem, size_t offset,
+@@ -153,6 +173,7 @@ int ib_umem_copy_from(void *dst, struct
+ 
+ int ib_umem_map_to_vma(struct ib_umem *umem,
+ 				struct vm_area_struct *vma);
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ int ib_cmem_map_contiguous_pages_to_vma(struct ib_cmem *ib_cmem,
+ 	struct vm_area_struct *vma);
+ struct ib_cmem *ib_cmem_alloc_contiguous_pages(struct ib_ucontext *context,
+@@ -162,6 +183,7 @@ struct ib_cmem *ib_cmem_alloc_contiguous
+ void ib_cmem_release_contiguous_pages(struct ib_cmem *cmem);
+ int ib_umem_map_to_vma(struct ib_umem *umem,
+ 				struct vm_area_struct *vma);
++#endif
+ 
+ #else /* CONFIG_INFINIBAND_USER_MEM */
+ 
+@@ -172,12 +194,14 @@ static inline struct ib_umem *ib_umem_ge
+ 					  int access, int dmasync) {
+ 	return ERR_PTR(-EINVAL);
+ }
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static inline struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context,
+ 					  unsigned long addr, size_t size,
+ 					  int access, int dmasync,
+ 					  int invalidation_supported) {
+ 	return ERR_PTR(-EINVAL);
+ }
++#endif
+ static inline void ib_umem_release(struct ib_umem *umem) { }
+ static inline int ib_umem_page_count(struct ib_umem *umem) { return 0; }
+ static inline int ib_umem_copy_from(void *dst, struct ib_umem *umem, size_t offset,
+@@ -185,9 +209,11 @@ static inline int ib_umem_copy_from(void
+ 	return -EINVAL;
+ }
+ 
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16))
+ static inline void ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
+ 					       umem_invalidate_func_t func,
+ 					       void *cookie) {return; }
++#endif
+ #endif /* CONFIG_INFINIBAND_USER_MEM */
+ 
+ #endif /* IB_UMEM_H */
+--- a/include/rdma/ib_verbs.h
++++ b/include/rdma/ib_verbs.h
+@@ -63,7 +63,9 @@
+ #include <linux/fs.h>
+ #include <linux/mutex.h>
+ #include <linux/atomic.h>
++#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+ #include <linux/mmu_notifier.h>
++#endif
+ #include <asm/uaccess.h>
+ 
+ extern struct workqueue_struct *ib_wq;
+@@ -2298,6 +2300,9 @@ struct ib_device {
+ 
+ 	struct module               *owner;
+ 	struct device                dev;
++#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 16))
++	struct class_device          class_dev;
++#endif
+ 	struct kobject               *ports_parent;
+ 	struct list_head             port_list;
+ 
+@@ -2487,9 +2492,11 @@ int ib_modify_port(struct ib_device *dev
+ 		   u8 port_num, int port_modify_mask,
+ 		   struct ib_port_modify *port_modify);
+ 
++#if LINUX_VERSION_CODE > KERNEL_VERSION (2, 6, 18)
+ int ib_find_gid(struct ib_device *device, union ib_gid *gid,
+ 		enum ib_gid_type gid_type, struct net *net,
+ 		int if_index, u8 *port_num, u16 *index);
++#endif
+ 
+ int ib_find_pkey(struct ib_device *device,
+ 		 u8 port_num, u16 pkey, u16 *index);
+@@ -2894,7 +2901,11 @@ static inline int ib_dma_mapping_error(s
+ {
+ 	if (dev->dma_ops)
+ 		return dev->dma_ops->mapping_error(dev, dma_addr);
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+ 	return dma_mapping_error(dev->dma_device, dma_addr);
++#else
++	return dma_mapping_error(dma_addr);
++#endif
+ }
+ 
+ /**
+@@ -3609,11 +3620,15 @@ int ib_query_mkey(struct ib_mr *mr, u64
+  */
+ static inline int ib_is_virtfn(struct ib_device *ibdev)
+ {
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+ 	struct pci_dev *pdev;
+ 
+ 	pdev = container_of(ibdev->dma_device, struct pci_dev, dev);
+ 
+ 	return !pdev->is_physfn;
++#else
++	return 0;
++#endif
+ }
+ 
+ /**

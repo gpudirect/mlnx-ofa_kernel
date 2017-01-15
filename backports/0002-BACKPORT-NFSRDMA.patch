@@ -1,0 +1,629 @@
+From: Vladimir Sokolovsky <vlad@mellanox.com>
+Subject: [PATCH] BACKPORT: NFSRDMA
+
+Signed-off-by: Vladimir Sokolovsky <vlad@mellanox.com>
+---
+ net/sunrpc/xprtrdma/rpc_rdma.c           | 20 +++++++-
+ net/sunrpc/xprtrdma/svc_rdma_recvfrom.c  | 70 +++++++++++++++++++++++++-
+ net/sunrpc/xprtrdma/svc_rdma_sendto.c    | 86 ++++++++++++++++++++++++++++++++
+ net/sunrpc/xprtrdma/svc_rdma_transport.c | 18 +++++++
+ net/sunrpc/xprtrdma/transport.c          | 36 +++++++++++--
+ net/sunrpc/xprtrdma/verbs.c              |  8 +--
+ net/sunrpc/xprtrdma/xprt_rdma.h          |  2 +
+ 7 files changed, 228 insertions(+), 12 deletions(-)
+
+--- a/net/sunrpc/xprtrdma/rpc_rdma.c
++++ b/net/sunrpc/xprtrdma/rpc_rdma.c
+@@ -49,11 +49,11 @@
+ 
+ #include <linux/highmem.h>
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ # define RPCDBG_FACILITY	RPCDBG_TRANS
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ static const char transfertypes[][12] = {
+ 	"pure inline",	/* no chunks */
+ 	" read chunk",	/* some argument via rdma read */
+@@ -361,9 +361,17 @@ rpcrdma_inline_pullup(struct rpc_rqst *r
+ 			curlen = copy_len;
+ 		dprintk("RPC:       %s: page %d destp 0x%p len %d curlen %d\n",
+ 			__func__, i, destp, copy_len, curlen);
++#ifdef HAVE_KMAP_ATOMIC_1_PARAM
+ 		srcp = kmap_atomic(ppages[i]);
++#else
++		srcp = kmap_atomic(ppages[i], KM_SKB_SUNRPC_DATA);
++#endif
+ 		memcpy(destp, srcp+page_base, curlen);
++#ifdef HAVE_KMAP_ATOMIC_1_PARAM
+ 		kunmap_atomic(srcp);
++#else
++		kunmap_atomic(srcp, KM_SKB_SUNRPC_DATA);
++#endif
+ 		rqst->rq_svec[0].iov_len += curlen;
+ 		destp += curlen;
+ 		copy_len -= curlen;
+@@ -649,10 +657,18 @@ rpcrdma_inline_fixup(struct rpc_rqst *rq
+ 			dprintk("RPC:       %s: page %d"
+ 				" srcp 0x%p len %d curlen %d\n",
+ 				__func__, i, srcp, copy_len, curlen);
++#ifdef HAVE_KMAP_ATOMIC_1_PARAM
+ 			destp = kmap_atomic(ppages[i]);
++#else
++			destp = kmap_atomic(ppages[i], KM_SKB_SUNRPC_DATA);
++#endif
+ 			memcpy(destp + page_base, srcp, curlen);
+ 			flush_dcache_page(ppages[i]);
++#ifdef HAVE_KMAP_ATOMIC_1_PARAM
+ 			kunmap_atomic(destp);
++#else
++			kunmap_atomic(destp, KM_SKB_SUNRPC_DATA);
++#endif
+ 			srcp += curlen;
+ 			copy_len -= curlen;
+ 			if (copy_len == 0)
+--- a/net/sunrpc/xprtrdma/svc_rdma_recvfrom.c
++++ b/net/sunrpc/xprtrdma/svc_rdma_recvfrom.c
+@@ -93,7 +93,11 @@ static void rdma_build_arg_xdr(struct sv
+ 		sge_no++;
+ 	}
+ 	rqstp->rq_respages = &rqstp->rq_pages[sge_no];
++#ifdef HAVE_RQ_NEXT_PAGE
+ 	rqstp->rq_next_page = rqstp->rq_respages + 1;
++#else
++	rqstp->rq_resused = 0;
++#endif
+ 
+ 	/* We should never run out of SGE because the limit is defined to
+ 	 * support the max allowed RPC data length
+@@ -136,7 +140,10 @@ typedef int (*rdma_reader_fn)(struct svc
+ 			      int last);
+ 
+ /* Issue an RDMA_READ using the local lkey to map the data sink */
+-static int rdma_read_chunk_lcl(struct svcxprt_rdma *xprt,
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
++static
++#endif
++int rdma_read_chunk_lcl(struct svcxprt_rdma *xprt,
+ 			       struct svc_rqst *rqstp,
+ 			       struct svc_rdma_op_ctxt *head,
+ 			       int *page_no,
+@@ -144,7 +151,11 @@ static int rdma_read_chunk_lcl(struct sv
+ 			       u32 rs_handle,
+ 			       u32 rs_length,
+ 			       u64 rs_offset,
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 			       int last)
++#else
++			       bool last)
++#endif
+ {
+ 	struct ib_send_wr read_wr;
+ 	int pages_needed = PAGE_ALIGN(*page_offset + rs_length) >> PAGE_SHIFT;
+@@ -168,7 +179,9 @@ static int rdma_read_chunk_lcl(struct sv
+ 		if (!pg_off)
+ 			head->count++;
+ 		rqstp->rq_respages = &rqstp->rq_arg.pages[pg_no+1];
++#ifdef HAVE_RQ_NEXT_PAGE
+ 		rqstp->rq_next_page = rqstp->rq_respages + 1;
++#endif
+ 		ctxt->sge[pno].addr =
+ 			ib_dma_map_page(xprt->sc_cm_id->device,
+ 					head->arg.pages[pg_no], pg_off,
+@@ -229,7 +242,10 @@ static int rdma_read_chunk_lcl(struct sv
+ }
+ 
+ /* Issue an RDMA_READ using an FRMR to map the data sink */
+-static int rdma_read_chunk_frmr(struct svcxprt_rdma *xprt,
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
++static
++#endif
++int rdma_read_chunk_frmr(struct svcxprt_rdma *xprt,
+ 				struct svc_rqst *rqstp,
+ 				struct svc_rdma_op_ctxt *head,
+ 				int *page_no,
+@@ -237,7 +253,11 @@ static int rdma_read_chunk_frmr(struct s
+ 				u32 rs_handle,
+ 				u32 rs_length,
+ 				u64 rs_offset,
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 				int last)
++#else
++				bool last)
++#endif
+ {
+ 	struct ib_send_wr read_wr;
+ 	struct ib_send_wr inv_wr;
+@@ -273,7 +293,9 @@ static int rdma_read_chunk_frmr(struct s
+ 		if (!pg_off)
+ 			head->count++;
+ 		rqstp->rq_respages = &rqstp->rq_arg.pages[pg_no+1];
++#ifdef HAVE_RQ_NEXT_PAGE
+ 		rqstp->rq_next_page = rqstp->rq_respages + 1;
++#endif
+ 		frmr->page_list->page_list[pno] =
+ 			ib_dma_map_page(xprt->sc_cm_id->device,
+ 					head->arg.pages[pg_no], 0,
+@@ -365,24 +387,50 @@ static int rdma_read_chunk_frmr(struct s
+ 	return ret;
+ }
+ 
++#ifndef HAVE_SVC_RDMA_RCL_CHUNK_COUNTS
++static unsigned int
++rdma_rcl_chunk_count(struct rpcrdma_read_chunk *ch)
++{
++	unsigned int count;
++
++	for (count = 0; ch->rc_discrim != xdr_zero; ch++)
++		count++;
++	return count;
++}
++#endif
++
+ static int rdma_read_chunks(struct svcxprt_rdma *xprt,
+ 			    struct rpcrdma_msg *rmsgp,
+ 			    struct svc_rqst *rqstp,
+ 			    struct svc_rdma_op_ctxt *head)
+ {
++#ifdef HAVE_SVC_RDMA_RCL_CHUNK_COUNTS
+ 	int page_no, ch_count, ret;
++#else
++	int page_no, ret;
++#endif
+ 	struct rpcrdma_read_chunk *ch;
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 	u32 page_offset, byte_count;
+ 	u64 rs_offset;
+ 	rdma_reader_fn reader;
++#else
++	u32 handle, page_offset, byte_count;
++	u64 rs_offset;
++	bool last;
++#endif
+ 
+ 	/* If no read list is present, return 0 */
+ 	ch = svc_rdma_get_read_chunk(rmsgp);
+ 	if (!ch)
+ 		return 0;
+ 
++#ifdef HAVE_SVC_RDMA_RCL_CHUNK_COUNTS
+ 	svc_rdma_rcl_chunk_counts(ch, &ch_count, &byte_count);
+ 	if (ch_count > RPCSVC_MAXPAGES)
++#else
++	if (rdma_rcl_chunk_count(ch) > RPCSVC_MAXPAGES)
++#endif
+ 		return -EINVAL;
+ 
+ 	/* The request is completed when the RDMA_READs complete. The
+@@ -398,27 +446,43 @@ static int rdma_read_chunks(struct svcxp
+ 	head->arg.len = rqstp->rq_arg.len;
+ 	head->arg.buflen = rqstp->rq_arg.buflen;
+ 
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 	/* Use FRMR if supported */
+ 	if (xprt->sc_dev_caps & SVCRDMA_DEVCAP_FAST_REG)
+ 		reader = rdma_read_chunk_frmr;
+ 	else
+ 		reader = rdma_read_chunk_lcl;
++#endif
+ 
+ 	page_no = 0; page_offset = 0;
+ 	for (ch = (struct rpcrdma_read_chunk *)&rmsgp->rm_body.rm_chunks[0];
+ 	     ch->rc_discrim != 0; ch++) {
+ 
++#ifdef HAVE_SVCXPRT_RDMA_SC_READER
++		handle = be32_to_cpu(ch->rc_target.rs_handle);
++		byte_count = be32_to_cpu(ch->rc_target.rs_length);
++#endif
+ 		xdr_decode_hyper((__be32 *)&ch->rc_target.rs_offset,
+ 				 &rs_offset);
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 		byte_count = ntohl(ch->rc_target.rs_length);
++#endif
+ 
+ 		while (byte_count > 0) {
++#ifndef HAVE_SVCXPRT_RDMA_SC_READER
+ 			ret = reader(xprt, rqstp, head,
+ 				     &page_no, &page_offset,
+ 				     ntohl(ch->rc_target.rs_handle),
+ 				     byte_count, rs_offset,
+ 				     ((ch+1)->rc_discrim == 0) /* last */
+ 				     );
++#else
++			last = (ch + 1)->rc_discrim == xdr_zero;
++			ret = xprt->sc_reader(xprt, rqstp, head,
++					      &page_no, &page_offset,
++					      handle, byte_count,
++					      rs_offset, last);
++#endif
+ 			if (ret < 0)
+ 				goto err;
+ 			byte_count -= ret;
+@@ -483,7 +547,9 @@ static int rdma_read_complete(struct svc
+ 
+ 	/* rq_respages starts after the last arg page */
+ 	rqstp->rq_respages = &rqstp->rq_arg.pages[page_no];
++#ifdef HAVE_RQ_NEXT_PAGE
+ 	rqstp->rq_next_page = rqstp->rq_respages + 1;
++#endif
+ 
+ 	/* Rebuild rq_arg head and tail. */
+ 	rqstp->rq_arg.head[0] = head->arg.head[0];
+--- a/net/sunrpc/xprtrdma/svc_rdma_sendto.c
++++ b/net/sunrpc/xprtrdma/svc_rdma_sendto.c
+@@ -133,6 +133,80 @@ static dma_addr_t dma_map_xdr(struct svc
+ 	return dma_addr;
+ }
+ 
++#ifndef HAVE_SVC_RDMA_GET_WRITE_ARRAY
++/* Returns the address of the first read chunk or <nul> if no read chunk
++ * is present
++ */
++struct rpcrdma_read_chunk *
++svc_rdma_get_read_chunk(struct rpcrdma_msg *rmsgp)
++{
++	struct rpcrdma_read_chunk *ch =
++		(struct rpcrdma_read_chunk *)&rmsgp->rm_body.rm_chunks[0];
++
++	if (ch->rc_discrim == xdr_zero)
++		return NULL;
++	return ch;
++}
++
++/* Returns the address of the first read write array element or <nul>
++ * if no write array list is present
++ */
++static struct rpcrdma_write_array *
++svc_rdma_get_write_array(struct rpcrdma_msg *rmsgp)
++{
++	if (rmsgp->rm_body.rm_chunks[0] != xdr_zero ||
++	    rmsgp->rm_body.rm_chunks[1] == xdr_zero)
++		return NULL;
++	return (struct rpcrdma_write_array *)&rmsgp->rm_body.rm_chunks[1];
++}
++
++/* Returns the address of the first reply array element or <nul> if no
++ * reply array is present
++ */
++static struct rpcrdma_write_array *
++svc_rdma_get_reply_array(struct rpcrdma_msg *rmsgp)
++{
++	struct rpcrdma_read_chunk *rch;
++	struct rpcrdma_write_array *wr_ary;
++	struct rpcrdma_write_array *rp_ary;
++
++	/* XXX: Need to fix when reply chunk may occur with read list
++	 *	and/or write list.
++	 */
++	if (rmsgp->rm_body.rm_chunks[0] != xdr_zero ||
++	    rmsgp->rm_body.rm_chunks[1] != xdr_zero)
++		return NULL;
++
++	rch = svc_rdma_get_read_chunk(rmsgp);
++	if (rch) {
++		while (rch->rc_discrim != xdr_zero)
++			rch++;
++
++		/* The reply chunk follows an empty write array located
++		 * at 'rc_position' here. The reply array is at rc_target.
++		 */
++		rp_ary = (struct rpcrdma_write_array *)&rch->rc_target;
++		goto found_it;
++	}
++
++	wr_ary = svc_rdma_get_write_array(rmsgp);
++	if (wr_ary) {
++		int chunk = be32_to_cpu(wr_ary->wc_nchunks);
++
++		rp_ary = (struct rpcrdma_write_array *)
++			 &wr_ary->wc_array[chunk].wc_target.rs_length;
++		goto found_it;
++	}
++
++	/* No read list, no write list */
++	rp_ary = (struct rpcrdma_write_array *)&rmsgp->rm_body.rm_chunks[2];
++
++ found_it:
++	if (rp_ary->wc_discrim == xdr_zero)
++		return NULL;
++	return rp_ary;
++}
++#endif
+ /* Assumptions:
+  * - The specified write_len can be represented in sc_max_sge * PAGE_SIZE
+  */
+@@ -375,7 +449,9 @@ static int send_reply(struct svcxprt_rdm
+ 	int sge_no;
+ 	int sge_bytes;
+ 	int page_no;
++#ifdef HAVE_RQ_NEXT_PAGE
+ 	int pages;
++#endif
+ 	int ret;
+ 
+ 	/* Post a recv buffer to handle another request. */
+@@ -427,8 +503,12 @@ static int send_reply(struct svcxprt_rdm
+ 	 * respages array. They are our pages until the I/O
+ 	 * completes.
+ 	 */
++#ifdef HAVE_RQ_NEXT_PAGE
+ 	pages = rqstp->rq_next_page - rqstp->rq_respages;
+ 	for (page_no = 0; page_no < pages; page_no++) {
++#else
++	for (page_no = 0; page_no < rqstp->rq_resused; page_no++) {
++#endif
+ 		ctxt->pages[page_no+1] = rqstp->rq_respages[page_no];
+ 		ctxt->count++;
+ 		rqstp->rq_respages[page_no] = NULL;
+@@ -440,7 +520,9 @@ static int send_reply(struct svcxprt_rdm
+ 		if (page_no+1 >= sge_no)
+ 			ctxt->sge[page_no+1].length = 0;
+ 	}
++#ifdef HAVE_RQ_NEXT_PAGE
+ 	rqstp->rq_next_page = rqstp->rq_respages + 1;
++#endif
+ 
+ 	BUG_ON(sge_no > rdma->sc_max_sge);
+ 	memset(&send_wr, 0, sizeof send_wr);
+@@ -509,7 +591,11 @@ int svc_rdma_sendto(struct svc_rqst *rqs
+ 	inline_bytes = rqstp->rq_res.len;
+ 
+ 	/* Create the RDMA response header */
++#ifdef HAVE_SVC_RDMA_GET_PAGE
+ 	res_page = svc_rdma_get_page();
++#else
++	res_page = alloc_page(GFP_KERNEL | __GFP_NOFAIL);
++#endif
+ 	rdma_resp = page_address(res_page);
+ 	reply_ary = svc_rdma_get_reply_array(rdma_argp);
+ 	if (reply_ary)
+--- a/net/sunrpc/xprtrdma/svc_rdma_transport.c
++++ b/net/sunrpc/xprtrdma/svc_rdma_transport.c
+@@ -66,7 +66,9 @@ static void dto_tasklet_func(unsigned lo
+ static void svc_rdma_detach(struct svc_xprt *xprt);
+ static void svc_rdma_free(struct svc_xprt *xprt);
+ static int svc_rdma_has_wspace(struct svc_xprt *xprt);
++#ifdef HAVE_XPO_SECURE_PORT
+ static int svc_rdma_secure_port(struct svc_rqst *);
++#endif
+ static void rq_cq_reap(struct svcxprt_rdma *xprt);
+ static void sq_cq_reap(struct svcxprt_rdma *xprt);
+ 
+@@ -84,7 +86,9 @@ static struct svc_xprt_ops svc_rdma_ops
+ 	.xpo_prep_reply_hdr = svc_rdma_prep_reply_hdr,
+ 	.xpo_has_wspace = svc_rdma_has_wspace,
+ 	.xpo_accept = svc_rdma_accept,
++#ifdef HAVE_XPO_SECURE_PORT
+ 	.xpo_secure_port = svc_rdma_secure_port,
++#endif
+ };
+ 
+ struct svc_xprt_class svc_rdma_class = {
+@@ -92,7 +96,9 @@ struct svc_xprt_class svc_rdma_class = {
+ 	.xcl_owner = THIS_MODULE,
+ 	.xcl_ops = &svc_rdma_ops,
+ 	.xcl_max_payload = RPCSVC_MAXPAYLOAD_RDMA,
++#ifdef HAVE_XCL_IDENT
+ 	.xcl_ident = XPRT_TRANSPORT_RDMA,
++#endif
+ };
+ 
+ struct svc_rdma_op_ctxt *svc_rdma_get_context(struct svcxprt_rdma *xprt)
+@@ -461,7 +467,11 @@ static struct svcxprt_rdma *rdma_create_
+ 
+ 	if (!cma_xprt)
+ 		return NULL;
++#ifdef HAVE_SVC_XPRT_INIT_4_PARAMS
+ 	svc_xprt_init(&init_net, &svc_rdma_class, &cma_xprt->sc_xprt, serv);
++#else
++	svc_xprt_init(&svc_rdma_class, &cma_xprt->sc_xprt, serv);
++#endif
+ 	INIT_LIST_HEAD(&cma_xprt->sc_accept_q);
+ 	INIT_LIST_HEAD(&cma_xprt->sc_dto_q);
+ 	INIT_LIST_HEAD(&cma_xprt->sc_rq_dto_q);
+@@ -970,10 +980,16 @@ static struct svc_xprt *svc_rdma_accept(
+ 	 * NB:	iWARP requires remote write access for the data sink
+ 	 *	of an RDMA_READ. IB does not.
+ 	 */
++#ifdef HAVE_SVCXPRT_RDMA_SC_READER
++	newxprt->sc_reader = rdma_read_chunk_lcl;
++#endif
+ 	if (devattr.device_cap_flags & IB_DEVICE_MEM_MGT_EXTENSIONS) {
+ 		newxprt->sc_frmr_pg_list_len =
+ 			devattr.max_fast_reg_page_list_len;
+ 		newxprt->sc_dev_caps |= SVCRDMA_DEVCAP_FAST_REG;
++#ifdef HAVE_SVCXPRT_RDMA_SC_READER
++		newxprt->sc_reader = rdma_read_chunk_frmr;
++#endif
+ 	}
+ 
+ 	/*
+@@ -1205,10 +1221,12 @@ static int svc_rdma_has_wspace(struct sv
+ 	return 1;
+ }
+ 
++#ifdef HAVE_XPO_SECURE_PORT
+ static int svc_rdma_secure_port(struct svc_rqst *rqstp)
+ {
+ 	return 1;
+ }
++#endif
+ 
+ /*
+  * Attempt to register the kvec representing the RPC memory with the
+--- a/net/sunrpc/xprtrdma/transport.c
++++ b/net/sunrpc/xprtrdma/transport.c
+@@ -51,11 +51,13 @@
+ #include <linux/init.h>
+ #include <linux/slab.h>
+ #include <linux/seq_file.h>
++#ifdef HAVE_SUNRPC_ADDR_H
+ #include <linux/sunrpc/addr.h>
++#endif
+ 
+ #include "xprt_rdma.h"
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ # define RPCDBG_FACILITY	RPCDBG_TRANS
+ #endif
+ 
+@@ -75,7 +77,7 @@ static unsigned int xprt_rdma_inline_wri
+ static unsigned int xprt_rdma_memreg_strategy = RPCRDMA_FRMR;
+ 		int xprt_rdma_pad_optimize = 1;
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ 
+ static unsigned int min_slot_table_size = RPCRDMA_MIN_SLOT_TABLE;
+ static unsigned int max_slot_table_size = RPCRDMA_MAX_SLOT_TABLE;
+@@ -277,8 +279,14 @@ xprt_setup_rdma(struct xprt_create *args
+ 		return ERR_PTR(-EBADF);
+ 	}
+ 
++#if defined(HAVE_XPRT_ALLOC_HAS_3_PARAMS) || defined(HAVE_XPRT_ALLOC_HAS_4_PARAMS)
+ 	xprt = xprt_alloc(args->net, sizeof(struct rpcrdma_xprt),
++#else
++	xprt = xprt_alloc(sizeof(struct rpcrdma_xprt),
++#endif
++#ifdef HAVE_XPRT_ALLOC_HAS_4_PARAMS
+ 			xprt_rdma_slot_table_entries,
++#endif
+ 			xprt_rdma_slot_table_entries);
+ 	if (xprt == NULL) {
+ 		dprintk("RPC:       %s: couldn't allocate rpcrdma_xprt\n",
+@@ -426,8 +434,15 @@ xprt_rdma_set_port(struct rpc_xprt *xprt
+ }
+ 
+ static void
++#ifdef HAVE_RPC_XPRT_OPS_CONNECT_2_PARAMS
+ xprt_rdma_connect(struct rpc_xprt *xprt, struct rpc_task *task)
++#else
++xprt_rdma_connect(struct rpc_task *task)
++#endif
+ {
++#ifndef HAVE_RPC_XPRT_OPS_CONNECT_2_PARAMS
++	struct rpc_xprt *xprt = task->tk_xprt;
++#endif
+ 	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
+ 
+ 	if (r_xprt->rx_ep.rep_connected != 0) {
+@@ -463,15 +478,22 @@ xprt_rdma_allocate(struct rpc_task *task
+ 	struct rpcrdma_regbuf *rb;
+ 	struct rpcrdma_req *req;
+ 	size_t min_size;
++#ifdef __GFP_MEMALLOC
+ 	gfp_t flags;
++#else
++	gfp_t flags = task->tk_flags & RPC_TASK_SWAPPER ?
++		GFP_ATOMIC : GFP_NOFS;
++#endif
+ 
+ 	req = rpcrdma_buffer_get(&r_xprt->rx_buf);
+ 	if (req == NULL)
+ 		return NULL;
+ 
++#ifdef __GFP_MEMALLOC
+ 	flags = GFP_NOIO | __GFP_NOWARN;
+ 	if (RPC_IS_SWAPPER(task))
+ 		flags = __GFP_MEMALLOC | GFP_NOWAIT | __GFP_NOWARN;
++#endif
+ 
+ 	if (req->rl_rdmabuf == NULL)
+ 		goto out_rdmabuf;
+@@ -603,7 +625,11 @@ xprt_rdma_send_request(struct rpc_task *
+ 	if (rpcrdma_ep_post(&r_xprt->rx_ia, &r_xprt->rx_ep, req))
+ 		goto drop_connection;
+ 
++#ifdef HAVE_RQ_XMIT_BYTES_SENT
+ 	rqst->rq_xmit_bytes_sent += rqst->rq_snd_buf.len;
++#else
++	task->tk_bytes_sent += rqst->rq_snd_buf.len;
++#endif
+ 	rqst->rq_bytes_sent = 0;
+ 	return 0;
+ 
+@@ -660,7 +686,9 @@ static void xprt_rdma_print_stats(struct
+ static struct rpc_xprt_ops xprt_rdma_procs = {
+ 	.reserve_xprt		= xprt_reserve_xprt_cong,
+ 	.release_xprt		= xprt_release_xprt_cong, /* sunrpc/xprt.c */
++#ifdef HAVE_XPRT_ALLOC_SLOT
+ 	.alloc_slot		= xprt_alloc_slot,
++#endif
+ 	.release_request	= xprt_release_rqst_cong,       /* ditto */
+ 	.set_retrans_timeout	= xprt_set_retrans_timeout_def, /* ditto */
+ 	.rpcbind		= rpcb_getport_async,	/* sunrpc/rpcb_clnt.c */
+@@ -687,7 +715,7 @@ static void __exit xprt_rdma_cleanup(voi
+ 	int rc;
+ 
+ 	dprintk("RPCRDMA Module Removed, deregister RPC RDMA transport\n");
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ 	if (sunrpc_table_header) {
+ 		unregister_sysctl_table(sunrpc_table_header);
+ 		sunrpc_table_header = NULL;
+@@ -718,7 +746,7 @@ static int __init xprt_rdma_init(void)
+ 	dprintk("\tPadding %d\n\tMemreg %d\n",
+ 		xprt_rdma_inline_write_padding, xprt_rdma_memreg_strategy);
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ 	if (!sunrpc_table_header)
+ 		sunrpc_table_header = register_sysctl_table(sunrpc_table);
+ #endif
+--- a/net/sunrpc/xprtrdma/verbs.c
++++ b/net/sunrpc/xprtrdma/verbs.c
+@@ -58,7 +58,7 @@
+  * Globals/Macros
+  */
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ # define RPCDBG_FACILITY	RPCDBG_TRANS
+ #endif
+ 
+@@ -392,7 +392,7 @@ rpcrdma_flush_cqs(struct rpcrdma_ep *ep)
+ 		rpcrdma_sendcq_process_wc(&wc);
+ }
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ static const char * const conn[] = {
+ 	"address resolved",
+ 	"address error",
+@@ -423,7 +423,7 @@ rpcrdma_conn_upcall(struct rdma_cm_id *i
+ 	struct rpcrdma_xprt *xprt = id->context;
+ 	struct rpcrdma_ia *ia = &xprt->rx_ia;
+ 	struct rpcrdma_ep *ep = &xprt->rx_ep;
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ 	struct sockaddr_in *addr = (struct sockaddr_in *) &ep->rep_remote_addr;
+ #endif
+ 	struct ib_qp_attr *attr = &ia->ri_qp_attr;
+@@ -487,7 +487,7 @@ connected:
+ 		break;
+ 	}
+ 
+-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
++#if IS_ENABLED(CONFIG_SUNRPC_DEBUG) || defined(RPC_DEBUG)
+ 	if (connstate == 1) {
+ 		int ird = attr->max_dest_rd_atomic;
+ 		int tird = ep->rep_remote_cma.responder_resources;
+--- a/net/sunrpc/xprtrdma/xprt_rdma.h
++++ b/net/sunrpc/xprtrdma/xprt_rdma.h
+@@ -429,10 +429,12 @@ extern struct kmem_cache *svc_rdma_ctxt_
+ /* Workqueue created in svc_rdma.c */
+ extern struct workqueue_struct *svc_rdma_wq;
+ 
++#ifndef RPCSVC_MAXPAYLOAD_RDMA
+ #if RPCSVC_MAXPAYLOAD < (RPCRDMA_MAX_DATA_SEGS << PAGE_SHIFT)
+ #define RPCSVC_MAXPAYLOAD_RDMA RPCSVC_MAXPAYLOAD
+ #else
+ #define RPCSVC_MAXPAYLOAD_RDMA (RPCRDMA_MAX_DATA_SEGS << PAGE_SHIFT)
+ #endif
++#endif
+ 
+ #endif				/* _LINUX_SUNRPC_XPRT_RDMA_H */
