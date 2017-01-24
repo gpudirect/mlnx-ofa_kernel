@@ -416,6 +416,9 @@ struct mlx5_ib_cq {
 	int			cqe_size;
 	struct list_head		list_send_qp;
 	struct list_head		list_recv_qp;
+
+        atomic_t                invalidated;
+        struct completion       invalidation_comp;
 };
 
 struct mlx5_ib_srq {

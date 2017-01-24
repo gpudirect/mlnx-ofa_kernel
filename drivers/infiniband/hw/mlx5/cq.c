@@ -710,6 +710,37 @@ static int alloc_cq_buf(struct mlx5_ib_dev *dev, struct mlx5_ib_cq_buf *buf,
 	return 0;
 }
 
+static void mlx5_cq_invalidate_umem(void *invalidation_cookie,
+                                    struct ib_umem *umem,
+                                    unsigned long addr, size_t size)
+{
+
+	struct mlx5_ib_cq *cq = (struct mlx5_ib_cq *)invalidation_cookie;
+
+	printk(KERN_ERR "WARN  mlx5_cq_invalidate_umem cq=%p umem=%p\n", cq, umem);
+
+	/* This function is called under client peer lock so its resources are race protected */
+	if (atomic_inc_return(&cq->invalidated) > 1) {
+		printk(KERN_ERR "invalidation is already in-flight\n");
+		umem->invalidation_ctx->inflight_invalidation = 1;
+		return;
+	}
+
+        if (umem != cq->buf.umem) {
+            printk(KERN_ERR "ERR unexpected cq->uem=%p != umem=%p\n", cq->buf.umem, umem);
+        } else {
+            cq->buf.umem = NULL;
+        }
+
+	umem->invalidation_ctx->peer_callback = 1;
+	// TODO:
+	// - free MTTs related, etc..
+	// - make it ODP friendly ?
+	printk(KERN_ERR "releasing umem=%p\n", umem);
+	ib_umem_release(umem);
+	complete(&cq->invalidation_comp);
+}
+
 static int create_cq_user(struct mlx5_ib_dev *dev, struct ib_udata *udata,
 			  struct ib_ucontext *context, struct mlx5_ib_cq *cq,
 			  int entries, struct mlx5_create_cq_mbox_in **cqb,
@@ -750,13 +781,16 @@ static int create_cq_user(struct mlx5_ib_dev *dev, struct ib_udata *udata,
 
 	*cqe_size = ucmd.cqe_size;
 
-	cq->buf.umem = ib_umem_get(context, ucmd.buf_addr,
-				   entries * ucmd.cqe_size,
-				   IB_ACCESS_LOCAL_WRITE, 1);
+	cq->buf.umem = ib_umem_get_ex(context, ucmd.buf_addr,
+				      entries * ucmd.cqe_size,
+                                      IB_ACCESS_LOCAL_WRITE, 1, 1);
 	if (IS_ERR(cq->buf.umem)) {
 		err = PTR_ERR(cq->buf.umem);
 		return err;
 	}
+
+	if (cq->buf.umem->ib_peer_mem)
+		printk(KERN_ERR "INFO create_cq_user got peer_mem, cq=%p umem=%p\n", cq, cq->buf.umem);
 
 	err = mlx5_ib_db_map_user(to_mucontext(context), ucmd.db_addr,
 				  &cq->db);
@@ -807,7 +841,8 @@ err_umem:
 static void destroy_cq_user(struct mlx5_ib_cq *cq, struct ib_ucontext *context)
 {
 	mlx5_ib_db_unmap_user(to_mucontext(context), &cq->db);
-	ib_umem_release(cq->buf.umem);
+        if (cq->buf.umem)
+            ib_umem_release(cq->buf.umem);
 }
 
 static void init_cq_buf(struct mlx5_ib_cq *cq, struct mlx5_ib_cq_buf *buf)
@@ -962,6 +997,11 @@ struct ib_cq *mlx5_ib_create_cq(struct ib_device *ibdev,
 			goto err_cmd;
 		}
 
+	atomic_set(&cq->invalidated, 0);
+	if (cq->buf.umem && cq->buf.umem->ib_peer_mem) {
+		init_completion(&cq->invalidation_comp);
+		ib_umem_activate_invalidation_notifier(cq->buf.umem, mlx5_cq_invalidate_umem, cq);
+	}
 
 	kvfree(cqb);
 	return &cq->ibcq;
