@@ -657,9 +657,13 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 		peer_mem_client =  ib_get_peer_client(context, addr, size,
 					&umem->peer_mem_client_context,
 					&umem->peer_mem_srcu_key);
-		if (peer_mem_client)
-			return peer_umem_get(peer_mem_client, umem, addr,
-					dmasync, invalidation_supported);
+		if (peer_mem_client) {
+                        struct ib_umem *ret = peer_umem_get(peer_mem_client, umem, addr,
+                                                            dmasync, invalidation_supported);
+                        if (IS_ERR(ret))
+                                printk(KERN_ERR "ib_umem_get_ex: error %ld in umem_get\n", PTR_ERR(ret));
+                        return ret;
+                }
 	}
 
 	if (access & IB_ACCESS_ON_DEMAND) {
