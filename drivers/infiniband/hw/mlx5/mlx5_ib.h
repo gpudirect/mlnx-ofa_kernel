@@ -332,6 +332,9 @@ struct mlx5_ib_qp {
 	/* Store signature errors */
 	bool			signature_en;
 
+	atomic_t                invalidated;
+	struct completion       invalidation_comp;
+
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 	/*
 	 * A flag that is true for QP's that are in a state that doesn't

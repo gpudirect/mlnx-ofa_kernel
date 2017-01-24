@@ -850,6 +850,36 @@ err_umem:
 	return err;
 }
 
+static void mlx5_qp_invalidate_umem(void *invalidation_cookie,
+                                    struct ib_umem *umem,
+                                    unsigned long addr, size_t size)
+{
+	struct mlx5_ib_qp *qp = (struct mlx5_ib_qp *)invalidation_cookie;
+
+	printk(KERN_ERR "WARN  mlx5_qp_invalidate_umem qp=%p umem=%p\n", qp, umem);
+
+	/* This function is called under client peer lock so its resources are race protected */
+	if (atomic_inc_return(&qp->invalidated) > 1) {
+		printk(KERN_ERR "invalidation is already in-flight\n");
+		umem->invalidation_ctx->inflight_invalidation = 1;
+		return;
+	}
+
+        if (umem != qp->umem) {
+            printk(KERN_ERR "ERR unexpected qp->umem=%p != umem=%p\n", qp->umem, umem);
+        } else {
+            qp->umem = NULL;
+        }
+
+	umem->invalidation_ctx->peer_callback = 1;
+	// TODO:
+	// - free MTTs related, etc..
+	// - make it ODP friendly ?
+	printk(KERN_ERR "releasing umem=%p\n", umem);
+	ib_umem_release(umem);
+	complete(&qp->invalidation_comp);
+}
+
 static int create_user_qp(struct mlx5_ib_dev *dev, struct ib_pd *pd,
 			  struct mlx5_ib_qp *qp, struct ib_udata *udata,
 			  struct ib_exp_qp_init_attr *attr,
@@ -927,13 +957,17 @@ static int create_user_qp(struct mlx5_ib_dev *dev, struct ib_pd *pd,
 		goto err_uuar;
 
 	if (ucmd->buf_addr && qp->buf_size) {
-		qp->umem = ib_umem_get(pd->uobject->context, ucmd->buf_addr,
-				       qp->buf_size, 0, 0);
+		//qp->umem = ib_umem_get(pd->uobject->context, ucmd->buf_addr,
+		//		       qp->buf_size, 0, 0);
+                qp->umem = ib_umem_get_ex(pd->uobject->context, ucmd->buf_addr,
+                                          qp->buf_size, 0, 0, 1);
 		if (IS_ERR(qp->umem)) {
 			mlx5_ib_warn(dev, "umem_get failed\n");
 			err = PTR_ERR(qp->umem);
 			goto err_uuar;
 		}
+                if (qp->umem->ib_peer_mem)
+                        printk(KERN_ERR "INFO create_user_qp got peer_mem, qp=%p umem=%p\n", qp, qp->umem);
 	} else {
 		qp->umem = NULL;
 	}
@@ -1006,6 +1040,12 @@ static int create_user_qp(struct mlx5_ib_dev *dev, struct ib_pd *pd,
 		goto err_unmap;
 	}
 	qp->create_type = MLX5_QP_USER;
+
+	atomic_set(&qp->invalidated, 0);
+	if (qp->umem && qp->umem->ib_peer_mem) {
+		init_completion(&qp->invalidation_comp);
+		ib_umem_activate_invalidation_notifier(qp->umem, mlx5_qp_invalidate_umem, qp);
+	}
 
 	return 0;
 
