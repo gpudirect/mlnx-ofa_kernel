@@ -36,6 +36,7 @@
 #include <rdma/ib_umem.h>
 #include <rdma/ib_verbs.h>
 #include <linux/interval_tree.h>
+#include <rdma/ib_umem_odp_exp.h>
 
 struct umem_odp_node {
 	u64 __subtree_last;
@@ -83,15 +84,9 @@ struct ib_umem_odp {
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 
-enum ib_odp_dma_map_flags {
-	IB_ODP_DMA_MAP_FOR_PREFETCH	= 1 << 0,
-};
-
 int ib_umem_odp_get(struct ib_ucontext *context, struct ib_umem *umem);
 
 void ib_umem_odp_release(struct ib_umem *umem);
-
-int ib_umem_odp_add_statistic_nodes(struct device *dev);
 
 /*
  * The lower 2 bits of the DMA address signal the R/W permissions for
@@ -128,21 +123,6 @@ struct umem_odp_node *rbt_ib_umem_iter_first(struct rb_root *root,
 					     u64 start, u64 last);
 struct umem_odp_node *rbt_ib_umem_iter_next(struct umem_odp_node *node,
 					    u64 start, u64 last);
-
-static inline void ib_umem_odp_account_fault_handled(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.num_page_faults);
-}
-
-static inline void ib_umem_odp_account_prefetch_handled(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.num_prefetches_handled);
-}
-
-static inline void ib_umem_odp_account_invalidations_fault_contentions(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.invalidations_faults_contentions);
-}
 
 static inline int ib_umem_mmu_notifier_retry(struct ib_umem *item,
 					     unsigned long mmu_seq)
@@ -182,11 +162,6 @@ static inline int ib_umem_odp_get(struct ib_ucontext *context,
 }
 
 static inline void ib_umem_odp_release(struct ib_umem *umem) {}
-
-static inline int ib_umem_odp_add_statistic_nodes(struct device *dev)
-{
-	return 0;
-}
 
 #endif /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 

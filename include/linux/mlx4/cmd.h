@@ -35,6 +35,8 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/if_link.h>
+#include <linux/mlx4/device.h>
+#include <linux/netdevice.h>
 
 enum {
 	/* initialization and general commands */
@@ -219,11 +221,42 @@ enum {
 	MLX4_CMD_NATIVE
 };
 
+/*
+ * MLX4_RX_CSUM_MODE_VAL_NON_TCP_UDP -
+ * Receive checksum value is reported in CQE also for non TCP/UDP packets.
+ *
+ * MLX4_RX_CSUM_MODE_L4 -
+ * L4_CSUM bit in CQE, which indicates whether or not L4 checksum
+ * was validated correctly, is supported.
+ *
+ * MLX4_RX_CSUM_MODE_IP_OK_IP_NON_TCP_UDP -
+ * IP_OK CQE's field is supported also for non TCP/UDP IP packets.
+ *
+ * MLX4_RX_CSUM_MODE_MULTI_VLAN -
+ * Receive Checksum offload is supported for packets with more than 2 vlan headers.
+ */
+enum mlx4_rx_csum_mode {
+	MLX4_RX_CSUM_MODE_VAL_NON_TCP_UDP		= 1UL << 0,
+	MLX4_RX_CSUM_MODE_L4				= 1UL << 1,
+	MLX4_RX_CSUM_MODE_IP_OK_IP_NON_TCP_UDP		= 1UL << 2,
+	MLX4_RX_CSUM_MODE_MULTI_VLAN			= 1UL << 3
+};
+
 struct mlx4_config_dev_params {
 	u16	vxlan_udp_dport;
 	u8	rx_csum_flags_port_1;
 	u8	rx_csum_flags_port_2;
 	u16	svlan_tpid;
+};
+
+enum mlx4_en_congestion_control_algorithm {
+	MLX4_CTRL_ALGO_802_1_QAU_REACTION_POINT = 0,
+};
+
+enum mlx4_en_congestion_control_opmod {
+	MLX4_CONGESTION_CONTROL_GET_PARAMS,
+	MLX4_CONGESTION_CONTROL_GET_STATISTICS,
+	MLX4_CONGESTION_CONTROL_SET_PARAMS = 4,
 };
 
 struct mlx4_dev;
@@ -277,8 +310,12 @@ static inline int mlx4_cmd_imm(struct mlx4_dev *dev, u64 in_param, u64 *out_para
 struct mlx4_cmd_mailbox *mlx4_alloc_cmd_mailbox(struct mlx4_dev *dev);
 void mlx4_free_cmd_mailbox(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox);
 
-int mlx4_get_vf_statistics(struct mlx4_dev *dev, int port, int vf,
-			   struct net_device_stats *link_stats);
+int mlx4_get_counter_stats(struct mlx4_dev *dev, int counter_index,
+			   struct mlx4_counter *counter_stats, int reset);
+int mlx4_get_vf_stats(struct mlx4_dev *dev, int port, int vf_idx,
+		      struct ifla_vf_stats *vf_stats);
+int mlx4_get_vf_stats_netdev(struct mlx4_dev *dev, int port, int vf_idx,
+			     struct net_device_stats *vf_stats);
 
 #define MLX4_MAX_VLAN_SET_SIZE	128
 
@@ -287,8 +324,9 @@ int mlx4_set_vf_vlan_next(struct mlx4_dev *dev, int port, int vf, u16 vlan_id);
 int mlx4_reset_vlan_policy(struct mlx4_dev *dev, int port, int vf);
 int mlx4_vlan_index_exists(struct list_head *vlan_list, u16 vlan_id);
 int mlx4_vlan_blocked(struct mlx4_dev *dev, int port, int vf, u16 vlan_id);
+
 u32 mlx4_comm_get_version(void);
-int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u64 mac);
+int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u8 *mac);
 int mlx4_set_vf_vlan(struct mlx4_dev *dev, int port, int vf, u16 vlan,
 		     u8 qos, __be16 proto);
 int mlx4_set_vf_rate(struct mlx4_dev *dev, int port, int vf, int min_tx_rate,

@@ -49,9 +49,7 @@ struct mlx5_db_pgdir {
 };
 
 /* Handling for queue buffers -- we allocate a bunch of memory and
- * register it in a memory region at HCA virtual address 0.  If the
- * requested size is > max_direct, we split the allocation into
- * multiple pages, so we don't require too much contiguous memory.
+ * register it in a memory region at HCA virtual address 0.
  */
 
 static void *mlx5_dma_zalloc_coherent_node(struct mlx5_core_dev *dev,
@@ -72,110 +70,98 @@ static void *mlx5_dma_zalloc_coherent_node(struct mlx5_core_dev *dev,
 	return cpu_handle;
 }
 
-int mlx5_buf_alloc_node(struct mlx5_core_dev *dev, int size, int max_direct,
+int mlx5_buf_alloc_node(struct mlx5_core_dev *dev, int size,
 			struct mlx5_buf *buf, int node)
 {
 	dma_addr_t t;
 
-/* ARM arch does not allow vmap(virt_to_page(x)) operations.
- * In this case, we must allocate 1 contiguous DMA buffer.
- */
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-	max_direct = size;
-#endif
-
 	buf->size = size;
-	if (size <= max_direct) {
-		buf->nbufs        = 1;
-		buf->npages       = 1;
-		buf->page_shift   = (u8)get_order(size) + PAGE_SHIFT;
-		buf->direct.buf   = mlx5_dma_zalloc_coherent_node(dev, size,
-								  &t, node);
-		if (!buf->direct.buf)
-			return -ENOMEM;
+	buf->npages       = 1;
+	buf->page_shift   = (u8)get_order(size) + PAGE_SHIFT;
+	buf->direct.buf   = mlx5_dma_zalloc_coherent_node(dev, size,
+							  &t, node);
+	if (!buf->direct.buf)
+		return -ENOMEM;
 
-		buf->direct.map = t;
+	buf->direct.map = t;
 
-		while (t & ((1 << buf->page_shift) - 1)) {
-			--buf->page_shift;
-			buf->npages *= 2;
-		}
-	} else {
-		int i;
-
-		buf->direct.buf  = NULL;
-		buf->direct.map  = 0;
-		buf->nbufs       = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-		buf->npages      = buf->nbufs;
-		buf->page_shift  = PAGE_SHIFT;
-		buf->page_list   = kcalloc(buf->nbufs, sizeof(*buf->page_list),
-					   GFP_KERNEL);
-		if (!buf->page_list)
-			return -ENOMEM;
-
-		for (i = 0; i < buf->nbufs; i++) {
-			buf->page_list[i].buf =
-				mlx5_dma_zalloc_coherent_node(dev, PAGE_SIZE,
-							      &t, node);
-			if (!buf->page_list[i].buf)
-				goto err_free;
-
-			buf->page_list[i].map = t;
-		}
-
-		if (BITS_PER_LONG == 64) {
-			struct page **pages;
-			pages = kmalloc(sizeof(*pages) * (buf->nbufs + 1),
-					GFP_KERNEL);
-			if (!pages)
-				goto err_free;
-			for (i = 0; i < buf->nbufs; i++)
-				pages[i] = virt_to_page(buf->page_list[i].buf);
-			pages[buf->nbufs] = pages[0];
-			buf->direct.buf = vmap(pages, buf->nbufs + 1, VM_MAP,
-					       PAGE_KERNEL);
-			kfree(pages);
-			if (!buf->direct.buf)
-				goto err_free;
-		}
+	while (t & ((1 << buf->page_shift) - 1)) {
+		--buf->page_shift;
+		buf->npages *= 2;
 	}
 
 	return 0;
-
-err_free:
-	mlx5_buf_free(dev, buf);
-
-	return -ENOMEM;
 }
 
-int mlx5_buf_alloc(struct mlx5_core_dev *dev, int size, int max_direct,
-		   struct mlx5_buf *buf)
+int mlx5_buf_alloc(struct mlx5_core_dev *dev, int size, struct mlx5_buf *buf)
 {
-	return mlx5_buf_alloc_node(dev, size, max_direct,
-				   buf, dev->priv.numa_node);
+	return mlx5_buf_alloc_node(dev, size, buf, dev->priv.numa_node);
 }
 EXPORT_SYMBOL_GPL(mlx5_buf_alloc);
 
 void mlx5_buf_free(struct mlx5_core_dev *dev, struct mlx5_buf *buf)
 {
-	int i;
-
-	if (buf->direct.map)
-		dma_free_coherent(&dev->pdev->dev, buf->size, buf->direct.buf,
-				  buf->direct.map);
-	else {
-		if (BITS_PER_LONG == 64)
-			vunmap(buf->direct.buf);
-
-		for (i = 0; i < buf->nbufs; i++)
-			if (buf->page_list[i].buf)
-				dma_free_coherent(&dev->pdev->dev, PAGE_SIZE,
-						  buf->page_list[i].buf,
-						  buf->page_list[i].map);
-		kfree(buf->page_list);
-	}
+	dma_free_coherent(&dev->pdev->dev, buf->size, buf->direct.buf,
+			  buf->direct.map);
 }
 EXPORT_SYMBOL_GPL(mlx5_buf_free);
+
+int mlx5_frag_buf_alloc_node(struct mlx5_core_dev *dev, int size,
+			     struct mlx5_frag_buf *buf, int node)
+{
+	int i;
+
+	buf->size = size;
+	buf->npages = 1 << get_order(size);
+	buf->page_shift = PAGE_SHIFT;
+	buf->frags = kcalloc(buf->npages, sizeof(struct mlx5_buf_list),
+			     GFP_KERNEL);
+	if (!buf->frags)
+		goto err_out;
+
+	for (i = 0; i < buf->npages; i++) {
+		struct mlx5_buf_list *frag = &buf->frags[i];
+		int frag_sz = min_t(int, size, PAGE_SIZE);
+
+		frag->buf = mlx5_dma_zalloc_coherent_node(dev, frag_sz,
+							  &frag->map, node);
+		if (!frag->buf)
+			goto err_free_buf;
+		if (frag->map & ((1 << buf->page_shift) - 1)) {
+			dma_free_coherent(&dev->pdev->dev, frag_sz,
+					  buf->frags[i].buf, buf->frags[i].map);
+			mlx5_core_warn(dev, "unexpected map alignment: 0x%p, page_shift=%d\n",
+				       (void *)frag->map, buf->page_shift);
+			goto err_free_buf;
+		}
+		size -= frag_sz;
+	}
+
+	return 0;
+
+err_free_buf:
+	while (--i)
+		dma_free_coherent(&dev->pdev->dev, PAGE_SIZE, buf->frags[i].buf,
+				  buf->frags[i].map);
+	kfree(buf->frags);
+err_out:
+	return -ENOMEM;
+}
+
+void mlx5_frag_buf_free(struct mlx5_core_dev *dev, struct mlx5_frag_buf *buf)
+{
+	int size = buf->size;
+	int i;
+
+	for (i = 0; i < buf->npages; i++) {
+		int frag_sz = min_t(int, size, PAGE_SIZE);
+
+		dma_free_coherent(&dev->pdev->dev, frag_sz, buf->frags[i].buf,
+				  buf->frags[i].map);
+		size -= frag_sz;
+	}
+	kfree(buf->frags);
+}
 
 static struct mlx5_db_pgdir *mlx5_alloc_db_pgdir(struct mlx5_core_dev *dev,
 						 int node)
@@ -191,23 +177,22 @@ static struct mlx5_db_pgdir *mlx5_alloc_db_pgdir(struct mlx5_core_dev *dev,
 				sizeof(unsigned long),
 				GFP_KERNEL);
 
-	if (!pgdir->bitmap)
-		goto free_pgdir;
+	if (!pgdir->bitmap) {
+		kfree(pgdir);
+		return NULL;
+	}
 
 	bitmap_fill(pgdir->bitmap, db_per_page);
 
 	pgdir->db_page = mlx5_dma_zalloc_coherent_node(dev, PAGE_SIZE,
 						       &pgdir->db_dma, node);
-	if (!pgdir->db_page)
-		goto free_bitmap;
+	if (!pgdir->db_page) {
+		kfree(pgdir->bitmap);
+		kfree(pgdir);
+		return NULL;
+	}
 
 	return pgdir;
-
-free_bitmap:
-	kfree(pgdir->bitmap);
-free_pgdir:
-	kfree(pgdir);
-	return NULL;
 }
 
 static int mlx5_alloc_db_from_pgdir(struct mlx5_db_pgdir *pgdir,
@@ -296,12 +281,18 @@ void mlx5_fill_page_array(struct mlx5_buf *buf, __be64 *pas)
 	int i;
 
 	for (i = 0; i < buf->npages; i++) {
-		if (buf->direct.map)
-			addr = buf->direct.map + (i << buf->page_shift);
-		else
-			addr = buf->page_list[i].map;
+		addr = buf->direct.map + (i << buf->page_shift);
 
 		pas[i] = cpu_to_be64(addr);
 	}
 }
 EXPORT_SYMBOL_GPL(mlx5_fill_page_array);
+
+void mlx5_fill_page_frag_array(struct mlx5_frag_buf *buf, __be64 *pas)
+{
+	int i;
+
+	for (i = 0; i < buf->npages; i++)
+		pas[i] = cpu_to_be64(buf->frags[i].map);
+}
+EXPORT_SYMBOL_GPL(mlx5_fill_page_frag_array);

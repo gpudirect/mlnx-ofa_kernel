@@ -48,7 +48,6 @@
 #include <scsi/scsi_transport_iscsi.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
-#include <scsi/scsi_eh.h>
 #include <scsi/iser.h>
 
 #include <linux/interrupt.h>
@@ -71,7 +70,7 @@
 
 #define DRV_NAME	"iser"
 #define PFX		DRV_NAME ": "
-#define DRV_VER		"1.8.1"
+#define DRV_VER		"1.6"
 
 #define iser_dbg(fmt, arg...)				 \
 	do {						 \
@@ -105,7 +104,7 @@
 #define ISER_DEF_MAX_SECTORS		1024
 #define ISCSI_ISER_DEF_SG_TABLESIZE	((ISER_DEF_MAX_SECTORS * 512) >> SHIFT_4K)
 /* Maximum support is 8MB I/O size */
-#define ISCSI_ISER_MAX_SG_TABLESIZE	(16384 * 512 >> SHIFT_4K)
+#define ISCSI_ISER_MAX_SG_TABLESIZE	((16384 * 512) >> SHIFT_4K)
 
 #define ISER_DEF_XMIT_CMDS_DEFAULT		512
 #if ISCSI_DEF_XMIT_CMDS_MAX > ISER_DEF_XMIT_CMDS_DEFAULT
@@ -153,15 +152,10 @@
 					 - ISER_MAX_RX_MISC_PDUS) /	\
 					 (1 + ISER_INFLIGHT_DATAOUTS))
 
-#define ISER_WC_BATCH_COUNT   16
 #define ISER_SIGNAL_CMD_COUNT 32
 
-#define ISER_FASTREG_LI_WRID		0xffffffffffffffffULL
-#define ISER_BEACON_WRID		0xfffffffffffffffeULL
-
-/*Constant PDU lengths calculations */
-#define ISER_HEADERS_LEN       (sizeof(struct iser_ctrl) \
-				+ sizeof(struct iscsi_hdr))
+/* Constant PDU lengths calculations */
+#define ISER_HEADERS_LEN	(sizeof(struct iser_ctrl) + sizeof(struct iscsi_hdr))
 
 #define ISER_RECV_DATA_SEG_LEN	128
 #define ISER_RX_PAYLOAD_SIZE	(ISER_HEADERS_LEN + ISER_RECV_DATA_SEG_LEN)
@@ -169,6 +163,14 @@
 
 /* Length of an object name string */
 #define ISER_OBJECT_NAME_SIZE		    64
+
+/* Timeout in milliseconds to wait for rdma_cm events in disconnect
+* flows.
+* This timeout is needed for a workaround in iSER for a bug in the
+* CM layer that doesn't handle CM_DREQ timeouts correctly.
+* TODO: remove this workaround once the CM bug fixed.
+*/
+#define IB_COMPLETION_TMO      4096
 
 enum iser_conn_state {
 	ISER_CONN_INIT,		   /* descriptor allocd, no conn          */
@@ -198,20 +200,13 @@ enum iser_data_dir {
  * @size:         num entries of this sg
  * @data_len:     total beffer byte len
  * @dma_nents:    returned by dma_map_sg
- * @orig_sg:      pointer to the original sg list (in case
- *                we used a copy)
- * @orig_size:    num entris of orig sg list
- * @aligned:      indicate if the data buffer is block aligned
  */
 struct iser_data_buf {
 	struct scatterlist *sg;
-	unsigned int       size;
+	int                size;
 	unsigned long      data_len;
 	unsigned int       dma_nents;
-	struct scatterlist *orig_sg;
-	unsigned int       orig_size;
-	bool               aligned;
-  };
+};
 
 /* fwd declarations */
 struct iser_device;
@@ -247,7 +242,7 @@ enum iser_desc_type {
 #define ISER_MAX_WRS 7
 
 /**
- * struct iser_tx_desc - iSER TX descriptor (for send wr_id)
+ * struct iser_tx_desc - iSER TX descriptor
  *
  * @iser_header:   iser header
  * @iscsi_header:  iscsi header
@@ -271,18 +266,24 @@ struct iser_tx_desc {
 	u64		             dma_addr;
 	struct ib_sge		     tx_sg[2];
 	int                          num_sge;
+	struct ib_cqe		     cqe;
 	bool			     mapped;
 	u8                           wr_idx;
-	struct ib_send_wr            wrs[ISER_MAX_WRS];
+	union iser_wr {
+		struct ib_send_wr		send;
+		struct ib_reg_wr		fast_reg;
+		struct ib_sig_handover_wr	sig;
+	} wrs[ISER_MAX_WRS];
 	struct iser_mem_reg          data_reg;
 	struct iser_mem_reg          prot_reg;
 	struct ib_sig_attrs          sig_attrs;
 };
 
 #define ISER_RX_PAD_SIZE	(256 - (ISER_RX_PAYLOAD_SIZE + \
-					sizeof(u64) + sizeof(struct ib_sge)))
+				 sizeof(u64) + sizeof(struct ib_sge) + \
+				 sizeof(struct ib_cqe)))
 /**
- * struct iser_rx_desc - iSER RX descriptor (for recv wr_id)
+ * struct iser_rx_desc - iSER RX descriptor
  *
  * @iser_header:   iser header
  * @iscsi_header:  iscsi header
@@ -297,7 +298,27 @@ struct iser_rx_desc {
 	char		             data[ISER_RECV_DATA_SEG_LEN];
 	u64		             dma_addr;
 	struct ib_sge		     rx_sg;
+	struct ib_cqe		     cqe;
 	char		             pad[ISER_RX_PAD_SIZE];
+} __packed;
+
+/**
+ * struct iser_login_desc - iSER login descriptor
+ *
+ * @req:           pointer to login request buffer
+ * @resp:          pointer to login response buffer
+ * @req_dma:       DMA address of login request buffer
+ * @rsp_dma:      DMA address of login response buffer
+ * @sge:           IB sge for login post recv
+ * @cqe:           completion handler
+ */
+struct iser_login_desc {
+	void                         *req;
+	void                         *rsp;
+	u64                          req_dma;
+	u64                          rsp_dma;
+	struct ib_sge                sge;
+	struct ib_cqe		     cqe;
 } __attribute__((packed));
 
 struct iser_conn;
@@ -307,20 +328,12 @@ struct iscsi_iser_task;
 /**
  * struct iser_comp - iSER completion context
  *
- * @device:     pointer to device handle
  * @cq:         completion queue
- * @wcs:        work completion array
- * @tasklet:    Tasklet handle
- * @id:         completion context id
  * @active_qps: Number of active QPs attached
  *              to completion context
  */
 struct iser_comp {
-	struct iser_device      *device;
 	struct ib_cq		*cq;
-	struct ib_wc		 wcs[ISER_WC_BATCH_COUNT];
-	struct tasklet_struct	 tasklet;
-	int                      id;
 	int                      active_qps;
 };
 
@@ -330,7 +343,7 @@ struct iser_comp {
  *
  * @alloc_reg_res:     Allocate registration resources
  * @free_reg_res:      Free registration resources
- * @reg_mem:           Register memory buffers
+ * @fast_reg_mem:      Register memory buffers
  * @unreg_mem:         Un-register memory buffers
  * @reg_desc_get:      Get a registration descriptor for pool
  * @reg_desc_put:      Get a registration descriptor to pool
@@ -356,7 +369,6 @@ struct iser_reg_ops {
  *
  * @ib_device:     RDMA device
  * @pd:            Protection Domain for this device
- * @dev_attr:      Device attributes container
  * @mr:            Global DMA memory region
  * @event_handler: IB events handle routine
  * @ig_list:	   entry in devices list
@@ -370,14 +382,12 @@ struct iser_reg_ops {
 struct iser_device {
 	struct ib_device             *ib_device;
 	struct ib_pd	             *pd;
-	struct ib_device_attr	     dev_attr;
-	struct ib_mr	             *mr;
 	struct ib_event_handler      event_handler;
 	struct list_head             ig_list;
 	int                          refcount;
 	int			     comps_used;
 	struct iser_comp	     *comps;
-	struct iser_reg_ops          *reg_ops;
+	const struct iser_reg_ops    *reg_ops;
 	bool                         remote_inv_sup;
 };
 
@@ -390,26 +400,16 @@ struct iser_device {
  *
  * @mr:         memory region
  * @fmr_pool:   pool of fmrs
- * @frpl:       fast reg page list used by frwrs
  * @page_vec:   fast reg page list used by fmr pool
- * @indir_mr:   indirect memory region
- * @indir_rl:   indirect registration list
  * @mr_valid:   is mr valid indicator
- * @indirmr_valid: is indirect mr valid indicator
  */
 struct iser_reg_resources {
 	union {
 		struct ib_mr             *mr;
 		struct ib_fmr_pool       *fmr_pool;
 	};
-	union {
-		struct ib_fast_reg_page_list     *frpl;
-		struct iser_page_vec             *page_vec;
-	};
-	struct ib_mr                     *indir_mr;
-	struct ib_indir_reg_list         *indir_rl;
-	u8                                mr_valid:1;
-	u8                                indir_mr_valid:1;
+	struct iser_page_vec             *page_vec;
+	u8				  mr_valid:1;
 };
 
 /**
@@ -421,7 +421,7 @@ struct iser_reg_resources {
  * @sig_protected:   is region protected indicator
  */
 struct iser_pi_context {
-	struct iser_reg_resources       rsc;
+	struct iser_reg_resources	rsc;
 	struct ib_mr                   *sig_mr;
 	u8                              sig_mr_valid:1;
 	u8                              sig_protected:1;
@@ -438,6 +438,7 @@ struct iser_fr_desc {
 	struct list_head		  list;
 	struct iser_reg_resources	  rsc;
 	struct iser_pi_context		 *pi_ctx;
+	struct list_head		  all_list;
 };
 
 /**
@@ -451,6 +452,7 @@ struct iser_fr_pool {
 	struct list_head        list;
 	spinlock_t              lock;
 	int                     size;
+	struct list_head	all_list;
 };
 
 /**
@@ -463,10 +465,8 @@ struct iser_fr_pool {
  * @rx_wr:               receive work request for batch posts
  * @device:              reference to iser device
  * @comp:                iser completion context
- * @pi_support:          Indicate device T10-PI support
- * @beacon:              beacon send wr to signal all flush errors were drained
- * @flush_comp:          completes when all connection completions consumed
  * @fr_pool:             connection fast registration poool
+ * @pi_support:          Indicate device T10-PI support
  */
 struct ib_conn {
 	struct rdma_cm_id           *cma_id;
@@ -476,19 +476,10 @@ struct ib_conn {
 	struct ib_recv_wr	     rx_wr[ISER_MIN_POSTED_RX];
 	struct iser_device          *device;
 	struct iser_comp	    *comp;
-	bool			     pi_support;
-	struct ib_send_wr	     beacon;
-	struct completion	     flush_comp;
 	struct iser_fr_pool          fr_pool;
+	bool			     pi_support;
+	struct ib_cqe		     reg_cqe;
 };
-
-/* Timeout in milliseconds to wait for rdma_cm events in disconnect
- * flows.
- * This timeout is needed for a workaround in iSER for a bug in the
- * CM layer that doesn't handle CM_DREQ timeouts correctly.
- * TODO: remove this workaround once the CM bug fixed.
- */
-#define IB_COMPLETION_TMO	4096
 
 /**
  * struct iser_conn - iSER connection context
@@ -510,11 +501,7 @@ struct ib_conn {
  * @up_completion:    connection establishment completed
  *                    (state is ISER_CONN_UP)
  * @conn_list:        entry in ig conn list
- * @login_buf:        login data buffer (stores login parameters)
- * @login_req_buf:    login request buffer
- * @login_req_dma:    login request buffer dma address
- * @login_resp_buf:   login response buffer
- * @login_resp_dma:   login response buffer dma address
+ * @login_desc:       login descriptor
  * @rx_desc_head:     head of rx_descs cyclic buffer
  * @rx_descs:         rx buffers array (cyclic buffer)
  * @num_rx_descs:     number of rx descriptors
@@ -537,10 +524,7 @@ struct iser_conn {
 	struct completion	     ib_completion;
 	struct completion	     up_completion;
 	struct list_head	     conn_list;
-
-	char  			     *login_buf;
-	char			     *login_req_buf, *login_resp_buf;
-	u64			     login_req_dma, login_resp_dma;
+	struct iser_login_desc       login_desc;
 	unsigned int 		     rx_desc_head;
 	struct iser_rx_desc	     *rx_descs;
 	u32                          num_rx_descs;
@@ -576,9 +560,8 @@ struct iscsi_iser_task {
 
 struct iser_page_vec {
 	u64 *pages;
-	int length;
-	int offset;
-	int data_size;
+	int npages;
+	struct ib_mr fake_mr;
 };
 
 /**
@@ -630,12 +613,13 @@ int iser_conn_terminate(struct iser_conn *iser_conn);
 
 void iser_release_work(struct work_struct *work);
 
-void iser_rcv_completion(struct iser_rx_desc *desc,
-			 struct ib_wc *wc,
-			 struct ib_conn *ib_conn);
-
-void iser_snd_completion(struct iser_tx_desc *desc,
-			 struct ib_conn *ib_conn);
+void iser_err_comp(struct ib_wc *wc, const char *type);
+void iser_login_rsp(struct ib_cq *cq, struct ib_wc *wc);
+void iser_task_rsp(struct ib_cq *cq, struct ib_wc *wc);
+void iser_cmd_comp(struct ib_cq *cq, struct ib_wc *wc);
+void iser_ctrl_comp(struct ib_cq *cq, struct ib_wc *wc);
+void iser_dataout_comp(struct ib_cq *cq, struct ib_wc *wc);
+void iser_reg_comp(struct ib_cq *cq, struct ib_wc *wc);
 
 void iser_task_rdma_init(struct iscsi_iser_task *task);
 
@@ -657,6 +641,11 @@ int  iser_connect(struct iser_conn *iser_conn,
 		  struct sockaddr *src_addr,
 		  struct sockaddr *dst_addr,
 		  int non_blocking);
+
+void iser_unreg_mem_fmr(struct iscsi_iser_task *iser_task,
+			enum iser_data_dir cmd_dir);
+void iser_unreg_mem_fastreg(struct iscsi_iser_task *iser_task,
+			    enum iser_data_dir cmd_dir);
 
 int  iser_post_recvl(struct iser_conn *iser_conn);
 int  iser_post_recvm(struct iser_conn *iser_conn, int count);
@@ -700,17 +689,40 @@ iser_reg_desc_put_fmr(struct ib_conn *ib_conn,
 static inline struct ib_send_wr *
 iser_tx_next_wr(struct iser_tx_desc *tx_desc)
 {
-	struct ib_send_wr *cur_wr = &tx_desc->wrs[tx_desc->wr_idx];
+	struct ib_send_wr *cur_wr = &tx_desc->wrs[tx_desc->wr_idx].send;
 	struct ib_send_wr *last_wr;
 
 	if (tx_desc->wr_idx) {
-		last_wr = &tx_desc->wrs[tx_desc->wr_idx - 1];
+		last_wr = &tx_desc->wrs[tx_desc->wr_idx - 1].send;
 		last_wr->next = cur_wr;
 	}
-	cur_wr->next = NULL;
 	tx_desc->wr_idx++;
 
 	return cur_wr;
+}
+
+static inline struct iser_conn *
+to_iser_conn(struct ib_conn *ib_conn)
+{
+	return container_of(ib_conn, struct iser_conn, ib_conn);
+}
+
+static inline struct iser_rx_desc *
+iser_rx(struct ib_cqe *cqe)
+{
+	return container_of(cqe, struct iser_rx_desc, cqe);
+}
+
+static inline struct iser_tx_desc *
+iser_tx(struct ib_cqe *cqe)
+{
+	return container_of(cqe, struct iser_tx_desc, cqe);
+}
+
+static inline struct iser_login_desc *
+iser_login(struct ib_cqe *cqe)
+{
+	return container_of(cqe, struct iser_login_desc, cqe);
 }
 
 #endif

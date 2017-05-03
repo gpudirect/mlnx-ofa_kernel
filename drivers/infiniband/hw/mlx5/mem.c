@@ -74,7 +74,7 @@ void mlx5_ib_cont_pages(struct ib_umem *umem, u64 addr,
 
 	addr = addr >> page_shift;
 	tmp = (unsigned long)addr;
-	m = find_first_bit(&tmp, 8 * sizeof(tmp));
+	m = find_first_bit(&tmp, BITS_PER_LONG);
 	if (max_page_shift)
 		m = min_t(unsigned long, max_page_shift - page_shift, m);
 	skip = 1 << m;
@@ -86,8 +86,7 @@ void mlx5_ib_cont_pages(struct ib_umem *umem, u64 addr,
 		for (k = 0; k < len; k++) {
 			if (!(i & mask)) {
 				tmp = (unsigned long)pfn;
-				m = min_t(unsigned long, m,
-					  find_first_bit(&tmp, 8 * sizeof(tmp)));
+				m = min_t(unsigned long, m, find_first_bit(&tmp, BITS_PER_LONG));
 				skip = 1 << m;
 				mask = skip - 1;
 				base = pfn;
@@ -95,7 +94,7 @@ void mlx5_ib_cont_pages(struct ib_umem *umem, u64 addr,
 			} else {
 				if (base + p != pfn) {
 					tmp = (unsigned long)p;
-					m = find_first_bit(&tmp, 8 * sizeof(tmp));
+					m = find_first_bit(&tmp, BITS_PER_LONG);
 					skip = 1 << m;
 					mask = skip - 1;
 					base = pfn;

@@ -52,5 +52,9 @@ extern const unsigned char pcie_link_speed[];
 #define pcie_get_minimum_link LINUX_BACKPORT(pcie_get_minimum_link)
 int pcie_get_minimum_link(struct pci_dev *dev, enum pci_bus_speed *speed,
 		enum pcie_link_width *width);
+#ifndef HAVE_UDP4_HWCSUM
+#define udp4_hwcsum LINUX_BACKPORT(udp4_hwcsum)
+void udp4_hwcsum(struct sk_buff *skb, __be32 src, __be32 dst);
+#endif
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0)) */
 #endif /* LINUX_3_12_COMPAT_H */

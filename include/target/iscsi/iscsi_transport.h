@@ -1,6 +1,15 @@
+#ifndef _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H
+#define _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H 1
+
+#include "../../../compat/config.h"
+
+#ifdef HAVE_ISCSI_TARGET_CORE_ISCSI_TARGET_STAT_H
+#include_next <target/iscsi/iscsi_transport.h>
+#else
+
 #include <linux/module.h>
 #include <linux/list.h>
-#include "../../../drivers/target/iscsi/iscsi_target_core.h"
+#include "iscsi_target_core.h"
 
 struct iscsit_transport {
 #define ISCSIT_TRANSPORT_NAME	16
@@ -102,3 +111,7 @@ extern struct iscsi_cmd *iscsit_allocate_cmd(struct iscsi_conn *, int);
 extern int iscsit_sequence_cmd(struct iscsi_conn *, struct iscsi_cmd *,
 			       unsigned char *, __be32);
 extern void iscsit_release_cmd(struct iscsi_cmd *);
+
+#endif /* HAVE_ISCSI_TARGET_CORE_ISCSI_TARGET_STAT_H */
+
+#endif	/* _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H */

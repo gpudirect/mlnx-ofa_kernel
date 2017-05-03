@@ -51,7 +51,7 @@ int mlx4_congestion_control(struct mlx4_ib_dev *dev,
 		     (algorithm << 16) |
 		     ((clear & 1) << 31);
 
-	if (in_mb != NULL) {
+	if (in_mb) {
 		mailbox_in = mlx4_alloc_cmd_mailbox(dev->dev);
 		if (IS_ERR(mailbox_in))
 			return -1;
@@ -59,7 +59,7 @@ int mlx4_congestion_control(struct mlx4_ib_dev *dev,
 		memcpy(mailbox_in->buf, in_mb, in_mb_size);
 	}
 
-	if (out_mb != NULL) {
+	if (out_mb) {
 		struct mlx4_cmd_mailbox *mailbox_out;
 
 		mailbox_out = mlx4_alloc_cmd_mailbox(dev->dev);
@@ -85,7 +85,7 @@ int mlx4_congestion_control(struct mlx4_ib_dev *dev,
 			       MLX4_CMD_WRAPPED);
 	}
 out1:
-	if (mailbox_in != NULL)
+	if (mailbox_in)
 		mlx4_free_cmd_mailbox(dev->dev, mailbox_in);
 
 	return err;
@@ -104,7 +104,6 @@ int mlx4_congestion_control_get_params(struct mlx4_ib_dev *dev,
 				       out_mb, sizeof(*out_mb), 0);
 }
 
-
 int mlx4_congestion_control_get_statistics(struct mlx4_ib_dev *dev,
 					   u8 port, u8 algorithm,
 					   u8 clear,
@@ -117,7 +116,6 @@ int mlx4_congestion_control_get_statistics(struct mlx4_ib_dev *dev,
 				       (union congestion_control_out_mailbox *)
 				       out_mb, sizeof(*out_mb), 0);
 }
-
 
 int mlx4_congestion_control_set_params(struct mlx4_ib_dev *dev,
 				       u8 port, u8 priority, u8 algorithm,
@@ -153,7 +151,6 @@ int mlx4_congestion_control_get_gen_params(struct mlx4_ib_dev *dev,
 				       (union congestion_control_out_mailbox *)
 				       out_mb, sizeof(*out_mb), 0);
 }
-
 
 struct congestion_cmd_params {
 	u32				opmod;
@@ -196,16 +193,15 @@ struct congestion_dbgfs_param_entry {
 #define ADD_CON_DBGFS_FILE_ENTRY(name_, byte_, offset_, mask_)		\
 	ADD_CON_DBGFS_PARAM_ENTRY(name_, byte_, offset_, mask_, 0, 0)
 
-
 static const struct congestion_dbgfs_param_entry params_ar_roce_rp[] = {
-	ADD_CON_DBGFS_PARAM_ENTRY("disable_hai_stage", 3, 17, 1<<17, 0, 17),
+	ADD_CON_DBGFS_PARAM_ENTRY("disable_hai_stage", 3, 17, 1 << 17, 0, 17),
 	ADD_CON_DBGFS_PARAM_ENTRY("clamp_tgt_rate_after_time_inc", 3, 23,
-				  1<<23, 0, 23),
-	ADD_CON_DBGFS_PARAM_ON_ENTRY("force_rc_tos", 3, 24, 1<<24, 0, 24, 1),
-	ADD_CON_DBGFS_PARAM_ON_ENTRY("force_uc_tos", 3, 25, 1<<25, 0, 25, 1),
-	ADD_CON_DBGFS_PARAM_ENTRY("clamp_tgt_rate", 3, 27, 1<<27, 0, 27),
-	ADD_CON_DBGFS_PARAM_ENTRY("fast_rise", 3, 29, 1<<29, 0, 29),
-	ADD_CON_DBGFS_PARAM_ON_ENTRY("cnp_receive_enable", 3, 31, 1<<31,
+				  1 << 23, 0, 23),
+	ADD_CON_DBGFS_PARAM_ON_ENTRY("force_rc_tos", 3, 24, 1 << 24, 0, 24, 1),
+	ADD_CON_DBGFS_PARAM_ON_ENTRY("force_uc_tos", 3, 25, 1 << 25, 0, 25, 1),
+	ADD_CON_DBGFS_PARAM_ENTRY("clamp_tgt_rate", 3, 27, 1 << 27, 0, 27),
+	ADD_CON_DBGFS_PARAM_ENTRY("fast_rise", 3, 29, 1 << 29, 0, 29),
+	ADD_CON_DBGFS_PARAM_ON_ENTRY("cnp_receive_enable", 3, 31, 1 << 31,
 				     0, 31, 1),
 
 	ADD_CON_DBGFS_PARAM_ENTRY("rpgTimeReset", 5, 0, 0xFFFFFFFF, 1, 30),
@@ -232,13 +228,14 @@ static const struct congestion_dbgfs_param_entry params_ar_roce_rp[] = {
 	ADD_CON_DBGFS_PARAM_ENTRY("dceTcpRtt", 23, 0, 0xFFFFFFFF, 1, 12),
 };
 
-#define N_PARAMS_ARROCE_RP (sizeof(params_ar_roce_rp)/\
+#define N_PARAMS_ARROCE_RP (sizeof(params_ar_roce_rp) / \
 			    sizeof(params_ar_roce_rp[0]))
 
 static const struct congestion_dbgfs_param_entry params_ar_roce_np[] = {
-	ADD_CON_DBGFS_PARAM_ENTRY("compn_ecn_rate_limit", 3, 30, 1<<30, 0, 30),
-	ADD_CON_DBGFS_PARAM_ON_ENTRY("ecn_receive_enable", 3, 31, 1<<31, 0, 31,
-				     1),
+	ADD_CON_DBGFS_PARAM_ENTRY("compn_ecn_rate_limit", 3, 30, 1 << 30, 0,
+				  30),
+	ADD_CON_DBGFS_PARAM_ON_ENTRY("ecn_receive_enable", 3, 31, 1 << 31, 0,
+				     31, 1),
 	ADD_CON_DBGFS_PARAM_ENTRY("num_injector", 4, 0, 0xFFFFFFFF, 1, 31),
 	ADD_CON_DBGFS_PARAM_ENTRY("cnp_timer", 5, 0, 0xFFFFFFFF, 1, 30),
 	ADD_CON_DBGFS_PARAM_ENTRY("num_congestion_cycles_to_keep", 7, 0,
@@ -247,9 +244,8 @@ static const struct congestion_dbgfs_param_entry params_ar_roce_np[] = {
 	ADD_CON_DBGFS_PARAM_ENTRY("cnp_dscp", 6, 8, 0x3F00, 1, 26),
 };
 
-#define N_PARAMS_ARROCE_NP (sizeof(params_ar_roce_np)/\
+#define N_PARAMS_ARROCE_NP (sizeof(params_ar_roce_np) / \
 			    sizeof(params_ar_roce_np[0]))
-
 
 static const struct congestion_dbgfs_param_entry statistics_ar_roce_rp[] = {
 	ADD_CON_DBGFS_FILE_ENTRY("rpppRpCentiseconds", 0, 0,
@@ -268,7 +264,7 @@ static const struct congestion_dbgfs_param_entry statistics_ar_roce_rp[] = {
 	ADD_CON_DBGFS_FILE_ENTRY("max_total_limiters_rate", 11, 0, 0xFFFFFFFF),
 };
 
-#define N_STATISTICS_ARROCE_RP (sizeof(statistics_ar_roce_rp)/\
+#define N_STATISTICS_ARROCE_RP (sizeof(statistics_ar_roce_rp) / \
 				sizeof(statistics_ar_roce_rp[0]))
 
 static const struct congestion_dbgfs_param_entry statistics_ar_roce_np[] = {
@@ -286,14 +282,14 @@ static const struct congestion_dbgfs_param_entry statistics_ar_roce_np[] = {
 	ADD_CON_DBGFS_FILE_ENTRY("cnps_sent", 10, 0, 0xFFFFFFFF),
 };
 
-#define N_STATISTICS_ARROCE_NP (sizeof(statistics_ar_roce_np)/\
+#define N_STATISTICS_ARROCE_NP (sizeof(statistics_ar_roce_np) / \
 				sizeof(statistics_ar_roce_np[0]))
 
 static const struct congestion_dbgfs_param_entry gen_params_ar_roce_np[] = {
-	ADD_CON_DBGFS_PARAM_ENTRY("ecn_expect_ipv6", 3, 29, 1<<29, 0, 29),
-	ADD_CON_DBGFS_PARAM_ENTRY("ecn_expect_vlan_tagged", 3, 30, 1<<30,
+	ADD_CON_DBGFS_PARAM_ENTRY("ecn_expect_ipv6", 3, 29, 1 << 29, 0, 29),
+	ADD_CON_DBGFS_PARAM_ENTRY("ecn_expect_vlan_tagged", 3, 30, 1 << 30,
 				  0, 30),
-	ADD_CON_DBGFS_PARAM_ENTRY("ecn_catch_rate_limit_en", 3, 31, 1<<31,
+	ADD_CON_DBGFS_PARAM_ENTRY("ecn_catch_rate_limit_en", 3, 31, 1 << 31,
 				  0, 31),
 	ADD_CON_DBGFS_PARAM_ENTRY("max_time_between_ecn_catches", 4, 0,
 				  0xFFFFFFFF, 1, 31),
@@ -303,7 +299,7 @@ static const struct congestion_dbgfs_param_entry gen_params_ar_roce_np[] = {
 				  0, 0xFFFFFFFF, 1, 29),
 };
 
-#define N_GEN_PARAMS_ARROCE_NP (sizeof(gen_params_ar_roce_np)/\
+#define N_GEN_PARAMS_ARROCE_NP (sizeof(gen_params_ar_roce_np) / \
 				sizeof(gen_params_ar_roce_np[0]))
 
 static const struct congestion_algo_desc {
@@ -376,13 +372,11 @@ static int mlx4_fops_read_params(void *data, u64 *val)
 	u32 *p = ((u32 *)out_mb) + e->desc->byte_offset;
 	*val = VAL_ERROR_VALUE;
 
-	if (out_mb == NULL)
+	if (!out_mb)
 		return -1;
 
-	if (0 != mlx4_congestion_control_get_params(e->dev, e->port,
-						    1<<e->prio,
-						    e->algo,
-						    0, out_mb)) {
+	if (mlx4_congestion_control_get_params(e->dev, e->port, 1 << e->prio,
+					       e->algo, 0, out_mb)) {
 		pr_warn("q/ecn: failed to read [q/e]cn params");
 		kfree(out_mb);
 		return -1;
@@ -402,15 +396,13 @@ static int mlx4_fops_write_params(void *data, u64 val)
 	__be32 *p_en = (__be32 *)mb + e->desc->en_byte_offset;
 	int err = 0;
 
-	if (mb == NULL)
+	if (!mb)
 		return -1;
 
 	DATA_WRITE(val, p, p_en, e->desc);
 
-	if (0 != mlx4_congestion_control_set_params(e->dev, e->port,
-						    1<<e->prio,
-						    e->algo,
-						    0, mb)) {
+	if (mlx4_congestion_control_set_params(e->dev, e->port, 1 << e->prio,
+					       e->algo, 0, mb)) {
 		pr_warn("q/ecn: failed to write [q/e]cn params");
 		err = -1;
 	}
@@ -431,14 +423,13 @@ static int mlx4_write_enable_list(u32 val, struct list_head *lists,
 
 	mb = (union congestion_control_params_mailbox *)
 		kmalloc(sizeof(*mb), GFP_KERNEL);
-	if (mb == NULL)
+	if (!mb)
 		return -1;
 	for (i = 0;
 	     i < min((int)(sizeof(list_bits) * 8), N_LIST_INDEX) &&
 		(!err); i++) {
 		if (list_bits & (1 << i)) {
-			list_for_each_entry(e_enable, &lists[i], list_enable)
-			{
+			list_for_each_entry(e_enable, &lists[i], list_enable) {
 				memset(mb, 0, sizeof(*mb));
 				p = ((__be32 *)mb) +
 					e_enable->desc->byte_offset;
@@ -447,9 +438,9 @@ static int mlx4_write_enable_list(u32 val, struct list_head *lists,
 
 				DATA_WRITE(val, p, p_en, e_enable->desc);
 
-				if (0 != mlx4_congestion_control_set_params(
+				if (mlx4_congestion_control_set_params(
 					e_enable->dev, e_enable->port,
-					1<<e_enable->prio, e_enable->algo,
+					1 << e_enable->prio, e_enable->algo,
 					0, mb)) {
 					pr_warn("q/ecn: failed to write [q/e]cn params");
 					err = -1;
@@ -463,6 +454,7 @@ static int mlx4_write_enable_list(u32 val, struct list_head *lists,
 	kfree(mb);
 	return err;
 }
+
 static int mlx4_fops_write_enable(void *data, u64 val)
 {
 	struct congestion_dbgfs_entry *e = data;
@@ -470,7 +462,7 @@ static int mlx4_fops_write_enable(void *data, u64 val)
 	struct congestion_enable *cong_enable;
 	int err;
 
-	if (val >= sizeof(congestion_algo_lists)/
+	if (val >= sizeof(congestion_algo_lists) /
 	    sizeof(congestion_algo_lists[0]))
 		return 0;
 
@@ -495,20 +487,19 @@ static int mlx4_fops_read_enable(void *data, u64 *val)
 
 	out_mb = (union congestion_control_params_mailbox *)
 		kmalloc(sizeof(*out_mb), GFP_KERNEL);
-	if (out_mb == NULL)
+	if (!out_mb)
 		return -1;
 
 	list_for_each_entry(e_enable,
 			    &lists[congestion_dbgfs_algo[e->algo].list_index],
-			    list_enable)
-	{
+			    list_enable) {
 		p = ((u32 *)out_mb) + e_enable->desc->byte_offset;
 
-		if (0 != mlx4_congestion_control_get_params(e_enable->dev,
-							    e_enable->port,
-							    1<<e_enable->prio,
-							    e_enable->algo,
-							    0, out_mb)) {
+		if (mlx4_congestion_control_get_params(e_enable->dev,
+						       e_enable->port,
+						       1 << e_enable->prio,
+						       e_enable->algo,
+						       0, out_mb)) {
 			pr_warn("q/ecn: failed to read [q/e]cn params");
 			err = -1;
 			*val = VAL_ERROR_VALUE;
@@ -531,16 +522,15 @@ static int mlx4_fops_read_statistics(void *data, u64 *val)
 	u32 *p = (u32 *)out_mb +
 		   e->prio *
 		   sizeof(((union congestion_control_statistics_mailbox *)0)
-		   ->s.prio[0])/sizeof(u32)
+		   ->s.prio[0]) / sizeof(u32)
 		   + e->desc->byte_offset;
 	*val = VAL_ERROR_VALUE;
 
-	if (out_mb == NULL)
+	if (!out_mb)
 		return -1;
 
-	if (0 != mlx4_congestion_control_get_statistics(e->dev, e->port,
-							e->algo,
-							0, out_mb)) {
+	if (mlx4_congestion_control_get_statistics(e->dev, e->port, e->algo,
+						   0, out_mb)) {
 		pr_warn("q/ecn: failed to read statistics");
 		kfree(out_mb);
 		return -1;
@@ -559,12 +549,10 @@ static int mlx4_fops_read_gen_params(void *data, u64 *val)
 	u32 *p = ((u32 *)out_mb) + e->desc->byte_offset;
 	*val = VAL_ERROR_VALUE;
 
-	if (out_mb == NULL)
+	if (!out_mb)
 		return -1;
 
-	if (0 != mlx4_congestion_control_get_gen_params(e->dev,
-							e->algo,
-							out_mb)) {
+	if (mlx4_congestion_control_get_gen_params(e->dev, e->algo, out_mb)) {
 		pr_warn("q/ecn: failed to read gen params");
 		kfree(out_mb);
 		return -1;
@@ -584,14 +572,12 @@ static int mlx4_fops_write_gen_params(void *data, u64 val)
 	__be32 *p_en = ((__be32 *)mb) + e->desc->en_byte_offset;
 	int err = 0;
 
-	if (mb == NULL)
+	if (!mb)
 		return -1;
 
 	DATA_WRITE(val, p, p_en, e->desc);
 
-	if (0 != mlx4_congestion_control_set_gen_params(e->dev,
-							e->algo,
-							mb)) {
+	if (mlx4_congestion_control_set_gen_params(e->dev, e->algo, mb)) {
 		pr_warn("q/ecn: failed to set general params");
 		err = -1;
 	}
@@ -607,15 +593,15 @@ static int mlx4_fops_write_clear(void *data, u64 val)
 		kzalloc(sizeof(*mailbox_in), GFP_KERNEL);
 	int err = 0;
 
-	if (mailbox_in == NULL)
+	if (!mailbox_in)
 		return -1;
 
 	/* clear all */
-	if (0 != mlx4_congestion_control(e->dev,
-					 (enum congestion_control_opmod)e->desc,
-					 e->port, 1 << (e->prio & 7), e->algo,
-					 val != 0, mailbox_in, NULL, 0,
-					 sizeof(*mailbox_in))) {
+	if (mlx4_congestion_control(e->dev,
+				    (enum congestion_control_opmod)e->desc,
+				    e->port, 1 << (e->prio & 7), e->algo,
+				    val != 0, mailbox_in, NULL, 0,
+				    sizeof(*mailbox_in))) {
 		pr_warn("q/ecn: failed to clear");
 		err = -1;
 	}
@@ -696,17 +682,17 @@ void *con_ctrl_dbgfs_add_algo
 
 	param_size = algo_desc->nparams * CONGESTION_NPRIOS;
 	stats_size = algo_desc->nstatistics * CONGESTION_NPRIOS;
-	clear_enable_size = (CLEAR_PER_PRIO + ENABLE_PER_PRIO) * CONGESTION_NPRIOS;
-	algo_alloced_size = ((param_size + stats_size + clear_enable_size) * dev->num_ports) + algo_desc->ngen_params +
-			    CLEAR_GEN_PARAM;
+	clear_enable_size = CLEAR_PER_PRIO + ENABLE_PER_PRIO;
+	clear_enable_size *= CONGESTION_NPRIOS;
+	algo_alloced_size = param_size + stats_size + clear_enable_size;
+	algo_alloced_size *= dev->num_ports;
+	algo_alloced_size += algo_desc->ngen_params + CLEAR_GEN_PARAM;
 	algo_alloced_size *= sizeof(*algo_entries);
 	algo_alloced_size += sizeof(struct list_head);
 	algo_alloced = kmalloc(algo_alloced_size, GFP_KERNEL);
 
-	if (algo_alloced == NULL) {
-		pr_warn("couldn't allocate space for ecn debugfs");
+	if (!algo_alloced)
 		return NULL;
-	}
 
 	algo_entries = (struct congestion_dbgfs_entry *)
 			(((char *)algo_alloced) + sizeof(struct list_head));
@@ -742,7 +728,6 @@ void *con_ctrl_dbgfs_add_algo
 		}
 	}
 
-
 	ports_dir = debugfs_create_dir("ports", algo_dir);
 
 	for (i = 0; i < dev->num_ports; i++) {
@@ -774,7 +759,6 @@ void *con_ctrl_dbgfs_add_algo
 
 			debugfs_create_file("clear", 0222, prio, e,
 					    &mlx4_fops_clear);
-
 
 			for (k = 0; k < ALGO_DESC_NPARAMS(algo); k++) {
 				const struct congestion_dbgfs_param_entry *p =

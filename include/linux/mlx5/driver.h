@@ -38,25 +38,15 @@
 #include <linux/pci.h>
 #include <linux/spinlock_types.h>
 #include <linux/semaphore.h>
-#include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/radix-tree.h>
-#include <linux/timecounter.h>
+#include <linux/workqueue.h>
+#include <linux/interrupt.h>
 
 #include <linux/mlx5/device.h>
 #include <linux/mlx5/doorbell.h>
-
-#define MLX5_QCOUNTER_SETS_NETDEV 64
-
-enum mlx5_res_type {
-	MLX5_RES_QP	= MLX5_EVENT_QUEUE_TYPE_QP,
-	MLX5_RES_RQ	= MLX5_EVENT_QUEUE_TYPE_RQ,
-	MLX5_RES_SQ	= MLX5_EVENT_QUEUE_TYPE_SQ,
-	MLX5_RES_SRQ	= 3,
-	MLX5_RES_XSRQ	= 4,
-	MLX5_RES_DCT	= 5,
-};
+#include <linux/mlx5/srq.h>
 
 enum {
 	MLX5_BOARD_ID_LEN = 64,
@@ -64,7 +54,10 @@ enum {
 };
 
 enum {
-	MLX5_CMD_TIMEOUT_MSEC	= 8 * 60 * 1000,
+	/* one minute for the sake of bringup. Generally, commands must always
+	 * complete and we may need to increase this timeout value
+	 */
+	MLX5_CMD_TIMEOUT_MSEC	= 60 * 1000,
 	MLX5_CMD_WQ_MAX_NAME	= 32,
 };
 
@@ -111,6 +104,38 @@ enum {
 };
 
 enum {
+	MLX5_REG_QETCR		 = 0x4005,
+	MLX5_REG_QTCT		 = 0x400a,
+	MLX5_REG_DCBX_PARAM      = 0x4020,
+	MLX5_REG_DCBX_APP        = 0x4021,
+	MLX5_REG_PCAP		 = 0x5001,
+	MLX5_REG_PMTU		 = 0x5003,
+	MLX5_REG_PTYS		 = 0x5004,
+	MLX5_REG_PAOS		 = 0x5006,
+	MLX5_REG_PFCC            = 0x5007,
+	MLX5_REG_PPCNT		 = 0x5008,
+	MLX5_REG_PMAOS		 = 0x5012,
+	MLX5_REG_PUDE		 = 0x5009,
+	MLX5_REG_PMPE		 = 0x5010,
+	MLX5_REG_PELC		 = 0x500e,
+	MLX5_REG_PVLC		 = 0x500f,
+	MLX5_REG_PCMR		 = 0x5041,
+	MLX5_REG_PMLP		 = 0x5002,
+	MLX5_REG_PCAM		 = 0x507f,
+	MLX5_REG_NODE_DESC	 = 0x6001,
+	MLX5_REG_HOST_ENDIANNESS = 0x7004,
+	MLX5_REG_MCIA		 = 0x9014,
+	MLX5_REG_MLCR		 = 0x902b,
+	MLX5_REG_MPCNT		 = 0x9051,
+	MLX5_REG_MCAM		 = 0x907f,
+};
+
+enum mlx5_dcbx_oper_mode {
+	MLX5E_DCBX_PARAM_VER_OPER_HOST  = 0x0,
+	MLX5E_DCBX_PARAM_VER_OPER_AUTO  = 0x3,
+};
+
+enum {
 	MLX5_ATOMIC_MODE_DCT_OFF	= 20,
 	MLX5_ATOMIC_MODE_DCT_NONE	= 0 << MLX5_ATOMIC_MODE_DCT_OFF,
 	MLX5_ATOMIC_MODE_DCT_IB_COMP	= 1 << MLX5_ATOMIC_MODE_DCT_OFF,
@@ -124,38 +149,10 @@ enum {
 };
 
 enum {
-	MLX5_ATOMIC_OPS_CMP_SWAP		= 1 << 0,
-	MLX5_ATOMIC_OPS_FETCH_ADD		= 1 << 1,
+	MLX5_ATOMIC_OPS_CMP_SWAP	= 1 << 0,
+	MLX5_ATOMIC_OPS_FETCH_ADD	= 1 << 1,
 	MLX5_ATOMIC_OPS_MASKED_CMP_SWAP		= 1 << 2,
 	MLX5_ATOMIC_OPS_MASKED_FETCH_ADD	= 1 << 3,
-};
-
-enum {
-	MLX5_REG_QETCR		 = 0x4005,
-	MLX5_REG_QTCT		 = 0x400a,
-	MLX5_REG_DCBX_PARAM      = 0x4020,
-	MLX5_REG_DCBX_APP        = 0x4021,
-	MLX5_REG_PCAP		 = 0x5001,
-	MLX5_REG_PMTU		 = 0x5003,
-	MLX5_REG_PTYS		 = 0x5004,
-	MLX5_REG_PAOS		 = 0x5006,
-	MLX5_REG_PFCC		 = 0x5007,
-	MLX5_REG_PPCNT		 = 0x5008,
-	MLX5_REG_PMAOS		 = 0x5012,
-	MLX5_REG_PUDE		 = 0x5009,
-	MLX5_REG_PMPE		 = 0x5010,
-	MLX5_REG_PELC		 = 0x500e,
-	MLX5_REG_PVLC		 = 0x500f,
-	MLX5_REG_PMLP		 = 0x5002,
-	MLX5_REG_NODE_DESC	 = 0x6001,
-	MLX5_REG_HOST_ENDIANNESS = 0x7004,
-	MLX5_REG_MCIA		 = 0x9014,
-	MLX5_REG_MLCR		 = 0x902b,
-};
-
-enum mlx5_dcbx_oper_mode {
-	MLX5E_DCBX_PARAM_VER_OPER_HOST  = 0x0,
-	MLX5E_DCBX_PARAM_VER_OPER_AUTO  = 0x3,
 };
 
 enum mlx5_page_fault_resume_flags {
@@ -170,12 +167,6 @@ enum dbg_rsc_type {
 	MLX5_DBG_RSC_EQ,
 	MLX5_DBG_RSC_CQ,
 	MLX5_DBG_RSC_DCT,
-};
-
-enum {
-	MLX5_INTERFACE_PROTOCOL_IB  = 0,
-	MLX5_INTERFACE_PROTOCOL_ETH = 1,
-	MLX5_INTERFACE_NUMBER       = 2,
 };
 
 struct mlx5_field_desc {
@@ -206,38 +197,6 @@ enum mlx5_port_status {
 	MLX5_PORT_UP        = 1,
 	MLX5_PORT_DOWN      = 2,
 };
-
-enum mlx5_link_mode {
-	MLX5_1000BASE_CX_SGMII	= 0,
-	MLX5_1000BASE_KX	= 1,
-	MLX5_10GBASE_CX4	= 2,
-	MLX5_10GBASE_KX4	= 3,
-	MLX5_10GBASE_KR		= 4,
-	MLX5_20GBASE_KR2	= 5,
-	MLX5_40GBASE_CR4	= 6,
-	MLX5_40GBASE_KR4	= 7,
-	MLX5_56GBASE_R4		= 8,
-	MLX5_10GBASE_CR		= 12,
-	MLX5_10GBASE_SR		= 13,
-	MLX5_10GBASE_ER		= 14,
-	MLX5_40GBASE_SR4	= 15,
-	MLX5_40GBASE_LR4	= 16,
-	MLX5_100GBASE_CR4	= 20,
-	MLX5_100GBASE_SR4	= 21,
-	MLX5_100GBASE_KR4	= 22,
-	MLX5_100GBASE_LR4	= 23,
-	MLX5_100BASE_TX		= 24,
-	MLX5_1000BASE_T		= 25,
-	MLX5_10GBASE_T		= 26,
-	MLX5_25GBASE_CR		= 27,
-	MLX5_25GBASE_KR		= 28,
-	MLX5_25GBASE_SR		= 29,
-	MLX5_50GBASE_CR2	= 30,
-	MLX5_50GBASE_KR2	= 31,
-	MLX5_LINK_MODES_NUMBER,
-};
-
-#define MLX5_PROT_MASK(link_mode) (1 << link_mode)
 
 struct mlx5_uuar_info {
 	struct mlx5_uar	       *uars;
@@ -302,13 +261,13 @@ struct mlx5_cmd_cache_head {
 	 */
 	spinlock_t		lock;
 	struct list_head	head;
-	struct kobject		kobj;
 	unsigned		max_inbox_size;
 	unsigned		num_ent;
+	struct kobject		kobj;
 	unsigned		miss;
 	unsigned		total_commands;
 	unsigned		free;
-	struct mlx5_core_dev   *dev;
+	struct mlx5_core_dev	*dev;
 };
 
 enum {
@@ -316,8 +275,8 @@ enum {
 };
 
 struct cmd_msg_cache {
-	struct kobject		       *ko;
 	struct mlx5_cmd_cache_head	ch[MLX5_NUM_COMMAND_CACHES];
+	struct kobject			*ko;
 	atomic_t			real_miss;
 };
 
@@ -370,6 +329,7 @@ struct mlx5_port_caps {
 	int	gid_table_len;
 	int	pkey_table_len;
 	u8	ext_port_cap;
+	bool	has_smi;
 };
 
 struct mlx5_cmd_mailbox {
@@ -385,8 +345,13 @@ struct mlx5_buf_list {
 
 struct mlx5_buf {
 	struct mlx5_buf_list	direct;
-	struct mlx5_buf_list   *page_list;
-	int			nbufs;
+	int			npages;
+	int			size;
+	u8			page_shift;
+};
+
+struct mlx5_frag_buf {
+	struct mlx5_buf_list	*frags;
 	int			npages;
 	int			size;
 	u8			page_shift;
@@ -409,10 +374,10 @@ struct mlx5_eq {
 	unsigned int		irqn;
 	u8			eqn;
 	int			nent;
+	u64			mask;
 	struct list_head	list;
 	int			index;
 	struct mlx5_rsc_debug	*dbg;
-	cpumask_var_t		affinity_mask;
 	struct mlx5_eq_tasklet	tasklet_ctx;
 };
 
@@ -437,30 +402,40 @@ struct mlx5_core_sig_ctx {
 	u32			sigerr_count;
 };
 
-struct mlx5_core_mr {
+struct mlx5_core_mkey {
 	u64			iova;
 	u64			size;
 	u32			key;
 	u32			pd;
 };
 
+enum mlx5_res_type {
+	MLX5_RES_QP	= MLX5_EVENT_QUEUE_TYPE_QP,
+	MLX5_RES_RQ	= MLX5_EVENT_QUEUE_TYPE_RQ,
+	MLX5_RES_SQ	= MLX5_EVENT_QUEUE_TYPE_SQ,
+	MLX5_RES_SRQ	= 3,
+	MLX5_RES_XSRQ	= 4,
+	MLX5_RES_DCT	= 5,
+};
+
 struct mlx5_core_rsc_common {
 	enum mlx5_res_type	res;
 	atomic_t		refcount;
 	struct completion	free;
+	u64			async_events_mask;
 };
 
 struct mlx5_core_srq {
 	struct mlx5_core_rsc_common	common; /* must be first */
-	u32				srqn;
-	int				max;
-	int				max_gs;
-	int				max_avail_gather;
-	int				wqe_shift;
-	void				(*event)(struct mlx5_core_srq *, enum mlx5_event);
+	u32		srqn;
+	int		max;
+	int		max_gs;
+	int		max_avail_gather;
+	int		wqe_shift;
+	void (*event)	(struct mlx5_core_srq *, enum mlx5_event);
 
-	atomic_t			refcount;
-	struct completion		free;
+	atomic_t		refcount;
+	struct completion	free;
 };
 
 struct mlx5_eq_table {
@@ -470,7 +445,6 @@ struct mlx5_eq_table {
 	struct mlx5_eq		pages_eq;
 	struct mlx5_eq		async_eq;
 	struct mlx5_eq		cmd_eq;
-	cpumask_var_t		*irq_masks;
 	int			num_comp_vectors;
 	/* protect EQs list
 	 */
@@ -485,13 +459,14 @@ struct mlx5_uar {
 	void __iomem	       *map;
 };
 
+
 struct mlx5_core_health {
 	struct health_buffer __iomem   *health;
 	__be32 __iomem		       *health_counter;
 	struct timer_list		timer;
 	u32				prev;
 	int				miss_counter;
-	int				sick;
+	bool				sick;
 	/* wq spinlock to synchronize draining */
 	spinlock_t			wq_lock;
 	struct workqueue_struct	       *wq;
@@ -521,17 +496,11 @@ struct mlx5_srq_table {
 	struct radix_tree_root	tree;
 };
 
-struct mlx5_mr_table {
+struct mlx5_mkey_table {
 	/* protect radix tree
 	 */
-	spinlock_t              lock;
+	spinlock_t		lock;
 	struct radix_tree_root	tree;
-};
-
-enum {
-	MLX5_ESW_VPORT_ADMIN_STATE_DOWN  = 0x0,
-	MLX5_ESW_VPORT_ADMIN_STATE_UP    = 0x1,
-	MLX5_ESW_VPORT_ADMIN_STATE_AUTO  = 0x2,
 };
 
 struct mlx5_vf_context {
@@ -545,13 +514,12 @@ struct mlx5_sriov_vf {
 };
 
 struct mlx5_core_sriov {
-	struct mlx5_vf_context	  *vfs_ctx;
-	struct kobject		  *config;
-	struct kobject		  node_guid_kobj;
-	struct mlx5_sriov_vf	  *vfs;
-	struct mutex		  state_lock; /* protect sriov configure */
-	int			  num_vfs;
-	int			  enabled_vfs;
+	struct mlx5_vf_context	*vfs_ctx;
+	int			num_vfs;
+	int			enabled_vfs;
+	struct kobject		*config;
+	struct kobject		node_guid_kobj;
+	struct mlx5_sriov_vf	*vfs;
 };
 
 struct mlx5_irq_info {
@@ -559,7 +527,19 @@ struct mlx5_irq_info {
 	char name[MLX5_MAX_IRQ_NAME];
 };
 
+struct mlx5_fc_stats {
+	struct rb_root counters;
+	struct list_head addlist;
+	/* protect addlist add/splice operations */
+	spinlock_t addlist_lock;
+
+	struct workqueue_struct *wq;
+	struct delayed_work work;
+	unsigned long next_query;
+};
+
 struct mlx5_eswitch;
+struct mlx5_lag;
 
 struct mlx5_rl_entry {
 	u32                     rate;
@@ -568,11 +548,37 @@ struct mlx5_rl_entry {
 };
 
 struct mlx5_rl_table {
+	/* protect rate limit table */
 	struct mutex            rl_lock;
 	u16                     max_size;
 	u32                     max_rate;
 	u32                     min_rate;
 	struct mlx5_rl_entry   *rl_entry;
+};
+
+enum port_module_event_status_type {
+	MLX5_MODULE_STATUS_PLUGGED   = 0x1,
+	MLX5_MODULE_STATUS_UNPLUGGED = 0x2,
+	MLX5_MODULE_STATUS_ERROR     = 0x3,
+	MLX5_MODULE_STATUS_NUM       = 0x3,
+};
+
+enum  port_module_event_error_type {
+	MLX5_MODULE_EVENT_ERROR_POWER_BUDGET_EXCEEDED,
+	MLX5_MODULE_EVENT_ERROR_LONG_RANGE_FOR_NON_MLNX_CABLE_MODULE,
+	MLX5_MODULE_EVENT_ERROR_BUS_STUCK,
+	MLX5_MODULE_EVENT_ERROR_NO_EEPROM_RETRY_TIMEOUT,
+	MLX5_MODULE_EVENT_ERROR_ENFORCE_PART_NUMBER_LIST,
+	MLX5_MODULE_EVENT_ERROR_UNKNOWN_IDENTIFIER,
+	MLX5_MODULE_EVENT_ERROR_HIGH_TEMPERATURE,
+	MLX5_MODULE_EVENT_ERROR_BAD_CABLE,
+	MLX5_MODULE_EVENT_ERROR_UNKNOWN,
+	MLX5_MODULE_EVENT_ERROR_NUM,
+};
+
+struct mlx5_port_module_event_stats {
+	u64 status_counters[MLX5_MODULE_STATUS_NUM];
+	u64 error_counters[MLX5_MODULE_EVENT_ERROR_NUM];
 };
 
 struct mlx5_priv {
@@ -583,10 +589,10 @@ struct mlx5_priv {
 	struct mlx5_uuar_info	uuari;
 	MLX5_DECLARE_DOORBELL_LOCK(cq_uar_lock);
 
-	struct io_mapping	*bf_mapping;
-
 	/* pages stuff */
 	struct workqueue_struct *pg_wq;
+	struct delayed_work	gc_dwork;
+	bool			gc_allowed;
 	struct rb_root		page_root;
 	int			fw_pages;
 	atomic_t		reg_pages;
@@ -614,9 +620,9 @@ struct mlx5_priv {
 	struct mlx5_cq_table	cq_table;
 	/* end: cq staff */
 
-	/* start: mr staff */
-	struct mlx5_mr_table	mr_table;
-	/* end: mr staff */
+	/* start: mkey staff */
+	struct mlx5_mkey_table	mkey_table;
+	/* end: mkey staff */
 
 	/* start: alloc staff */
 	/* protect buffer alocation according to numa node */
@@ -636,10 +642,15 @@ struct mlx5_priv {
 	struct list_head        ctx_list;
 	spinlock_t              ctx_lock;
 
+	struct mlx5_flow_steering *steering;
 	struct mlx5_eswitch     *eswitch;
 	struct mlx5_core_sriov	sriov;
+	struct mlx5_lag		*lag;
 	unsigned long		pci_dev_data;
-	struct mlx5_rl_table	rl_table;
+	struct mlx5_fc_stats		fc_stats;
+	struct mlx5_rl_table            rl_table;
+
+	struct mlx5_port_module_event_stats  pme_stats;
 };
 
 enum mlx5_device_state {
@@ -658,14 +669,27 @@ enum mlx5_pci_status {
 	MLX5_PCI_STATUS_ENABLED,
 };
 
-struct mlx5_special_contexts {
-	int resd_lkey;
+struct mlx5_td {
+	struct list_head tirs_list;
+	u32              tdn;
+};
+
+struct mlx5e_resources {
+	struct mlx5_uar            cq_uar;
+	u32                        pdn;
+	struct mlx5_td             td;
+	struct mlx5_core_mkey      mkey;
 };
 
 struct mlx5_mst_dump;
 
+struct mlx5_special_contexts {
+	int resd_lkey;
+};
+
 struct mlx5_core_dev {
 	struct pci_dev	       *pdev;
+	/* sync pci state */
 	struct mutex		pci_status_mutex;
 	enum mlx5_pci_status	pci_status;
 	u8			rev_id;
@@ -674,9 +698,14 @@ struct mlx5_core_dev {
 	struct mlx5_port_caps	port_caps[MLX5_MAX_PORTS];
 	u32 hca_caps_cur[MLX5_CAP_NUM][MLX5_UN_SZ_DW(hca_cap_union)];
 	u32 hca_caps_max[MLX5_CAP_NUM][MLX5_UN_SZ_DW(hca_cap_union)];
+	struct {
+		u32 pcam[MLX5_ST_SZ_DW(pcam_reg)];
+		u32 mcam[MLX5_ST_SZ_DW(mcam_reg)];
+	} caps;
 	phys_addr_t		iseg_base;
 	struct mlx5_init_seg __iomem *iseg;
 	enum mlx5_device_state	state;
+	/* sync interface state */
 	struct mutex		intf_state_mutex;
 	unsigned long		intf_state;
 	void			(*event) (struct mlx5_core_dev *dev,
@@ -685,21 +714,14 @@ struct mlx5_core_dev {
 	struct mlx5_priv	priv;
 	struct mlx5_profile	*profile;
 	atomic_t		num_qps;
-	u64			aysnc_events_mask;
-	u32			supported_issi_mask;
+	u64			async_events_mask;
 	u32			issi;
-	struct mlx5_special_contexts special_contexts;
+	struct mlx5e_resources  mlx5e_res;
 #ifdef CONFIG_RFS_ACCEL
 	struct cpu_rmap         *rmap;
 #endif
-	struct mlx5_flow_root_namespace *root_ns;
-	struct mlx5_flow_root_namespace *fdb_root_ns;
-	struct mlx5_flow_root_namespace *esw_egress_root_ns;
-	struct mlx5_flow_root_namespace *esw_ingress_root_ns;
-	struct mlx5_flow_root_namespace *sniffer_rx_root_ns;
-	struct mlx5_flow_root_namespace *sniffer_tx_root_ns;
-	u32 num_q_counter_allocated[MLX5_INTERFACE_NUMBER];
 	struct mlx5_mst_dump *mst_dump;
+	struct mlx5_special_contexts special_contexts;
 };
 
 struct mlx5_db {
@@ -732,7 +754,12 @@ enum {
 
 typedef void (*mlx5_cmd_cbk_t)(int status, void *context);
 
+enum {
+	MLX5_CMD_ENT_STATE_PENDING_COMP,
+};
+
 struct mlx5_cmd_work_ent {
+	unsigned long		state;
 	struct mlx5_cmd_msg    *in;
 	struct mlx5_cmd_msg    *out;
 	void		       *uout;
@@ -762,7 +789,8 @@ struct mlx5_pas {
 enum port_state_policy {
 	MLX5_POLICY_DOWN	= 0,
 	MLX5_POLICY_UP		= 1,
-	MLX5_POLICY_FOLLOW	= 2
+	MLX5_POLICY_FOLLOW	= 2,
+	MLX5_POLICY_INVALID	= 0xffffffff
 };
 
 enum phy_port_state {
@@ -796,62 +824,9 @@ struct mlx5_hca_vport_context {
 	bool			grh_required;
 };
 
-struct mlx5_net_counters {
-	u64	packets;
-	u64	octets;
-};
-
-struct mlx5_ptys_reg {
-	u8	local_port;
-	u8	proto_mask;
-	u32	eth_proto_cap;
-	u16	ib_link_width_cap;
-	u16	ib_proto_cap;
-	u32	eth_proto_admin;
-	u16	ib_link_width_admin;
-	u16	ib_proto_admin;
-	u32	eth_proto_oper;
-	u16	ib_link_width_oper;
-	u16	ib_proto_oper;
-	u32	eth_proto_lp_advertise;
-};
-
-struct mlx5_pvlc_reg {
-	u8	local_port;
-	u8	vl_hw_cap;
-	u8	vl_admin;
-	u8	vl_operational;
-};
-
-struct mlx5_pmtu_reg {
-	u8	local_port;
-	u16	max_mtu;
-	u16	admin_mtu;
-	u16	oper_mtu;
-};
-
-struct mlx5_vport_counters {
-	struct mlx5_net_counters	received_errors;
-	struct mlx5_net_counters	transmit_errors;
-	struct mlx5_net_counters	received_ib_unicast;
-	struct mlx5_net_counters	transmitted_ib_unicast;
-	struct mlx5_net_counters	received_ib_multicast;
-	struct mlx5_net_counters	transmitted_ib_multicast;
-	struct mlx5_net_counters	received_eth_broadcast;
-	struct mlx5_net_counters	transmitted_eth_broadcast;
-	struct mlx5_net_counters	received_eth_unicast;
-	struct mlx5_net_counters	transmitted_eth_unicast;
-	struct mlx5_net_counters	received_eth_multicast;
-	struct mlx5_net_counters	transmitted_eth_multicast;
-};
-
 static inline void *mlx5_buf_offset(struct mlx5_buf *buf, int offset)
 {
-	if (likely(BITS_PER_LONG == 64 || buf->nbufs == 1))
 		return buf->direct.buf + offset;
-	else
-		return buf->page_list[offset >> PAGE_SHIFT].buf +
-			(offset & (PAGE_SIZE - 1));
 }
 
 extern struct workqueue_struct *mlx5_core_wq;
@@ -911,68 +886,73 @@ int mlx5_cmd_init(struct mlx5_core_dev *dev);
 void mlx5_cmd_cleanup(struct mlx5_core_dev *dev);
 void mlx5_cmd_use_events(struct mlx5_core_dev *dev);
 void mlx5_cmd_use_polling(struct mlx5_core_dev *dev);
-int mlx5_cmd_status_to_err(struct mlx5_core_dev *dev,
-			   struct mlx5_outbox_hdr *hdr);
-int mlx5_cmd_status_to_err_v2(struct mlx5_core_dev *dev,
-			      void *ptr);
-int mlx5_core_query_special_contexts(struct mlx5_core_dev *dev);
-int mlx5_core_get_caps(struct mlx5_core_dev *dev, enum mlx5_cap_type cap_type,
-		       enum mlx5_cap_mode cap_mode);
+
+void mlx5_lock_and_flush_cmdif(struct mlx5_core_dev *dev);
+void mlx5_unlock_cmdif(struct mlx5_core_dev *dev);
+
 int mlx5_cmd_exec(struct mlx5_core_dev *dev, void *in, int in_size, void *out,
 		  int out_size);
 int mlx5_cmd_exec_cb(struct mlx5_core_dev *dev, void *in, int in_size,
 		     void *out, int out_size, mlx5_cmd_cbk_t callback,
 		     void *context);
+void mlx5_cmd_mbox_status(void *out, u8 *status, u32 *syndrome);
+
+int mlx5_core_query_special_contexts(struct mlx5_core_dev *dev);
+int mlx5_core_get_caps(struct mlx5_core_dev *dev, enum mlx5_cap_type cap_type);
 int mlx5_cmd_alloc_uar(struct mlx5_core_dev *dev, u32 *uarn);
 int mlx5_cmd_free_uar(struct mlx5_core_dev *dev, u32 uarn);
 int mlx5_alloc_uuars(struct mlx5_core_dev *dev, struct mlx5_uuar_info *uuari);
 int mlx5_free_uuars(struct mlx5_core_dev *dev, struct mlx5_uuar_info *uuari);
-int mlx5_alloc_map_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar);
+int mlx5_alloc_map_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar,
+		       bool map_wc);
 void mlx5_unmap_free_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar);
+void mlx5_health_cleanup(struct mlx5_core_dev *dev);
+int mlx5_health_init(struct mlx5_core_dev *dev);
 void mlx5_start_health_poll(struct mlx5_core_dev *dev);
 void mlx5_stop_health_poll(struct mlx5_core_dev *dev);
 void mlx5_drain_health_wq(struct mlx5_core_dev *dev);
-void mlx5_health_cleanup(struct mlx5_core_dev *dev);
-int mlx5_health_init(struct mlx5_core_dev *dev);
-void mlx5_disable_device(struct mlx5_core_dev *dev);
-void mlx5_recover_device(struct mlx5_core_dev *dev);
-int mlx5_buf_alloc_node(struct mlx5_core_dev *dev, int size, int max_direct,
+int mlx5_buf_alloc_node(struct mlx5_core_dev *dev, int size,
 			struct mlx5_buf *buf, int node);
-int mlx5_buf_alloc(struct mlx5_core_dev *dev, int size, int max_direct,
-		   struct mlx5_buf *buf);
+int mlx5_buf_alloc(struct mlx5_core_dev *dev, int size, struct mlx5_buf *buf);
 void mlx5_buf_free(struct mlx5_core_dev *dev, struct mlx5_buf *buf);
+int mlx5_frag_buf_alloc_node(struct mlx5_core_dev *dev, int size,
+			     struct mlx5_frag_buf *buf, int node);
+void mlx5_frag_buf_free(struct mlx5_core_dev *dev, struct mlx5_frag_buf *buf);
 struct mlx5_cmd_mailbox *mlx5_alloc_cmd_mailbox_chain(struct mlx5_core_dev *dev,
 						      gfp_t flags, int npages);
 void mlx5_free_cmd_mailbox_chain(struct mlx5_core_dev *dev,
 				 struct mlx5_cmd_mailbox *head);
 int mlx5_core_create_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
-			 struct mlx5_create_srq_mbox_in *in, int inlen,
-			 int is_xrc);
+			 struct mlx5_srq_attr *in);
 int mlx5_core_destroy_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq);
 int mlx5_core_query_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
-			struct mlx5_query_srq_mbox_out *out);
+			struct mlx5_srq_attr *out);
 int mlx5_core_arm_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
 		      u16 lwm, int is_srq);
-void mlx5_init_mr_table(struct mlx5_core_dev *dev);
-void mlx5_cleanup_mr_table(struct mlx5_core_dev *dev);
-int mlx5_core_create_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mr *mr,
-			  struct mlx5_create_mkey_mbox_in *in, int inlen,
-			  mlx5_cmd_cbk_t callback, void *context,
-			  struct mlx5_create_mkey_mbox_out *out);
-int mlx5_core_destroy_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mr *mr);
-int mlx5_core_query_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mr *mr,
-			 struct mlx5_query_mkey_mbox_out *out, int outlen);
-int mlx5_core_dump_fill_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mr *mr,
+void mlx5_init_mkey_table(struct mlx5_core_dev *dev);
+void mlx5_cleanup_mkey_table(struct mlx5_core_dev *dev);
+int mlx5_core_create_mkey_cb(struct mlx5_core_dev *dev,
+			     struct mlx5_core_mkey *mkey,
+			     u32 *in, int inlen,
+			     u32 *out, int outlen,
+			     mlx5_cmd_cbk_t callback, void *context);
+int mlx5_core_create_mkey(struct mlx5_core_dev *dev,
+			  struct mlx5_core_mkey *mkey,
+			  u32 *in, int inlen);
+int mlx5_core_destroy_mkey(struct mlx5_core_dev *dev,
+			   struct mlx5_core_mkey *mkey);
+int mlx5_core_query_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mkey *mkey,
+			 u32 *out, int outlen);
+int mlx5_core_dump_fill_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mkey *_mkey,
 			     u32 *mkey);
 int mlx5_core_alloc_pd(struct mlx5_core_dev *dev, u32 *pdn);
 int mlx5_core_dealloc_pd(struct mlx5_core_dev *dev, u32 pdn);
-int mlx5_core_mad_ifc(struct mlx5_core_dev *dev, void *inb, void *outb,
+int mlx5_core_mad_ifc(struct mlx5_core_dev *dev, const void *inb, void *outb,
 		      u16 opmod, u8 port);
 void mlx5_pagealloc_init(struct mlx5_core_dev *dev);
 void mlx5_pagealloc_cleanup(struct mlx5_core_dev *dev);
 int mlx5_pagealloc_start(struct mlx5_core_dev *dev);
 void mlx5_pagealloc_stop(struct mlx5_core_dev *dev);
-int mlx5_wait_for_vf_pages(struct mlx5_core_dev *dev);
 void mlx5_core_req_pages_handler(struct mlx5_core_dev *dev, u16 func_id,
 				 s32 npages);
 int mlx5_update_guids(struct mlx5_core_dev *dev);
@@ -980,10 +960,10 @@ int mlx5_satisfy_startup_pages(struct mlx5_core_dev *dev, int boot);
 int mlx5_reclaim_startup_pages(struct mlx5_core_dev *dev);
 void mlx5_register_debugfs(void);
 void mlx5_unregister_debugfs(void);
-cycle_t mlx5_core_read_clock(struct mlx5_core_dev *dev);
 int mlx5_eq_init(struct mlx5_core_dev *dev);
 void mlx5_eq_cleanup(struct mlx5_core_dev *dev);
 void mlx5_fill_page_array(struct mlx5_buf *buf, __be64 *pas);
+void mlx5_fill_page_frag_array(struct mlx5_frag_buf *frag_buf, __be64 *pas);
 void mlx5_cq_completion(struct mlx5_core_dev *dev, u32 cqn);
 int mlx5_rsc_event(struct mlx5_core_dev *dev, u32 rsn, int event_type);
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
@@ -991,7 +971,7 @@ void mlx5_eq_pagefault(struct mlx5_core_dev *dev, struct mlx5_eqe *eqe);
 #endif
 void mlx5_srq_event(struct mlx5_core_dev *dev, u32 srqn, int event_type);
 struct mlx5_core_srq *mlx5_core_get_srq(struct mlx5_core_dev *dev, u32 srqn);
-void mlx5_cmd_comp_handler(struct mlx5_core_dev *dev, u64 vec);
+void mlx5_cmd_comp_handler(struct mlx5_core_dev *dev, u64 vec, bool forced);
 void mlx5_cq_event(struct mlx5_core_dev *dev, u32 cqn, int event_type);
 int mlx5_create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq, u8 vecidx,
 		       int nent, u64 mask, const char *name, struct mlx5_uar *uar);
@@ -1002,71 +982,27 @@ int mlx5_vector2eqn(struct mlx5_core_dev *dev, int vector, int *eqn,
 		    unsigned int *irqn);
 int mlx5_core_attach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
 int mlx5_core_detach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
-int mlx5_core_set_dc_cnak_trace(struct mlx5_core_dev *dev, int enable,
-				u64 addr);
 
 int mlx5_qp_debugfs_init(struct mlx5_core_dev *dev);
 void mlx5_qp_debugfs_cleanup(struct mlx5_core_dev *dev);
 int mlx5_dct_debugfs_init(struct mlx5_core_dev *dev);
 void mlx5_dct_debugfs_cleanup(struct mlx5_core_dev *dev);
+int mlx5_core_set_dc_cnak_trace(struct mlx5_core_dev *dev, int enable,
+				u64 addr);
 int mlx5_core_access_reg(struct mlx5_core_dev *dev, void *data_in,
 			 int size_in, void *data_out, int size_out,
 			 u16 reg_num, int arg, int write);
-int mlx5_set_port_caps(struct mlx5_core_dev *dev, u8 port_num,
-		       u32 set, u32 clear, u32 cur);
-int mlx5_query_port_ptys(struct mlx5_core_dev *dev, u32 *ptys,
-			 int ptys_size, int proto_mask);
-int mlx5_set_port_beacon(struct mlx5_core_dev *dev, u32 *mlcr,
-			 int mlcr_size, u16 beacon_duration);
-int mlx5_query_port_proto_cap(struct mlx5_core_dev *dev,
-			      u32 *proto_cap, int proto_mask);
-int mlx5_set_port_pause(struct mlx5_core_dev *dev, u32 rx_pause, u32 tx_pause);
-int mlx5_query_port_pause(struct mlx5_core_dev *dev,
-			  u32 *rx_pause, u32 *tx_pause);
-int mlx5_set_port_wol(struct mlx5_core_dev *mdev, u8 wol_mode);
-int mlx5_query_port_wol(struct mlx5_core_dev *mdev, u8 *wol_mode);
-int mlx5_set_port_pfc(struct mlx5_core_dev *dev, u8 pfc_en_tx, u8 pfc_en_rx);
-int mlx5_query_port_pfc(struct mlx5_core_dev *dev, u8 *pfc_en_tx,
-			u8 *pfc_en_rx);
-int mlx5_query_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *out);
-int mlx5_set_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *in);
-int mlx5_query_port_autoneg(struct mlx5_core_dev *dev, int proto_mask,
-			    u8 *an_disable_cap, u8 *an_disable_status);
-int mlx5_set_port_autoneg(struct mlx5_core_dev *dev, bool disable,
-			  u32 eth_proto_admin, int proto_mask);
-
-int mlx5_core_access_ptys(struct mlx5_core_dev *dev, struct mlx5_ptys_reg *ptys, int write);
-int mlx5_core_access_pvlc(struct mlx5_core_dev *dev, struct mlx5_pvlc_reg *pvlc, int write);
-int mlx5_core_access_pmtu(struct mlx5_core_dev *dev, struct mlx5_pmtu_reg *pmtu, int write);
-int mlx5_query_port_proto_admin(struct mlx5_core_dev *dev,
-				u32 *proto_admin, int proto_mask);
-int mlx5_set_port_proto(struct mlx5_core_dev *dev, u32 proto_admin,
-			int proto_mask);
-int mlx5_set_port_status(struct mlx5_core_dev *dev,
-			 enum mlx5_port_status status,
-			 u8 port);
-int mlx5_query_port_status(struct mlx5_core_dev *dev, u8 *status);
-int mlx5_set_port_mtu(struct mlx5_core_dev *dev, u16 mtu);
-void mlx5_query_port_max_mtu(struct mlx5_core_dev *dev, u16 *max_mtu);
-void mlx5_query_port_oper_mtu(struct mlx5_core_dev *dev, u16 *oper_mtu);
-
-int mlx5_query_port_cong_status(struct mlx5_core_dev *mdev, int protocol,
-				int priority, int *is_enable);
-int mlx5_modify_port_cong_status(struct mlx5_core_dev *mdev, int protocol,
-				 int priority, int enable);
-int mlx5_query_port_cong_params(struct mlx5_core_dev *mdev, int protocol,
-				void *out, int out_size);
-int mlx5_modify_port_cong_params(struct mlx5_core_dev *mdev,
-				 void *in, int in_size);
 
 int mlx5_debug_eq_add(struct mlx5_core_dev *dev, struct mlx5_eq *eq);
 void mlx5_debug_eq_remove(struct mlx5_core_dev *dev, struct mlx5_eq *eq);
 int mlx5_core_eq_query(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
-		       struct mlx5_query_eq_mbox_out *out, int outlen);
+		       u32 *out, int outlen);
 int mlx5_eq_debugfs_init(struct mlx5_core_dev *dev);
 void mlx5_eq_debugfs_cleanup(struct mlx5_core_dev *dev);
 int mlx5_cq_debugfs_init(struct mlx5_core_dev *dev);
 void mlx5_cq_debugfs_cleanup(struct mlx5_core_dev *dev);
+int mlx5_vxlan_debugfs_init(struct mlx5_core_dev *dev);
+void mlx5_vxlan_debugfs_cleanup(struct mlx5_core_dev *dev);
 int mlx5_db_alloc(struct mlx5_core_dev *dev, struct mlx5_db *db);
 int mlx5_db_alloc_node(struct mlx5_core_dev *dev, struct mlx5_db *db,
 		       int node);
@@ -1081,46 +1017,23 @@ int mlx5_core_destroy_psv(struct mlx5_core_dev *dev, int psv_num);
 void mlx5_core_put_rsc(struct mlx5_core_rsc_common *common);
 int mlx5_query_odp_caps(struct mlx5_core_dev *dev,
 			struct mlx5_odp_caps *odp_caps);
-int mlx5_core_modify_hca_vport_context(struct mlx5_core_dev *dev,
-				       u8 other_vport, u8 port_num,
-				       u16 vf_num,
-				       struct mlx5_hca_vport_context *req);
-int mlx5_core_query_hca_vport_context(struct mlx5_core_dev *dev,
-				      u8 other_vport, u8 port_num,
-				      u16 vf_num,
-				      struct mlx5_hca_vport_context *rep);
-int mlx5_core_query_gids(struct mlx5_core_dev *dev, u8 other_vport,
-			 u8 port_num, u16  vf_num, u16 gid_index,
-			 union ib_gid *gid);
-int mlx5_core_query_pkeys(struct mlx5_core_dev *dev, u8 other_vport,
-			  u8 port_num, u16 vf_num, u16 pkey_index,
-			  u16 *pkey);
-int mlx5_core_query_vport_counter(struct mlx5_core_dev *dev, u8 other_vport,
-				  u8 port_num, u16 vf_num,
-				  struct mlx5_vport_counters *vc);
 int mlx5_core_query_ib_ppcnt(struct mlx5_core_dev *dev,
 			     u8 port_num, void *out, size_t sz);
-int mlx5_sriov_init(struct mlx5_core_dev *dev);
-void mlx5_sriov_cleanup(struct mlx5_core_dev *dev);
-int mlx5_sriov_attach(struct mlx5_core_dev *dev);
-void mlx5_sriov_detach(struct mlx5_core_dev *dev);
-int mlx5_vxlan_debugfs_init(struct mlx5_core_dev *dev);
-void mlx5_vxlan_debugfs_cleanup(struct mlx5_core_dev *dev);
-int mlx5_query_module_eeprom(struct mlx5_core_dev *dev,
-			     u16 offset, u16 size, u8 *data);
 
-void mlx5_port_module_event(
-	struct mlx5_core_dev *dev,
-	struct mlx5_eqe *eqe);
-
-static inline u32 mlx5_mkey_to_idx(u32 mkey)
-{
-	return mkey >> 8;
-}
+int mlx5_init_rl_table(struct mlx5_core_dev *dev);
+void mlx5_cleanup_rl_table(struct mlx5_core_dev *dev);
+int mlx5_rl_add_rate(struct mlx5_core_dev *dev, u32 rate, u16 *index);
+void mlx5_rl_remove_rate(struct mlx5_core_dev *dev, u32 rate);
+bool mlx5_rl_is_in_range(struct mlx5_core_dev *dev, u32 rate);
 
 static inline int fw_initializing(struct mlx5_core_dev *dev)
 {
 	return ioread32be(&dev->iseg->initializing) >> 31;
+}
+
+static inline u32 mlx5_mkey_to_idx(u32 mkey)
+{
+	return mkey >> 8;
 }
 
 static inline u32 mlx5_idx_to_mkey(u32 mkey_idx)
@@ -1143,6 +1056,11 @@ enum {
 	MAX_MR_CACHE_ENTRIES    = 15,
 };
 
+enum {
+	MLX5_INTERFACE_PROTOCOL_IB  = 0,
+	MLX5_INTERFACE_PROTOCOL_ETH = 1,
+};
+
 struct mlx5_interface {
 	void *			(*add)(struct mlx5_core_dev *dev);
 	void			(*remove)(struct mlx5_core_dev *dev, void *context);
@@ -1158,8 +1076,12 @@ struct mlx5_interface {
 void *mlx5_get_protocol_dev(struct mlx5_core_dev *mdev, int protocol);
 int mlx5_register_interface(struct mlx5_interface *intf);
 void mlx5_unregister_interface(struct mlx5_interface *intf);
-int mlx5_vport_enable_roce(struct mlx5_core_dev *mdev);
 int mlx5_core_query_vendor_id(struct mlx5_core_dev *mdev, u32 *vendor_id);
+
+int mlx5_cmd_create_vport_lag(struct mlx5_core_dev *dev);
+int mlx5_cmd_destroy_vport_lag(struct mlx5_core_dev *dev);
+bool mlx5_lag_is_active(struct mlx5_core_dev *dev);
+struct net_device *mlx5_lag_get_roce_netdev(struct mlx5_core_dev *dev);
 
 struct mlx5_profile {
 	u64	mask;
@@ -1170,11 +1092,6 @@ struct mlx5_profile {
 		int	limit;
 	} mr_cache[MAX_MR_CACHE_ENTRIES];
 };
-
-static inline int mlx5_get_out_cmd_status(void *ptr)
-{
-	return *(u8 *)ptr;
-}
 
 enum {
 	MLX5_PCI_DEV_IS_VF		= 1 << 0,
@@ -1195,36 +1112,14 @@ static inline int mlx5_get_gid_table_len(u16 param)
 	return 8 * (1 << param);
 }
 
-static inline u16 mlx5_to_sw_pkey_sz(int pkey_sz)
-{
-	if (pkey_sz > MLX5_MAX_LOG_PKEY_TABLE)
-		return 0;
-
-	return MLX5_MIN_PKEY_TABLE_SIZE << pkey_sz;
-}
-
-enum {
-	MLX5_SRIOV_UNLOAD_MAGIC = 0x2cf58291,
-	MLX5_TRIGGERED_CMD_COMP = (u64)1 << 32,
-};
-
-int mlx5_init_rl_table(struct mlx5_core_dev *dev);
-void mlx5_cleanup_rl_table(struct mlx5_core_dev *dev);
-int mlx5_rl_add_rate(struct mlx5_core_dev *dev, u32 rate, u16 *index);
-void mlx5_rl_remove_rate(struct mlx5_core_dev *dev, u32 rate);
-bool mlx5_rl_is_in_range(struct mlx5_core_dev *dev, u32 rate);
-
 static inline bool mlx5_rl_is_supported(struct mlx5_core_dev *dev)
 {
 	return !!(dev->priv.rl_table.max_size);
 }
 
-#define MLX5_EEPROM_MAX_BYTES			32
-#define MLX5_EEPROM_IDENTIFIER_BYTE_MASK	0x000000ff
-#define MLX5_I2C_ADDR_LOW		0x50
-#define MLX5_I2C_ADDR_HIGH		0x51
-#define MLX5_EEPROM_PAGE_LENGTH		256
-#define MLX5_PORT_CAP_ISSM		0x2
+enum {
+	MLX5_TRIGGERED_CMD_COMP = (u64)1 << 32,
+};
 
 /* MLX5 Diagnostics */
 
@@ -1268,19 +1163,19 @@ struct mlx5_diag_eq {
 } __packed;
 
 struct mlx5_diag_blk {
-	u32 type;
-	u32 length;
-	char data[0];
+	u32	type;
+	u32	length;
+	char	data[0];
 } __packed;
 
 struct mlx5_diag_dump {
-	u32 version;
-	u32 flag;
-	u32 num_blocks;
-	u32 total_length;
-	u32 module_no;
-	u32 module_status;
-	char dump[0];
+	u32	version;
+	u32	flag;
+	u32	num_blocks;
+	u32	total_length;
+	u32	module_no;
+	u32	module_status;
+	char	dump[0];
 } __packed;
 
 #endif /* MLX5_DRIVER_H */

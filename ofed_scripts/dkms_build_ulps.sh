@@ -14,7 +14,7 @@ is_installed()
 echo
 echo ------------------------------------------
 echo ----- mlnx-ofed-kernel post-install ------
-for mod in srp iser isert mlnx-sdp mlnx-rds mlnx-nfsrdma mlnx-nvme-rdma mlnx-nvmet-rdma
+for mod in srp iser isert mlnx-nfsrdma mlnx-nvme-rdma mlnx-nvmet-rdma mlnx-rdma-rxe
 do
     echo
     if ! is_installed ${mod}-dkms ; then

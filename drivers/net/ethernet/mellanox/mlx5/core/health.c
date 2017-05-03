@@ -34,6 +34,7 @@
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/vmalloc.h>
+#include <linux/hardirq.h>
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
 #include "mlx5_core.h"
@@ -54,43 +55,21 @@ enum {
 	MLX5_HEALTH_SYNDR_EQ_ERR		= 0xd,
 	MLX5_HEALTH_SYNDR_EQ_INV		= 0xe,
 	MLX5_HEALTH_SYNDR_FFSER_ERR		= 0xf,
-	MLX5_HEALTH_SYNDR_HIGH_TEMP		= 0x10,
+	MLX5_HEALTH_SYNDR_HIGH_TEMP		= 0x10
 };
 
 enum {
 	MLX5_NIC_IFC_DISABLED		= 1,
+	MLX5_NIC_IFC_INVALID		= 3
 };
 
 enum {
 	MLX5_DROP_NEW_HEALTH_WORK,
 };
 
-static u8 get_nic_interface(struct mlx5_core_dev *dev)
+static u8 get_nic_state(struct mlx5_core_dev *dev)
 {
 	return (ioread32be(&dev->iseg->cmdq_addr_l_sz) >> 8) & 3;
-}
-
-static void trigger_cmd_completions(struct mlx5_core_dev *dev)
-{
-	unsigned long flags;
-	u64 vector;
-
-	/* wait for pending handlers to complete */
-	synchronize_irq(dev->priv.msix_arr[MLX5_EQ_VEC_CMD].vector);
-	spin_lock_irqsave(&dev->cmd.alloc_lock, flags);
-	vector = ~dev->cmd.bitmask & ((1ul << (1 << dev->cmd.log_sz)) - 1);
-	if (!vector)
-		goto no_trig;
-
-	vector |= MLX5_TRIGGERED_CMD_COMP;
-	spin_unlock_irqrestore(&dev->cmd.alloc_lock, flags);
-
-	mlx5_core_dbg(dev, "vector 0x%llx\n", vector);
-	mlx5_cmd_comp_handler(dev, vector);
-	return;
-
-no_trig:
-	spin_unlock_irqrestore(&dev->cmd.alloc_lock, flags);
 }
 
 static int in_fatal(struct mlx5_core_dev *dev)
@@ -98,7 +77,7 @@ static int in_fatal(struct mlx5_core_dev *dev)
 	struct mlx5_core_health *health = &dev->priv.health;
 	struct health_buffer __iomem *h = health->health;
 
-	if (get_nic_interface(dev) == MLX5_NIC_IFC_DISABLED)
+	if (get_nic_state(dev) == MLX5_NIC_IFC_DISABLED)
 		return 1;
 
 	if (ioread32be(&h->fw_ver) == 0xffffffff)
@@ -109,20 +88,27 @@ static int in_fatal(struct mlx5_core_dev *dev)
 
 void mlx5_enter_error_state(struct mlx5_core_dev *dev)
 {
+	mutex_lock(&dev->intf_state_mutex);
 	if (dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR)
-		return;
+		goto unlock;
 
 	mlx5_core_err(dev, "start\n");
-	if (pci_channel_offline(dev->pdev) || in_fatal(dev))
+	if (pci_channel_offline(dev->pdev) || in_fatal(dev)) {
 		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
+		mlx5_lock_and_flush_cmdif(dev);
+		mlx5_unlock_cmdif(dev);
+	}
 
 	mlx5_core_event(dev, MLX5_DEV_EVENT_SYS_ERROR, 0);
 	mlx5_core_err(dev, "end\n");
+
+unlock:
+	mutex_unlock(&dev->intf_state_mutex);
 }
 
 static void mlx5_handle_bad_state(struct mlx5_core_dev *dev)
 {
-	u8 nic_interface = get_nic_interface(dev);
+	u8 nic_interface = get_nic_state(dev);
 
 	mlx5_core_warn(dev, "NIC state %d\n", nic_interface);
 
@@ -135,11 +121,18 @@ static void health_recover(struct work_struct *work)
 	struct delayed_work *dwork;
 	struct mlx5_core_dev *dev;
 	struct mlx5_priv *priv;
+	u8 nic_state;
 
 	dwork = container_of(work, struct delayed_work, work);
 	health = container_of(dwork, struct mlx5_core_health, recover_work);
 	priv = container_of(health, struct mlx5_priv, health);
 	dev = container_of(priv, struct mlx5_core_dev, priv);
+
+	nic_state = get_nic_state(dev);
+	if (nic_state == MLX5_NIC_IFC_INVALID) {
+		dev_err(&dev->pdev->dev, "health recovery flow aborted since the nic state is invalid\n");
+		return;
+	}
 
 	dev_err(&dev->pdev->dev, "starting health recovery flow\n");
 	mlx5_recover_device(dev);
@@ -157,7 +150,7 @@ static void health_care(struct work_struct *work)
 	health = container_of(work, struct mlx5_core_health, work);
 	priv = container_of(health, struct mlx5_priv, health);
 	dev = container_of(priv, struct mlx5_core_dev, priv);
-	dev_err(&dev->pdev->dev, "handling bad device here\n");
+	mlx5_core_warn(dev, "handling bad device here\n");
 	mlx5_handle_bad_state(dev);
 
 	spin_lock(&health->wq_lock);
@@ -189,11 +182,11 @@ static const char *hsynd_str(u8 synd)
 	case MLX5_HEALTH_SYNDR_EQ_ERR:
 		return "EQ error";
 	case MLX5_HEALTH_SYNDR_EQ_INV:
-		return "Invalid EQ refrenced";
+		return "Invalid EQ referenced";
 	case MLX5_HEALTH_SYNDR_FFSER_ERR:
 		return "FFSER error";
 	case MLX5_HEALTH_SYNDR_HIGH_TEMP:
-		return "High temprature";
+		return "High temperature";
 	default:
 		return "unrecognized error";
 	}
@@ -255,12 +248,11 @@ static void poll_health(unsigned long data)
 {
 	struct mlx5_core_dev *dev = (struct mlx5_core_dev *)data;
 	struct mlx5_core_health *health = &dev->priv.health;
-	bool bad_counter = false;
 	u32 count;
 
 	if (dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR) {
-		trigger_cmd_completions(dev);
-		goto out;
+		mod_timer(&health->timer, get_next_poll_jiffies());
+		return;
 	}
 
 	count = ioread32be(health->health_counter);
@@ -272,12 +264,13 @@ static void poll_health(unsigned long data)
 	health->prev = count;
 	if (health->miss_counter == MAX_MISSES) {
 		dev_err(&dev->pdev->dev, "device's health compromised - reached miss count\n");
-		bad_counter = true;
+		print_health_info(dev);
+	} else {
+		mod_timer(&health->timer, get_next_poll_jiffies());
 	}
 
-	if ((in_fatal(dev) || bad_counter) && !health->sick) {
-		health->sick = 1;
-		dev_err(&dev->pdev->dev, "NIC was disabled\n");
+	if (in_fatal(dev) && !health->sick) {
+		health->sick = true;
 		print_health_info(dev);
 		spin_lock(&health->wq_lock);
 		if (!test_bit(MLX5_DROP_NEW_HEALTH_WORK, &health->flags))
@@ -287,9 +280,6 @@ static void poll_health(unsigned long data)
 				"new health works are not permitted at this stage\n");
 		spin_unlock(&health->wq_lock);
 	}
-
-out:
-	mod_timer(&health->timer, get_next_poll_jiffies());
 }
 
 void mlx5_start_health_poll(struct mlx5_core_dev *dev)

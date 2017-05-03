@@ -16,7 +16,7 @@ void ibnl_cleanup(void);
 /**
  * Add a a client to the list of IB netlink exporters.
  * @index: Index of the added client
- * @nops: Number of max supported ops by the added client.
+ * @nops: Number of supported ops by the added client.
  * @cb_table: A table for op->callback
  *
  * Returns 0 on success or a negative error code.
@@ -27,13 +27,10 @@ int ibnl_add_client(int index, int nops,
 /**
  * Remove a client from IB netlink.
  * @index: Index of the removed IB client.
- * @nops: Number of max supported ops by the added client.
- * @cb_table: A table for op->callback
  *
  * Returns 0 on success or a negative error code.
  */
-int ibnl_remove_client(int index, int nops,
-		       const struct ibnl_client_cbs cb_table[]);
+int ibnl_remove_client(int index);
 
 /**
  * Put a new message in a supplied skb.

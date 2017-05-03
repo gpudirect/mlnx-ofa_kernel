@@ -35,8 +35,8 @@
 #include <linux/errno.h>
 
 #define DRV_NAME	"rpcrdma"
-#define DRV_VERSION	"2.0.0"
-#define DRV_RELDATE	"August 14, 2016"
+#define DRV_VERSION	"2.0.1"
+#define DRV_RELDATE	"November 15, 2016"
 
 MODULE_AUTHOR("Alaa Hleihel");
 MODULE_DESCRIPTION("rpcrdma dummy kernel module");

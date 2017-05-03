@@ -33,6 +33,7 @@
 #ifndef MLX4_DRIVER_H
 #define MLX4_DRIVER_H
 
+#include <net/devlink.h>
 #include <linux/mlx4/device.h>
 
 struct mlx4_dev;
@@ -112,7 +113,8 @@ struct mlx4_dbdf2val_lst {
 	int		def_val[MLX4_MAX_BDF_VALS];  /* Default values */
 	struct mlx4_range range;		     /* Valid values range */
 	int		num_inval_vals; /* # of values in middle of range
-					 * which are invalid */
+					 * which are invalid
+					 */
 	int		inval_val[MLX4_MAX_BDF_VALS]; /* invalid values table */
 };
 
@@ -141,9 +143,10 @@ struct mlx4_port_map {
 };
 
 int mlx4_port_map_set(struct mlx4_dev *dev, struct mlx4_port_map *v2p);
-int mlx4_port_map_get(struct mlx4_dev *dev, u8 vport, u8 *pport);
 
 void *mlx4_get_protocol_dev(struct mlx4_dev *dev, enum mlx4_protocol proto, int port);
+
+struct devlink_port *mlx4_get_devlink_port(struct mlx4_dev *dev, int port);
 
 static inline u64 mlx4_mac_to_u64(u8 *addr)
 {
@@ -157,15 +160,14 @@ static inline u64 mlx4_mac_to_u64(u8 *addr)
 	return mac;
 }
 
-static inline int mlx4_is_little_endian(void)
+static inline void mlx4_u64_to_mac(u8 *addr, u64 mac)
 {
-#if defined(__LITTLE_ENDIAN)
-	return 1;
-#elif defined(__BIG_ENDIAN)
-	return 0;
-#else
-#error Host endianness not defined
-#endif
+	int i;
+
+	for (i = ETH_ALEN; i > 0; i--) {
+		addr[i - 1] = mac && 0xFF;
+		mac >>= 8;
+	}
 }
 
 int mlx4_choose_vector(struct mlx4_dev *dev, int vector, int num_comp);

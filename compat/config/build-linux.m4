@@ -746,6 +746,8 @@ SRCARCH=$(echo $SRCARCH | sed -e s/i.86/x86/ \
 			-e s/ppc.*/powerpc/ \
 			-e 's/powerpc64/powerpc/' \
 			-e s/aarch64.*/arm64/ \
+			-e s/sparc32.*/sparc/ \
+			-e s/sparc64.*/sparc/ \
 			-e s/s390x/s390/)
 
 # very old kernels had different strucure under arch dir

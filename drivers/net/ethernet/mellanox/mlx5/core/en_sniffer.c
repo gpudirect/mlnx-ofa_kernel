@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2016, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -30,810 +30,537 @@
  * SOFTWARE.
  */
 
-#include "en.h"
 #include <linux/mlx5/fs.h>
-#include "linux/mlx5/vport.h"
+#include "en.h"
+
+enum sniffer_types {
+	SNIFFER_TX,
+	SNIFFER_RX,
+	SNIFFER_LEFTOVERS,
+	SNIFFER_NUM_TYPES,
+};
+
+struct mlx5_sniffer_rule_info {
+	struct mlx5_flow_rule   *rule;
+	struct mlx5_flow_table  *ft;
+	enum sniffer_types      type;
+};
+
+struct sniffer_work {
+	struct work_struct             work;
+	struct mlx5_sniffer_rule_info  rule_info;
+	struct mlx5e_sniffer           *sniffer;
+	struct notifier_block          *nb;
+};
+
+struct sniffer_evt_ctx {
+	struct mlx5e_sniffer    *sniffer;
+	struct notifier_block   nb;
+};
+
+struct sniffer_rule {
+	struct mlx5_flow_rule   *rule;
+	struct list_head        list;
+};
 
 enum {
-	SNIFFER_ADD = 1,
-	SNIFFER_DEL = 2,
+	SNIFFER_ROCE_V1_RULE,
+	SNIFFER_ROCE_V2_IPV4_RULE,
+	SNIFFER_ROCE_V2_IPV6_RULE,
+	SNIFFER_ROCE_NUM_RULES
 };
 
-enum mlx5e_sniffer_rule_type {
-	SNIFFER_RULE,
-	LEFTOVERS_RULE,
+struct mlx5e_sniffer {
+	struct mlx5e_priv	*priv;
+	struct workqueue_struct *sniffer_wq;
+	struct mlx5_flow_table  *rx_ft;
+	struct mlx5_flow_table  *tx_ft;
+	struct sniffer_evt_ctx  bypass_ctx;
+	struct sniffer_evt_ctx  roce_ctx;
+	struct sniffer_evt_ctx  leftovers_ctx;
+	struct list_head        rules;
+	struct list_head        leftover_rules;
+	struct mlx5e_tir        tir[SNIFFER_NUM_TYPES];
+	struct mlx5_flow_rule	*roce_rules[SNIFFER_ROCE_NUM_RULES];
 };
 
-enum {
-	MAX_SNIFF_FTES_PER_FG = (FS_MAX_ENTRIES / MAX_SNIFFER_FLOW_RULE_NUM),
-};
-
-struct mlx5e_info {
-	struct list_head  list;
-	struct mlx5e_priv *priv;
-};
-
-static struct list_head  mlx5e_dev_list;
-static struct mutex mlx5e_dev_list_mutex;
-
-/*Private functions*/
-static void sniffer_del_rule_handler(struct work_struct *_work);
-static void sniffer_add_rule_handler(struct work_struct *_work);
-
-static void mlx5e_sniffer_build_tir_ctx(
-	struct mlx5e_priv *priv,
-	u32 *tirc,
-	int tt)
+static bool sniffer_rule_in_leftovers(struct mlx5e_sniffer *sniffer,
+				      struct mlx5_flow_rule *rule)
 {
-	mlx5e_build_tir_ctx_common(priv, tirc);
+	struct sniffer_rule *sniffer_flow;
 
-	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_DIRECT);
-	MLX5_SET(tirc, tirc, inline_rqn, priv->channel[0]->rq.rqn);
+	list_for_each_entry(sniffer_flow, &sniffer->leftover_rules, list) {
+		if (sniffer_flow->rule == rule)
+			return true;
+	}
+	return false;
 }
 
-static void mlx5e_sniffer_del_rule_info(
-			struct mlx5_sniffer_rule_info *tmp)
+static int mlx5e_sniffer_create_tx_rule(struct mlx5e_sniffer *sniffer)
 {
-	if (!tmp)
-		return;
+	struct mlx5e_priv *priv = sniffer->priv;
+	struct sniffer_rule *sniffer_flow;
+	struct mlx5_flow_destination dest;
+	struct mlx5_flow_spec *spec;
+	int err = 0;
 
-	kfree(tmp->fg_mask);
-	kfree(tmp->fte_match_value);
-	kfree(tmp);
-}
+	/* Create no filter rule */
+	spec = mlx5_vzalloc(sizeof(*spec));
+	if (!spec)
+		return -ENOMEM;
 
-static int mlx5e_sniffer_save_rule_info(
-			struct mlx5_sniffer_rule_info **rule_info,
-			struct mlx5_flow_rule *rule,
-			struct mlx5_flow_rule_node *rule_node,
-			int rule_type)
-{
-	struct mlx5_sniffer_rule_info *tmp;
-
-	tmp = mlx5_vzalloc(sizeof(struct mlx5_sniffer_rule_info));
-	if (!tmp)
-		goto clean_up;
-
-	tmp->fg_mask = mlx5_vzalloc(sizeof(struct mlx5_core_fs_mask));
-	if (!tmp->fg_mask)
-		goto clean_up;
-
-	tmp->fte_match_value = mlx5_vzalloc(MLX5_ST_SZ_BYTES(fte_match_param));
-	if (!tmp->fte_match_value)
-		goto clean_up;
-
-	if (rule) { /*bypass rules*/
-		mlx5_get_match_criteria(tmp->fg_mask->match_criteria, rule);
-		mlx5_get_match_value(tmp->fte_match_value, rule);
-		tmp->fg_mask->match_criteria_enable
-			= mlx5_get_match_criteria_enable(rule);
-	} else { /*roce rules*/
-		memcpy(
-			tmp->fg_mask->match_criteria,
-			rule_node->match_criteria,
-			sizeof(rule_node->match_criteria));
-		memcpy(
-			tmp->fte_match_value,
-			rule_node->match_value,
-			sizeof(rule_node->match_value));
-		tmp->fg_mask->match_criteria_enable
-			= rule_node->match_criteria_enable;
+	sniffer_flow = kzalloc(sizeof(*sniffer_flow), GFP_KERNEL);
+	if (!sniffer_flow) {
+		err = -ENOMEM;
+		netdev_err(priv->netdev, "failed to alloc sniifer_flow");
+		goto out;
 	}
 
-	tmp->rule_type = rule_type;
-	*rule_info = tmp;
-
-	return 0;
-
-clean_up:
-	mlx5e_sniffer_del_rule_info(tmp);
-	return -ENOMEM;
-}
-
-/*0 not match, 1 match*/
-static bool mlx5e_sniffer_is_match_rule(
-	struct mlx5_sniffer_rule_info *rule_info,
-	struct mlx5_flow_rule *rule2)
-{
-	struct mlx5_core_fs_mask *fg_mask1 = NULL;
-	struct mlx5_core_fs_mask *fg_mask2 = NULL;
-
-	u32 *fte_match_value1 = NULL;
-	u32 *fte_match_value2 = NULL;
-
-	bool match = 0;
-
-	/*Initialize*/
-	fte_match_value1 = rule_info->fte_match_value;
-	fg_mask1 = rule_info->fg_mask;
-
-	fte_match_value2 = mlx5_vzalloc(MLX5_ST_SZ_BYTES(fte_match_param));
-	if (!fte_match_value2)
-		goto clean_up;
-
-	fg_mask2 = mlx5_vzalloc(sizeof(struct mlx5_core_fs_mask));
-	if (!fg_mask2)
-		goto clean_up;
-
-	/*Get values*/
-	mlx5_get_match_criteria(fg_mask2->match_criteria, rule2);
-	mlx5_get_match_value(fte_match_value2, rule2);
-	fg_mask2->match_criteria_enable = mlx5_get_match_criteria_enable(rule2);
-
-	/*Compare*/
-	match = 1;
-	if (!(fs_match_exact_mask(
-			fg_mask1->match_criteria_enable,
-			fg_mask2->match_criteria_enable,
-			fg_mask1->match_criteria,
-			fg_mask2->match_criteria) &&
-		fs_match_exact_val(
-			fg_mask1,
-			fte_match_value1,
-			fte_match_value2))) {
-		match = 0;
-		goto clean_up;
+	dest.tir_num = sniffer->tir[SNIFFER_TX].tirn;
+	dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
+	sniffer_flow->rule = mlx5_add_flow_rule(sniffer->tx_ft, spec,
+						MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
+						MLX5_FS_OFFLOAD_FLOW_TAG,
+						&dest);
+	if (IS_ERR(sniffer_flow->rule)) {
+		err = PTR_ERR(sniffer_flow->rule);
+		kfree(sniffer_flow);
+		goto out;
 	}
-
-clean_up:
-	kfree(fte_match_value2);
-	kfree(fg_mask2);
-	return match;
+	list_add(&sniffer_flow->list, &sniffer->rules);
+out:
+	kvfree(spec);
+	return err;
 }
 
-/*-1 : not exists*/
-static int mlx5e_sniffer_check_rule_exist(
-			struct mlx5_sniffer_rule_info *rule_info,
-			struct mlx5e_sniffer_flow *flow_arr,
-			int number_of_rule)
+static void sniffer_del_roce_rules(struct mlx5e_sniffer *sniffer)
 {
 	int i;
 
-	for (i = 0; i < number_of_rule; i++) {
-		if (flow_arr[i].valid == 0)
-			continue;
-
-		if (mlx5e_sniffer_is_match_rule(
-					rule_info,
-					flow_arr[i].rx_dst))
-			return i;
+	for (i = 0; i < SNIFFER_ROCE_NUM_RULES; i++) {
+		if (!IS_ERR_OR_NULL(sniffer->roce_rules[i])) {
+			mlx5_del_flow_rule(sniffer->roce_rules[i]);
+			sniffer->roce_rules[i] = NULL;
+		}
 	}
-
-	return -1;
 }
 
-static void mlx5e_sniffer_send_workqueue(
-	struct mlx5e_priv *priv,
-	struct mlx5_flow_rule *rule,
-	int action, int rule_type)
-{
-	struct sniffer_work *work;
-
-	work = kzalloc(sizeof(*work), GFP_KERNEL);
-	if (!work)
-		return;
-
-	if (action == SNIFFER_ADD)
-		INIT_WORK(&work->work, sniffer_add_rule_handler);
-	else
-		INIT_WORK(&work->work, sniffer_del_rule_handler);
-
-	work->priv = priv;
-	if (mlx5e_sniffer_save_rule_info(
-		&work->rule_info, rule, NULL, rule_type)) {
-			kfree(work);
-			return;
-	}
-	queue_work(priv->fs.sniffer.sniffer_wq, &work->work);
-}
-
-static int mlx5e_sniffer_create_tx_rule(struct mlx5e_priv *priv)
+#define ROCEV1_ETHERTYPE   0x8915
+static int sniffer_create_roce_rules(struct mlx5e_sniffer *sniffer)
 {
 	struct mlx5_flow_destination dest;
-	u32 *match_criteria_value;
+	struct mlx5_flow_spec *spec;
+	u32 *mc;
+	u32 *mv;
 	int err = 0;
-	int match_len = MLX5_ST_SZ_BYTES(fte_match_param);
 
-	/*Create no filter rule*/
-	match_criteria_value = mlx5_vzalloc(match_len);
-	if (!match_criteria_value)
+	spec = mlx5_vzalloc(sizeof(*spec));
+	if (!spec)
 		return -ENOMEM;
 
-	dest.tir_num = priv->sniffer_tirn[MLX5E_SNIFFER_TX];
+	mc = spec->match_criteria;
+	mv = spec->match_value;
+	spec->match_criteria_enable = MLX5_MATCH_OUTER_HEADERS;
+
+	dest.tir_num = sniffer->tir[SNIFFER_RX].tirn;
 	dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
-	priv->fs.sniffer.tx_dst =
-		mlx5_add_flow_rule(
-			priv->fs.sniffer.tx_ft,
-			0,
-			match_criteria_value,
-			match_criteria_value,
-			MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
-			MLX5_FS_SNIFFER_FLOW_TAG,
-			&dest);
-	if (IS_ERR_OR_NULL(priv->fs.sniffer.tx_dst)) {
-		err = PTR_ERR(priv->fs.sniffer.tx_dst);
-		priv->fs.sniffer.tx_dst = NULL;
+
+	MLX5_SET_TO_ONES(fte_match_param, mc, outer_headers.ethertype);
+	MLX5_SET(fte_match_param, mv, outer_headers.ethertype, ROCEV1_ETHERTYPE);
+	sniffer->roce_rules[SNIFFER_ROCE_V1_RULE]
+		= mlx5_add_flow_rule(sniffer->rx_ft, spec,
+				     MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
+				     MLX5_FS_OFFLOAD_FLOW_TAG,
+				     &dest);
+	if (IS_ERR(sniffer->roce_rules[SNIFFER_ROCE_V1_RULE])) {
+		err = PTR_ERR(sniffer->roce_rules[SNIFFER_ROCE_V1_RULE]);
+		sniffer->roce_rules[SNIFFER_ROCE_V1_RULE] = NULL;
+		goto create_roce_rules_out;
 	}
 
-	kvfree(match_criteria_value);
+	MLX5_SET(fte_match_param, mv, outer_headers.ethertype, ETH_P_IP);
+	MLX5_SET_TO_ONES(fte_match_param, mc, outer_headers.ip_protocol);
+	MLX5_SET(fte_match_param, mv, outer_headers.ip_protocol, IPPROTO_UDP);
+	MLX5_SET_TO_ONES(fte_match_param, mc, outer_headers.udp_dport);
+	MLX5_SET(fte_match_param, mv, outer_headers.udp_dport,
+		 ROCE_V2_UDP_DPORT);
+	sniffer->roce_rules[SNIFFER_ROCE_V2_IPV4_RULE]
+		= mlx5_add_flow_rule(sniffer->rx_ft, spec,
+				     MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
+				     MLX5_FS_OFFLOAD_FLOW_TAG,
+				     &dest);
+	if (IS_ERR(sniffer->roce_rules[SNIFFER_ROCE_V2_IPV4_RULE])) {
+		err = PTR_ERR(sniffer->roce_rules[SNIFFER_ROCE_V2_IPV4_RULE]);
+		sniffer->roce_rules[SNIFFER_ROCE_V2_IPV4_RULE] = NULL;
+		goto create_roce_rules_out;
+	}
+
+	MLX5_SET(fte_match_param, mv, outer_headers.ethertype, ETH_P_IPV6);
+	sniffer->roce_rules[SNIFFER_ROCE_V2_IPV6_RULE]
+		= mlx5_add_flow_rule(sniffer->rx_ft, spec,
+				     MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
+				     MLX5_FS_OFFLOAD_FLOW_TAG,
+				     &dest);
+	if (IS_ERR(sniffer->roce_rules[SNIFFER_ROCE_V2_IPV6_RULE])) {
+		err = PTR_ERR(sniffer->roce_rules[SNIFFER_ROCE_V2_IPV6_RULE]);
+		sniffer->roce_rules[SNIFFER_ROCE_V2_IPV6_RULE] = NULL;
+		goto create_roce_rules_out;
+	}
+
+create_roce_rules_out:
+	kfree(spec);
+	if (err)
+		sniffer_del_roce_rules(sniffer);
 	return err;
-}
-
-static int mlx5e_sniffer_build_flow(
-				int index,
-				struct mlx5e_priv *priv,
-				struct mlx5_sniffer_rule_info *rule_info)
-{
-	int err;
-	u32 *fg_match_criteria = NULL;
-	u8 fg_match_criteria_enable;
-	u32 *fte_match_value = NULL;
-	struct mlx5_flow_destination dest;
-
-	/*Copy fg, fte parameters*/
-	fg_match_criteria = rule_info->fg_mask->match_criteria;
-	fte_match_value = rule_info->fte_match_value;
-	fg_match_criteria_enable = rule_info->fg_mask->match_criteria_enable;
-
-	err = 0;
-	if (rule_info->rule_type == SNIFFER_RULE) {
-		/*Create rx and tx fte*/
-		dest.tir_num = priv->sniffer_tirn[MLX5E_SNIFFER_RX];
-		dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
-
-		priv->fs.sniffer.flow_arr[index].rx_dst =
-			mlx5_add_flow_rule(
-				priv->fs.sniffer.rx_ft,
-				fg_match_criteria_enable,
-				fg_match_criteria,
-				fte_match_value,
-				MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
-				MLX5_FS_SNIFFER_FLOW_TAG,
-				&dest);
-		if (IS_ERR_OR_NULL(priv->fs.sniffer.flow_arr[index].rx_dst)) {
-			err = PTR_ERR(priv->fs.sniffer.flow_arr[index].rx_dst);
-			priv->fs.sniffer.flow_arr[index].rx_dst = NULL;
-			goto error;
-		}
-
-		priv->fs.sniffer.flow_arr[index].valid = 1;
-		priv->fs.sniffer.flow_arr[index].ref_cnt = 1;
-	} else { /*Leftovers*/
-		/*Create rx leftovers fte*/
-		dest.tir_num = priv->sniffer_tirn[MLX5E_LEFTOVERS_RX];
-		dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
-		priv->fs.sniffer.leftovers_flow_arr[index].rx_dst =
-			mlx5_add_flow_rule(
-				priv->fs.sniffer.leftovers_ft,
-				fg_match_criteria_enable,
-				fg_match_criteria,
-				fte_match_value,
-				MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
-				MLX5_FS_DEFAULT_FLOW_TAG, /*Bypass  flow tag*/
-				&dest);
-		if (IS_ERR_OR_NULL(
-			priv->fs.sniffer.leftovers_flow_arr[index].rx_dst)) {
-			err = PTR_ERR(priv->fs.sniffer.leftovers_flow_arr[index].rx_dst);
-			priv->fs.sniffer.leftovers_flow_arr[index].rx_dst = NULL;
-			goto error;
-		}
-
-		priv->fs.sniffer.leftovers_flow_arr[index].valid = 1;
-		priv->fs.sniffer.leftovers_flow_arr[index].ref_cnt = 1;
-	}
-
-error:
-	return err;
-}
-
-static void update_flow_table_info(
-	int rule_type,
-	struct mlx5e_priv *priv,
-	struct mlx5e_sniffer_flow **flow_arr,
-	int *number_of_rule)
-{
-	if (rule_type == SNIFFER_RULE) {
-		*flow_arr = priv->fs.sniffer.flow_arr;
-		*number_of_rule = MAX_SNIFFER_FLOW_RULE_NUM;
-	} else {
-		*flow_arr = priv->fs.sniffer.leftovers_flow_arr;
-		*number_of_rule = LEFTOVERS_RULE_NUM;
-	}
 }
 
 static void sniffer_del_rule_handler(struct work_struct *_work)
 {
-	struct sniffer_work *work;
 	struct mlx5_sniffer_rule_info *rule_info;
-	struct mlx5e_priv *priv;
-	struct mlx5e_sniffer_flow *flow_arr;
-	int number_of_rule;
-
-	int i;
+	struct sniffer_rule *sniffer_rule;
+	struct sniffer_work *work;
 
 	work = container_of(_work, struct sniffer_work, work);
-	priv = work->priv;
-	rule_info = work->rule_info;
+	rule_info = &work->rule_info;
+	sniffer_rule = (struct sniffer_rule *)
+		mlx5_get_rule_private_data(rule_info->rule, work->nb);
 
-	update_flow_table_info(
-		work->rule_info->rule_type,
-		priv,
-		&flow_arr,
-		&number_of_rule);
-
-	for (i = 0; i < number_of_rule; i++) {
-		if (flow_arr[i].valid == 0)
-			continue;
-
-		if (mlx5e_sniffer_is_match_rule(
-				rule_info,
-				flow_arr[i].rx_dst)) {
-			flow_arr[i].ref_cnt--;
-
-			/*Quit if this is not the last dests in ALL FTs*/
-			if (flow_arr[i].ref_cnt)
-				break;
-
-			if (flow_arr[i].rx_dst)
-				mlx5_del_flow_rule(flow_arr[i].rx_dst);
-
-			flow_arr[i].valid = 0;
-			flow_arr[i].ref_cnt = 0;
-
-			break;
-		}
-	}
-
-	mlx5e_sniffer_del_rule_info(work->rule_info);
-	kfree(work);
-}
-
-static void sniffer_add_rule_handler(struct work_struct *_work)
-{
-	struct sniffer_work *work;
-	struct mlx5_sniffer_rule_info *rule_info;
-	struct mlx5e_priv *priv;
-	struct mlx5e_sniffer_flow *flow_arr;
-	int number_of_rule;
-
-	int i, err, match_idx;
-
-	work = container_of(_work, struct sniffer_work, work);
-	priv = work->priv;
-	rule_info = work->rule_info;
-
-	update_flow_table_info(
-		work->rule_info->rule_type,
-		priv,
-		&flow_arr,
-		&number_of_rule);
-
-	/*Increase ref_cnt if rule already exists*/
-	match_idx = mlx5e_sniffer_check_rule_exist(
-					rule_info,
-					flow_arr,
-					number_of_rule);
-
-	if (match_idx >= 0) {
-		/*Leftovers FT is single FT with no duplicated rules*/
-		WARN_ON(work->rule_info->rule_type == LEFTOVERS_RULE);
-		flow_arr[match_idx].ref_cnt++;
+	if (!sniffer_rule)
 		goto out;
-	}
 
-	err = 0;
-	for (i = 0; i < number_of_rule; i++) {
-		if (flow_arr[i].valid == 0) {
-			err = mlx5e_sniffer_build_flow
-					(i, priv, rule_info);
-			if (err)
-				mlx5_core_err(priv->mdev, "failed to create sniffer rule\n");
-			break;
-		}
-	}
+	mlx5_del_flow_rule(sniffer_rule->rule);
+	list_del(&sniffer_rule->list);
+	kfree(sniffer_rule);
 
 out:
-	mlx5e_sniffer_del_rule_info(work->rule_info);
+	mlx5_release_rule_private_data(rule_info->rule, work->nb);
+	mlx5_put_flow_rule(work->rule_info.rule);
 	kfree(work);
 }
 
-static int mlx5e_sniffer_del_bypass_rule_callback_fn(
-			struct mlx5_flow_rule *rule,
-			bool ctx_changed,
-			void *client_data,
-			void *context)
+static int sniffer_add_flow_rule(struct mlx5e_sniffer *sniffer,
+				 struct sniffer_rule *sniffer_flow,
+				 struct mlx5_sniffer_rule_info *rule_info)
 {
-	struct mlx5e_priv *priv;
-
-	priv = (struct mlx5e_priv *)context;
-
-	/*Skip if event is deactivated*/
-	if (!priv->fs.sniffer.bypass_event)
-		return 0;
-
-	/*No duplicated rule guaranteed by this check*/
-	if (!ctx_changed)
-		return 0;
-
-	mlx5e_sniffer_send_workqueue(priv, rule, SNIFFER_DEL, SNIFFER_RULE);
-	return 0;
-}
-
-static int mlx5e_sniffer_add_bypass_rule_callback_fn(
-				struct mlx5_flow_rule *rule,
-				bool ctx_changed,
-				void *client_data,
-				void *context)
-{
-	struct mlx5e_priv *priv;
-
-	priv = (struct mlx5e_priv *)context;
-
-	/*Skip if event is deactivated*/
-	if (!priv->fs.sniffer.bypass_event)
-		return 0;
-
-	/*Skip if this rules appeared before */
-	if (client_data)
-		return 0;
-
-	/*Flag the rule by setting  a non-NULL address*/
-	if (mlx5_set_rule_private_data(
-		rule,
-		priv->fs.sniffer.bypass_event,
-		(void *)1))
-		return 0;
-
-	/*Check if this is new FTE*/
-	if (!ctx_changed)
-		return 0;
-
-	mlx5e_sniffer_send_workqueue(priv, rule, SNIFFER_ADD, SNIFFER_RULE);
-	return 0;
-}
-
-static int mlx5e_sniffer_free_resources(struct mlx5e_priv *priv)
-{
-	int i;
-
-	if (priv->fs.sniffer.bypass_event)
-		mlx5_unregister_rule_notifier(priv->fs.sniffer.bypass_event);
-	priv->fs.sniffer.bypass_event = NULL;
-
-	if (priv->fs.sniffer.sniffer_wq)
-		destroy_workqueue(priv->fs.sniffer.sniffer_wq);
-	priv->fs.sniffer.sniffer_wq = NULL;
-
-	/*Delete rules*/
-	for (i = 0; i < MAX_SNIFFER_FLOW_RULE_NUM; i++) {
-		if (!priv->fs.sniffer.flow_arr[i].valid)
-			continue;
-
-		if (priv->fs.sniffer.flow_arr[i].rx_dst)
-			mlx5_del_flow_rule(
-				priv->fs.sniffer.flow_arr[i].rx_dst);
-	}
-
-	if (priv->fs.sniffer.tx_dst)
-		mlx5_del_flow_rule(
-			priv->fs.sniffer.tx_dst);
-
-	for (i = 0; i < LEFTOVERS_RULE_NUM; i++) {
-		if (!priv->fs.sniffer.leftovers_flow_arr[i].valid)
-			continue;
-
-		if (priv->fs.sniffer.leftovers_flow_arr[i].rx_dst)
-			mlx5_del_flow_rule(
-				priv->fs.sniffer.leftovers_flow_arr[i].rx_dst);
-	}
-
-	/*Delete tables*/
-	if (priv->fs.sniffer.rx_ft)
-		mlx5_destroy_flow_table(priv->fs.sniffer.rx_ft);
-
-	if (priv->fs.sniffer.tx_ft)
-		mlx5_destroy_flow_table(priv->fs.sniffer.tx_ft);
-
-	if (priv->fs.sniffer.leftovers_ft)
-		mlx5_destroy_flow_table(priv->fs.sniffer.leftovers_ft);
-
-	/*Clean up*/
-	memset(
-		priv->fs.sniffer.flow_arr,
-		0,
-		sizeof(priv->fs.sniffer.flow_arr));
-
-	memset(
-		priv->fs.sniffer.leftovers_flow_arr,
-		0,
-		sizeof(priv->fs.sniffer.leftovers_flow_arr));
-
-	priv->fs.sniffer.rx_ft = NULL;
-	priv->fs.sniffer.tx_ft = NULL;
-	priv->fs.sniffer.leftovers_ft = NULL;
-
-	return 0;
-}
-
-/*Work around for leftover ruless
-Hard code two rules from create_leftovers_rule in infiniband/hw/mlx5/main.c*/
-static int mlx5e_sniffer_build_leftovers_rule(struct mlx5e_priv *priv)
-{
-	struct sniffer_work *work;
-	struct mlx5_flow_rule_node *rule_node;
+	struct mlx5_flow_destination  dest;
+	struct mlx5_flow_spec *spec;
+	struct mlx5_flow_table *ft;
 	int err = 0;
 
-	void *outer_headers_c;
-	void *outer_headers_v;
-	static const char mcast_mac[ETH_ALEN] = {0x1};
-	static const char empty_mac[ETH_ALEN] = {};
-
-	rule_node = kzalloc(sizeof(*rule_node), GFP_KERNEL);
-	if (!rule_node)
+	spec = mlx5_vzalloc(sizeof(*spec));
+	if (!spec)
 		return -ENOMEM;
-	memset(rule_node->match_criteria, 0, sizeof(*rule_node->match_criteria));
-	memset(rule_node->match_value, 0, sizeof(*rule_node->match_value));
 
-	outer_headers_c = MLX5_ADDR_OF(fte_match_param, rule_node->match_criteria, outer_headers);
-	outer_headers_v = MLX5_ADDR_OF(fte_match_param, rule_node->match_value, outer_headers);
-
-	/*Build mcast rule*/
-	memcpy(
-		MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_headers_c, dmac_47_16),
-		mcast_mac,
-		ETH_ALEN);
-	memcpy(
-		MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_headers_v, dmac_47_16),
-		mcast_mac,
-		ETH_ALEN);
-	rule_node->match_criteria_enable =
-		get_match_criteria_enable(rule_node->match_criteria);
-
-	work = kzalloc(sizeof(*work), GFP_KERNEL);
-	if (!work) {
-		err = -ENOENT;
-		goto error;
+	mlx5_get_rule_flow_spec(spec, rule_info->rule);
+	dest.tir_num = sniffer->tir[rule_info->type].tirn;
+	dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
+	ft = (rule_info->type == SNIFFER_LEFTOVERS) ? rule_info->ft :
+		sniffer->rx_ft;
+	sniffer_flow->rule = mlx5_add_flow_rule(ft, spec,
+						MLX5_FLOW_CONTEXT_ACTION_FWD_DEST,
+						MLX5_FS_OFFLOAD_FLOW_TAG,
+						&dest);
+	if (IS_ERR(sniffer_flow->rule)) {
+		err = PTR_ERR(sniffer_flow->rule);
+		sniffer_flow->rule = NULL;
 	}
-	INIT_WORK(&work->work, sniffer_add_rule_handler);
-	work->priv = priv;
-	if (mlx5e_sniffer_save_rule_info(
-		&work->rule_info, NULL,
-		rule_node, LEFTOVERS_RULE)) {
-		err = -ENOENT;
-		goto error;
-	}
-	queue_work(priv->fs.sniffer.sniffer_wq, &work->work);
 
-	/*Build ucast rule*/
-	memcpy(MLX5_ADDR_OF(
-		fte_match_set_lyr_2_4, outer_headers_v, dmac_47_16),
-		empty_mac,
-		ETH_ALEN);
-	rule_node->match_criteria_enable =
-		get_match_criteria_enable(rule_node->match_criteria);
-
-	work = kzalloc(sizeof(*work), GFP_KERNEL);
-	if (!work) {
-		err = -ENOENT;
-		goto error;
-	}
-	INIT_WORK(&work->work, sniffer_add_rule_handler);
-	work->priv = priv;
-	if (mlx5e_sniffer_save_rule_info(
-		&work->rule_info, NULL,
-		rule_node, LEFTOVERS_RULE)) {
-		err = -ENOENT;
-		goto error;
-	}
-	queue_work(priv->fs.sniffer.sniffer_wq, &work->work);
-	goto cleanup;
-
-error:
-	kfree(work);
-
-cleanup:
-	kfree(rule_node);
+	kvfree(spec);
 	return err;
 }
 
-/*RoCE related functions*/
-static int mlx5e_sniffer_collect_roce_rule(struct mlx5e_priv *priv, int action)
+static void sniffer_add_rule_handler(struct work_struct *work)
 {
-	struct sniffer_work *work;
-	struct mlx5_flow_rules_list *rules;
-	struct mlx5_flow_rule_node *rule_node;
-	u8  roce_version_cap;
+	struct mlx5_sniffer_rule_info *rule_info;
+	struct sniffer_rule *sniffer_flow;
+	struct sniffer_work *sniffer_work;
+	struct mlx5e_sniffer *sniffer;
+	struct notifier_block *nb;
+	struct mlx5e_priv *priv;
 	int err;
 
-	roce_version_cap = MLX5_CAP_ROCE(priv->mdev, roce_version);
+	sniffer_work = container_of(work, struct sniffer_work, work);
+	rule_info = &sniffer_work->rule_info;
+	sniffer = sniffer_work->sniffer;
+	nb = sniffer_work->nb;
+	priv = sniffer->priv;
 
-	rules = get_roce_flow_rules(roce_version_cap);
-	if (!rules)
+	if (sniffer_rule_in_leftovers(sniffer,
+				      rule_info->rule))
+		goto out;
+
+	sniffer_flow = kzalloc(sizeof(*sniffer_flow), GFP_KERNEL);
+	if (!sniffer_flow)
+		goto out;
+
+	err = sniffer_add_flow_rule(sniffer, sniffer_flow, rule_info);
+	if (err) {
+		netdev_err(priv->netdev, "%s: Failed to add sniffer rule, err=%d\n",
+			   __func__, err);
+		kfree(sniffer_flow);
+		goto out;
+	}
+
+	err = mlx5_set_rule_private_data(rule_info->rule, nb, sniffer_flow);
+	if (err) {
+		netdev_err(priv->netdev, "%s: mlx5_set_rule_private_data failed\n",
+			   __func__);
+		mlx5_del_flow_rule(sniffer_flow->rule);
+	}
+	if (rule_info->type == SNIFFER_LEFTOVERS)
+		list_add(&sniffer_flow->list, &sniffer->leftover_rules);
+	else
+		list_add(&sniffer_flow->list, &sniffer->rules);
+
+out:
+	mlx5_put_flow_rule(rule_info->rule);
+	kfree(sniffer_work);
+}
+
+static int sniffer_flow_rule_event_fn(struct notifier_block *nb,
+				      unsigned long event, void *data)
+{
+	struct mlx5_event_data *event_data;
+	struct sniffer_evt_ctx *event_ctx;
+	struct mlx5e_sniffer *sniffer;
+	struct sniffer_work *work;
+	enum sniffer_types type;
+
+	event_ctx = container_of(nb, struct sniffer_evt_ctx, nb);
+	sniffer = event_ctx->sniffer;
+
+	event_data = (struct mlx5_event_data *)data;
+	type = (event_ctx == &sniffer->leftovers_ctx) ? SNIFFER_LEFTOVERS :
+		SNIFFER_RX;
+
+	if ((type == SNIFFER_LEFTOVERS) && (event == MLX5_RULE_EVENT_DEL) &&
+	    sniffer_rule_in_leftovers(sniffer, event_data->rule)) {
+		return 0;
+	}
+
+	work = kzalloc(sizeof(*work), GFP_KERNEL);
+	if (!work)
+		return -ENOMEM;
+
+	work->rule_info.rule = event_data->rule;
+	work->rule_info.ft = event_data->ft;
+	work->rule_info.type = type;
+	work->sniffer = sniffer;
+	work->nb = nb;
+
+	mlx5_get_flow_rule(event_data->rule);
+
+	if (event == MLX5_RULE_EVENT_ADD)
+		INIT_WORK(&work->work, sniffer_add_rule_handler);
+	else
+		INIT_WORK(&work->work, sniffer_del_rule_handler);
+
+	queue_work(sniffer->sniffer_wq, &work->work);
+
+	return 0;
+}
+
+static struct sniffer_evt_ctx *sniffer_get_event_ctx(struct mlx5e_sniffer *sniffer,
+						     enum mlx5_flow_namespace_type type)
+{
+	switch (type) {
+	case MLX5_FLOW_NAMESPACE_BYPASS:
+		return &sniffer->bypass_ctx;
+	case MLX5_FLOW_NAMESPACE_LEFTOVERS:
+		return &sniffer->leftovers_ctx;
+	default:
+		return NULL;
+	}
+}
+
+static void sniffer_destroy_tirs(struct mlx5e_sniffer *sniffer)
+{
+	struct mlx5e_priv *priv = sniffer->priv;
+	int i;
+
+	for (i = 0; i < SNIFFER_NUM_TYPES; i++)
+		mlx5e_destroy_tir(priv->mdev, &sniffer->tir[i]);
+}
+
+static void sniffer_cleanup_resources(struct mlx5e_sniffer *sniffer)
+{
+	struct sniffer_rule *sniffer_flow;
+	struct sniffer_rule *tmp;
+
+	if (sniffer->sniffer_wq)
+		destroy_workqueue(sniffer->sniffer_wq);
+
+	list_for_each_entry_safe(sniffer_flow, tmp, &sniffer->rules, list) {
+		mlx5_del_flow_rule(sniffer_flow->rule);
+		list_del(&sniffer_flow->list);
+		kfree(sniffer_flow);
+	}
+
+	list_for_each_entry_safe(sniffer_flow, tmp, &sniffer->leftover_rules, list) {
+		mlx5_del_flow_rule(sniffer_flow->rule);
+		list_del(&sniffer_flow->list);
+		kfree(sniffer_flow);
+	}
+	sniffer_del_roce_rules(sniffer);
+
+	if (sniffer->rx_ft)
+		mlx5_destroy_flow_table(sniffer->rx_ft);
+
+	if (sniffer->tx_ft)
+		mlx5_destroy_flow_table(sniffer->tx_ft);
+
+	sniffer_destroy_tirs(sniffer);
+}
+
+static void sniffer_unregister_ns_rules_handlers(struct mlx5e_sniffer *sniffer,
+						 enum mlx5_flow_namespace_type ns_type)
+{
+	struct mlx5e_priv *priv = sniffer->priv;
+	struct sniffer_evt_ctx *evt_ctx;
+	struct mlx5_flow_namespace *ns;
+
+	ns = mlx5_get_flow_namespace(priv->mdev, ns_type);
+	if (!ns)
+		return;
+
+	evt_ctx = sniffer_get_event_ctx(sniffer, ns_type);
+	mlx5_unregister_rule_notifier(ns, &evt_ctx->nb);
+}
+
+static void sniffer_unregister_rules_handlers(struct mlx5e_sniffer *sniffer)
+{
+	sniffer_unregister_ns_rules_handlers(sniffer,
+					     MLX5_FLOW_NAMESPACE_BYPASS);
+	sniffer_unregister_ns_rules_handlers(sniffer,
+					     MLX5_FLOW_NAMESPACE_LEFTOVERS);
+}
+
+int mlx5e_sniffer_stop(struct mlx5e_priv *priv)
+{
+	struct mlx5e_sniffer *sniffer = priv->fs.sniffer;
+
+	if (!sniffer)
+		return 0;
+
+	sniffer_unregister_rules_handlers(sniffer);
+	sniffer_cleanup_resources(sniffer);
+	kfree(sniffer);
+
+	return 0;
+}
+
+static int sniffer_register_ns_rules_handlers(struct mlx5e_sniffer *sniffer,
+					      enum mlx5_flow_namespace_type ns_type)
+{
+	struct mlx5e_priv *priv = sniffer->priv;
+	struct sniffer_evt_ctx *evt_ctx;
+	struct mlx5_flow_namespace *ns;
+	int err;
+
+	ns = mlx5_get_flow_namespace(priv->mdev, ns_type);
+	if (!ns)
 		return -ENOENT;
 
-	list_for_each_entry(rule_node, &rules->head, list) {
-		/*Send workqueue*/
-		work = kzalloc(sizeof(*work), GFP_KERNEL);
-		if (!work) {
-			err = -ENOMEM;
-			goto error;
-		}
+	evt_ctx = sniffer_get_event_ctx(sniffer, ns_type);
+	if (!evt_ctx)
+		return -ENOENT;
 
-		if (action == SNIFFER_ADD)
-			INIT_WORK(&work->work, sniffer_add_rule_handler);
-		else
-			INIT_WORK(&work->work, sniffer_del_rule_handler);
-
-		work->priv = priv;
-		err = mlx5e_sniffer_save_rule_info(
-			&work->rule_info, NULL,
-			rule_node, SNIFFER_RULE);
-		if (err) {
-				kfree(work);
-				goto error;
-		}
-		queue_work(priv->fs.sniffer.sniffer_wq, &work->work);
+	evt_ctx->nb.notifier_call = sniffer_flow_rule_event_fn;
+	evt_ctx->sniffer  = sniffer;
+	err = mlx5_register_rule_notifier(ns, &evt_ctx->nb);
+	if (err) {
+		netdev_err(priv->netdev,
+			   "%s: mlx5_register_rule_notifier failed\n", __func__);
+		return err;
 	}
 
-	err = 0;
-
-error:
-	mlx5_del_flow_rules_list(rules);
-	return err;
-}
-
-static int mlx5e_sniffer_add_dev_info(struct mlx5e_priv *priv)
-{
-	struct mlx5e_info *dev_info;
-	int err = 0;
-
-	mutex_lock(&mlx5e_dev_list_mutex);
-
-	dev_info = kzalloc(sizeof(*dev_info), GFP_KERNEL);
-	if (!dev_info) {
-		err = -ENOMEM;
-		goto out;
-	}
-	dev_info->priv = priv;
-	list_add(&dev_info->list, &mlx5e_dev_list);
-
-out:
-	mutex_unlock(&mlx5e_dev_list_mutex);
-	return err;
-}
-
-static int mlx5e_sniffer_del_dev_info(struct mlx5e_priv *priv)
-{
-	struct mlx5e_info *dev_info;
-
-	mutex_lock(&mlx5e_dev_list_mutex);
-
-	list_for_each_entry(dev_info, &mlx5e_dev_list, list) {
-		if (!memcmp(dev_info->priv, priv, sizeof(*priv))) {
-			list_del(&dev_info->list);
-			kfree(dev_info);
-			break;
-		}
-	}
-
-	mutex_unlock(&mlx5e_dev_list_mutex);
 	return 0;
 }
 
-static struct mlx5e_priv *
-mlx5e_sniffer_find_dev_info_entry(struct mlx5_core_dev *mdev)
+static int sniffer_register_rules_handlers(struct mlx5e_sniffer *sniffer)
 {
-	struct mlx5e_info *dev_info;
+	struct mlx5e_priv *priv = sniffer->priv;
+	int err;
 
-	list_for_each_entry(dev_info, &mlx5e_dev_list, list) {
-		if (dev_info->priv->mdev == mdev)
-			return dev_info->priv;
-	}
+	err = sniffer_register_ns_rules_handlers(sniffer,
+						 MLX5_FLOW_NAMESPACE_BYPASS);
+	if (err)
+		netdev_err(priv->netdev,
+			   "%s: Failed to register for bypass namesapce\n",
+			   __func__);
 
-	return NULL;
+	err = sniffer_register_ns_rules_handlers(sniffer,
+						 MLX5_FLOW_NAMESPACE_LEFTOVERS);
+	if (err)
+		netdev_err(priv->netdev,
+			   "%s: Failed to register for leftovers namesapce\n",
+			   __func__);
+
+	return err;
 }
 
-/*Public functions*/
-void mlx5e_sniffer_initialize_private_data(void)
+static int sniffer_create_tirs(struct mlx5e_sniffer *sniffer)
 {
-	INIT_LIST_HEAD(&mlx5e_dev_list);
-	mutex_init(&mlx5e_dev_list_mutex);
-}
-
-void mlx5e_sniffer_roce_mode_notify(
-	struct mlx5_core_dev *mdev,
-	int action)
-{
-	struct mlx5e_priv *priv;
-
-	mutex_lock(&mlx5e_dev_list_mutex);
-
-	priv = mlx5e_sniffer_find_dev_info_entry(mdev);
-	if (!priv)
-		goto out;
-
-	switch (action) {
-	case ROCE_ON:
-		mlx5e_sniffer_collect_roce_rule(priv, SNIFFER_ADD);
-		break;
-
-	case ROCE_OFF:
-		mlx5e_sniffer_collect_roce_rule(priv, SNIFFER_DEL);
-		break;
-	default:
-		break;
-	}
-
-out:
-	mutex_unlock(&mlx5e_dev_list_mutex);
-}
-EXPORT_SYMBOL(mlx5e_sniffer_roce_mode_notify);
-
-int mlx5e_sniffer_open_tir(struct mlx5e_priv *priv, int tt)
-{
-	struct mlx5_core_dev *mdev = priv->mdev;
-	u32 *in;
+	struct mlx5e_priv *priv = sniffer->priv;
+	struct mlx5e_tir *tir;
 	void *tirc;
 	int inlen;
+	u32 rqtn;
 	int err;
+	u32 *in;
+	int tt;
 
 	inlen = MLX5_ST_SZ_BYTES(create_tir_in);
 	in = mlx5_vzalloc(inlen);
-
 	if (!in)
 		return -ENOMEM;
 
-	tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
-	mlx5e_sniffer_build_tir_ctx(priv, tirc, tt);
-	err = mlx5_core_create_tir(mdev, in, inlen, &priv->sniffer_tirn[tt]);
+	for (tt = 0; tt < SNIFFER_NUM_TYPES; tt++) {
+		memset(in, 0, inlen);
+		tir = &sniffer->tir[tt];
+		tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
+		rqtn = priv->direct_tir[tt % priv->params.num_channels].rqt.rqtn;
+		mlx5e_build_direct_tir_ctx(priv, tirc, rqtn);
+		err = mlx5e_create_tir(priv->mdev, tir, in, inlen);
+		if (err)
+			goto err_destroy_ch_tirs;
+	}
 
-	kfree(in);
+	kvfree(in);
+
+	return 0;
+
+err_destroy_ch_tirs:
+	for (tt--; tt >= 0; tt--)
+		mlx5e_destroy_tir(priv->mdev, &sniffer->tir[tt]);
+	kvfree(in);
+
 	return err;
 }
 
-int mlx5e_sniffer_turn_off(struct net_device *dev)
+#define FS_MAX_ENTRIES 32000UL
+#define FS_MAX_TYPES 10
+
+#define SNIFFER_RX_MAX_FTES min_t(u32, (MLX5_BY_PASS_NUM_REGULAR_PRIOS *\
+					FS_MAX_ENTRIES), BIT(20))
+#define SNIFFER_RX_MAX_NUM_GROUPS (MLX5_BY_PASS_NUM_REGULAR_PRIOS *\
+				   FS_MAX_TYPES)
+
+#define SNIFFER_TX_MAX_FTES 1
+#define SNIFFER_TX_MAX_NUM_GROUPS 1
+
+static int sniffer_init_resources(struct mlx5e_sniffer *sniffer)
 {
-	struct mlx5e_priv *priv = netdev_priv(dev);
-
-	mlx5e_sniffer_free_resources(priv);
-	mlx5e_sniffer_del_dev_info(priv);
-
-	return 0;
-}
-
-int mlx5e_sniffer_turn_on(struct net_device *dev)
-{
-	struct mlx5e_priv *priv = netdev_priv(dev);
+	struct mlx5e_priv *priv = sniffer->priv;
 	struct mlx5_core_dev *mdev = priv->mdev;
-	struct mlx5_flow_namespace *p_bypass_ns;
 	struct mlx5_flow_namespace *p_sniffer_rx_ns;
 	struct mlx5_flow_namespace *p_sniffer_tx_ns;
-	struct mlx5_flow_namespace *p_leftovers_ns;
-	char wq_name[12];
-	u8 enable;
+	int table_size;
+	int err;
 
-	int err = 0;
+	INIT_LIST_HEAD(&sniffer->rules);
+	INIT_LIST_HEAD(&sniffer->leftover_rules);
 
-	/*For leftovers*/
-	unsigned int priority;
-	char name[FT_NAME_STR_SZ];
-	int n_ent, n_grp;
-
-	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
-		netdev_err(dev, "Device is already closed\n");
-		return -EPERM;
-	}
-
-	/*1. Setup workqueue*/
-	sprintf(
-		wq_name, "sniffer%02x%02x",
-		(u8)mdev->pdev->bus->number,
-		(u8)mdev->pdev->devfn);
-	priv->fs.sniffer.sniffer_wq = create_singlethread_workqueue(wq_name);
-	if (!priv->fs.sniffer.sniffer_wq)
-		return -ENOMEM;
-
-	/*2. Get all name space*/
 	p_sniffer_rx_ns =
 		mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_SNIFFER_RX);
 	if (!p_sniffer_rx_ns)
@@ -844,113 +571,92 @@ int mlx5e_sniffer_turn_on(struct net_device *dev)
 	if (!p_sniffer_tx_ns)
 		return -ENOENT;
 
-	/*Don't fail if bypass ns does not exist*/
-	p_bypass_ns =
-		mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_BYPASS);
+	err = sniffer_create_tirs(sniffer);
+	if (err) {
+		netdev_err(priv->netdev, "%s: Create tirs failed, err=%d\n",
+			   __func__, err);
+		return err;
+	}
 
-	p_leftovers_ns =
-		mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_LEFTOVERS);
-	if (!p_leftovers_ns)
-		return -ENOENT;
+	sniffer->sniffer_wq = create_singlethread_workqueue("mlx5e_sniffer");
+	if (!sniffer->sniffer_wq)
+		goto error;
 
-	/*3. Build flow table*/
-	priv->fs.sniffer.rx_ft = mlx5_create_auto_grouped_flow_table(
-					p_sniffer_rx_ns,
-					0,
-					"sniff_rx_ft",
-				       MAX_SNIFFER_FLOW_RULE_NUM * MAX_SNIFF_FTES_PER_FG + 1,
-				       MAX_SNIFFER_FLOW_RULE_NUM,
-				       0, MLX5_FS_AUTOGROUP_SAVE_SPARE_SPACE);
-	if (IS_ERR(priv->fs.sniffer.rx_ft)) {
-		priv->fs.sniffer.rx_ft = NULL;
-		err = PTR_ERR(priv->fs.sniffer.rx_ft);
+	/* Create "medium" size flow table */
+	table_size = min_t(u32,
+			   BIT(MLX5_CAP_FLOWTABLE_SNIFFER_RX(mdev,
+							     log_max_ft_size)),
+			   SNIFFER_RX_MAX_FTES);
+	sniffer->rx_ft =
+		mlx5_create_auto_grouped_flow_table(p_sniffer_rx_ns, 0,
+						    table_size,
+						    SNIFFER_RX_MAX_NUM_GROUPS,
+						    0);
+	if (IS_ERR(sniffer->rx_ft)) {
+		err = PTR_ERR(sniffer->rx_ft);
+		sniffer->rx_ft = NULL;
 		goto error;
 	}
 
-	priv->fs.sniffer.tx_ft = mlx5_create_auto_grouped_flow_table(
-					p_sniffer_tx_ns,
-					0,
-					"sniff_tx_ft",
-					1,
-					1,
-					0, 0);
-	if (IS_ERR(priv->fs.sniffer.tx_ft)) {
-		priv->fs.sniffer.tx_ft = NULL;
-		err = PTR_ERR(priv->fs.sniffer.tx_ft);
+	sniffer->tx_ft =
+		mlx5_create_auto_grouped_flow_table(p_sniffer_tx_ns, 0,
+						    SNIFFER_TX_MAX_FTES,
+						    SNIFFER_TX_MAX_NUM_GROUPS,
+						    0);
+	if (IS_ERR(sniffer->tx_ft)) {
+		err = PTR_ERR(sniffer->tx_ft);
+		sniffer->tx_ft = NULL;
 		goto error;
 	}
 
-	build_leftovers_ft_param(name, &priority, &n_ent, &n_grp);
-	priv->fs.sniffer.leftovers_ft = mlx5_create_auto_grouped_flow_table(
-					p_leftovers_ns,
-					priority,
-					name,
-					n_ent,
-					n_grp, 0,
-					MLX5_FS_AUTOGROUP_SAVE_SPARE_SPACE);
-	if (IS_ERR(priv->fs.sniffer.leftovers_ft)) {
-		priv->fs.sniffer.leftovers_ft = NULL;
-		err = PTR_ERR(priv->fs.sniffer.leftovers_ft);
-		goto error;
-	}
-
-	/*4. Build leftovers rules*/
-	err = mlx5e_sniffer_build_leftovers_rule(priv);
+	err = mlx5e_sniffer_create_tx_rule(sniffer);
 	if (err)
 		goto error;
 
-	/*4a Build tx sniffer rule*/
-	err = mlx5e_sniffer_create_tx_rule(priv);
+	err = sniffer_create_roce_rules(sniffer);
 	if (err)
 		goto error;
 
-	/*Event can happen after this line*/
-
-	/*5. Register call backs for bypass name space */
-	if (p_bypass_ns) {
-		priv->fs.sniffer.bypass_event =
-			mlx5_register_rule_notifier(
-				mdev,
-				MLX5_FLOW_NAMESPACE_BYPASS,
-				&mlx5e_sniffer_add_bypass_rule_callback_fn,
-				&mlx5e_sniffer_del_bypass_rule_callback_fn,
-				priv);
-		if (IS_ERR_OR_NULL(priv->fs.sniffer.bypass_event)) {
-			err = PTR_ERR(priv->fs.sniffer.bypass_event);
-			priv->fs.sniffer.bypass_event = NULL;
-			goto error;
-		}
-	}
-
-	/*6. Collect and build bypass rules*/
-	if (p_bypass_ns)
-		mlx5_flow_iterate_existing_rules(
-			p_bypass_ns,
-			&mlx5e_sniffer_add_bypass_rule_callback_fn,
-			priv);
-
-	/*7. Collect and build roce rules*/
-	/*Add device to linked list for roce add/remove call back*/
-	err = mlx5e_sniffer_add_dev_info(priv);
-	if (err)
-		goto error;
-
-	err = mlx5_query_nic_vport_roce_en(mdev, &enable);
-	if (err)
-		goto error1;
-
-	if (enable) {
-		err = mlx5e_sniffer_collect_roce_rule(priv, SNIFFER_ADD);
-		if (err)
-			goto error1;
-	}
-
-	return err;
-
-error1:
-	mlx5e_sniffer_del_dev_info(priv);
-
+	return 0;
 error:
-	mlx5e_sniffer_free_resources(priv);
+	sniffer_cleanup_resources(sniffer);
+	return err;
+}
+
+int mlx5e_sniffer_start(struct mlx5e_priv *priv)
+{
+	struct mlx5e_sniffer *sniffer;
+	int err;
+
+	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
+		netdev_err(priv->netdev, "Device is already closed\n");
+		return -EPERM;
+	}
+
+	sniffer = kzalloc(sizeof(*sniffer), GFP_KERNEL);
+	if (!sniffer)
+		return -ENOMEM;
+
+	sniffer->priv = priv;
+	err = sniffer_init_resources(sniffer);
+	if (err) {
+		netdev_err(priv->netdev, "%s: Failed to init sniffer resources\n",
+			   __func__);
+		goto err_out;
+	}
+
+	err = sniffer_register_rules_handlers(sniffer);
+	if (err) {
+		netdev_err(priv->netdev, "%s: Failed to register rules handlers\n",
+			   __func__);
+		goto err_cleanup_resources;
+	}
+	priv->fs.sniffer = sniffer;
+	return 0;
+
+err_cleanup_resources:
+	sniffer_cleanup_resources(sniffer);
+err_out:
+	kfree(sniffer);
 	return err;
 }

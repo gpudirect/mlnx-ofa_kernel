@@ -88,6 +88,7 @@ default:
 # compile with ofed driver
 	-cp -f $(OFA)/Module*.symvers $(SRC_DIR)/Module.symvers
 	make -C $(K_BUILD) O=$(K_OBJ) SUBDIRS=$(shell pwd) $(WITH_MAKE_PARAMS) \
+		CONFIG_SUNRPC_XPRT_RDMA=m \
 		CONFIG_SUNRPC_XPRT_RDMA_CLIENT=m \
 		CONFIG_SUNRPC_XPRT_RDMA_SERVER=m \
 		CONFIG_SUNRPC_XPRT_RDMA_DUMMY= \
@@ -155,7 +156,7 @@ dist:
 
 clean:
 	rm -f *.o
-	rm -f *.ko
+	rm -f *.ko *.ko.gz
 	rm -f *.mod.c
 	rm -f Module*.symvers modules*.order
 

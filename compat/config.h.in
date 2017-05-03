@@ -1,13 +1,16 @@
 /* config.h.in.  Generated from configure.ac by autoheader.  */
 
+/* eswitch_mode_get/set is defined */
+#undef DEVLINK_HAS_ESWITCH_MODE_GET_SET
+
 /* __vlan_hwaccel_put_tag has 3 parameters */
 #undef HAVE_3_PARAMS_FOR_VLAN_HWACCEL_PUT_TAG
 
 /* addrconf_ifid_eui48 is defined */
 #undef HAVE_ADDRCONF_IFID_EUI48
 
-/* aio_write is defined */
-#undef HAVE_AIO_WRITE
+/* ndo_add_vxlan_port is defined */
+#undef HAVE_ADD_VXLAN_PORT_UDP_TUNNEL
 
 /* alloc_etherdev_mq is defined */
 #undef HAVE_ALLOC_ETHERDEV_MQ
@@ -15,20 +18,29 @@
 /* alloc_netdev_mqs has 6 params */
 #undef HAVE_ALLOC_NETDEV_MQS_6_PARAMS
 
-/* arch_phys_wc_add is defined */
-#undef HAVE_ARCH_PHYS_WC_ADD
+/* alloc_workqueue is defined */
+#undef HAVE_ALLOC_WORKQUEUE
 
-/* atomic_long_read exist */
-#undef HAVE_ATOMIC_LONG_READ
+/* struct blk_mq_ops has map_queue */
+#undef HAVE_BLK_MQ_OPS_MAP_QUEUE
 
-/* struct attribute has feild owner */
-#undef HAVE_ATTRIBUTE_OWNER
+/* struct blk_mq_ops has map_queues */
+#undef HAVE_BLK_MQ_OPS_MAP_QUEUES
+
+/* include/linux/blk-mq-pci.h exists */
+#undef HAVE_BLK_MQ_PCI_H
+
+/* blk_mq_unique_tag exist */
+#undef HAVE_BLK_MQ_UNIQUE_TAG
+
+/* blk_queue_virt_boundary exist */
+#undef HAVE_BLK_QUEUE_VIRT_BOUNDARY
 
 /* include/net/bonding.h exists */
 #undef HAVE_BONDING_H
 
-/* class_attribute namespace is defined */
-#undef HAVE_CLASS_ATTRIBUTE_NAMESPACE
+/* build_skb is defined */
+#undef HAVE_BUILD_SKB
 
 /* CLASS_ATTR_STRING is defined */
 #undef HAVE_CLASS_ATTR_STRING
@@ -36,11 +48,11 @@
 /* class devnode gets umode_t */
 #undef HAVE_CLASS_DEVNODE_UMODE_T
 
+/* cycle_t is defined in linux/clocksource.h */
+#undef HAVE_CLOCKSOURCE_CYCLE_T
+
 /* default_groups is list_head */
 #undef HAVE_CONFIGFS_DEFAULT_GROUPS_LIST
-
-/* cpu_rmap is defined */
-#undef HAVE_CPU_RMAP
 
 /* cyclecounter_cyc2ns has 4 parameters */
 #undef HAVE_CYCLECOUNTER_CYC2NS_4_PARAMS
@@ -48,20 +60,20 @@
 /* getnumtcs returns int */
 #undef HAVE_DCBNL_RTNL_OPS_GETNUMTCS_RET_INT
 
-/* dev_consume_skb_any is defined */
-#undef HAVE_DEV_CONSUME_SKB_ANY
+/* include/net/devlink.h exists */
+#undef HAVE_DEVLINK_H
 
-/* dev_get_by_index_rcu is defined */
-#undef HAVE_DEV_GET_BY_INDEX_RCU
-
-/* dev_mc_add has 2 parameters */
-#undef HAVE_DEV_MC_ADD_2_PARAMS
+/* dev_alloc_pages is defined */
+#undef HAVE_DEV_ALLOC_PAGES
 
 /* dev_mc_del is defined */
 #undef HAVE_DEV_MC_DEL
 
-/* drain_workqueue is defined */
-#undef HAVE_DRAIN_WORKQUEUE
+/* dev_uc_del is defined */
+#undef HAVE_DEV_UC_DEL
+
+/* DMA_ATTR_NO_WARN is defined */
+#undef HAVE_DMA_ATTR_NO_WARN
 
 /* dst_get_neighbour is defined */
 #undef HAVE_DST_GET_NEIGHBOUR
@@ -75,8 +87,14 @@
 /* ether_addr_copy is defined */
 #undef HAVE_ETHER_ADDR_COPY
 
+/* struct ethtool_flow_ext is defined */
+#undef HAVE_ETHTOOL_FLOW_EXT
+
 /* ethtool_flow_ext has h_dest */
 #undef HAVE_ETHTOOL_FLOW_EXT_H_DEST
+
+/* union ethtool_flow_union is defined */
+#undef HAVE_ETHTOOL_FLOW_UNION
 
 /* struct ethtool_ops_ext is defined */
 #undef HAVE_ETHTOOL_OPS_EXT
@@ -84,13 +102,16 @@
 /* ethtool_ops get_rxnfc gets u32 *rule_locs */
 #undef HAVE_ETHTOOL_OPS_GET_RXNFC_U32_RULE_LOCS
 
-/* ethtool_op_set_flags gets 2 parameters */
-#undef HAVE_ETHTOOL_OP_SET_FLAGS_2_PARAMS
+/* ETHTOOL_xLINKSETTINGS API is defined */
+#undef HAVE_ETHTOOL_xLINKSETTINGS
 
 /* eth_get_headlen is defined */
 #undef HAVE_ETH_GET_HEADLEN
 
-/* eth_random_addr is defined in netdevice.h */
+/* ETH_P_8021AD exists */
+#undef HAVE_ETH_P_8021AD
+
+/* eth_random_addr is defined */
 #undef HAVE_ETH_RANDOM_ADDR
 
 /* ETH_SS_RSS_HASH_FUNCS is defined */
@@ -99,26 +120,26 @@
 /* fdget is defined */
 #undef HAVE_FDGET
 
-/* file_system_type has mount */
-#undef HAVE_FILE_SYSTEM_TYPE_MOUNT
+/* fib_lookup has 4 params */
+#undef HAVE_FIB_LOOKUP_4_PARAMS
+
+/* fib_lookup is exported by the kernel */
+#undef HAVE_FIB_LOOKUP_EXPORTED
+
+/* fib_res_put */
+#undef HAVE_FIB_RES_PUT
 
 /* flowi4, flowi6 is defined */
 #undef HAVE_FLOWI_AF_SPECIFIC_INSTANCES
 
-/* percpu.h has __get_cpu_var */
-#undef HAVE_GET_CPU_VAR
+/* FLOW_DISSECTOR_KEY_VLAN is defined */
+#undef HAVE_FLOW_DISSECTOR_KEY_VLAN
 
 /* HAVE_GET_MODULE_EEPROM is defined */
 #undef HAVE_GET_MODULE_EEPROM
 
 /* HAVE_GET_MODULE_EEPROM_EXT is defined */
 #undef HAVE_GET_MODULE_EEPROM_EXT
-
-/* get_next_ino is defined */
-#undef HAVE_GET_NEXT_INO
-
-/* get_pid_task is exported by the kernel */
-#undef HAVE_GET_PID_TASK_EXPORTED
 
 /* get/set_channels is defined */
 #undef HAVE_GET_SET_CHANNELS
@@ -131,6 +152,12 @@
 
 /* get/set_flags is defined */
 #undef HAVE_GET_SET_FLAGS
+
+/* get/set_link_ksettings is defined */
+#undef HAVE_GET_SET_LINK_KSETTINGS
+
+/* get/set_msglevel is defined */
+#undef HAVE_GET_SET_MSGLEVEL
 
 /* get/set_priv_flags is defined */
 #undef HAVE_GET_SET_PRIV_FLAGS
@@ -159,9 +186,6 @@
 /* get/set_tx_csum is defined */
 #undef HAVE_GET_SET_TX_CSUM
 
-/* get_task_pid is exported by the kernel */
-#undef HAVE_GET_TASK_PID_EXPORTED
-
 /* get_ts_info is defined */
 #undef HAVE_GET_TS_INFO
 
@@ -171,17 +195,23 @@
 /* GET_UNUSED_FD_FLAGS is defined */
 #undef HAVE_GET_UNUSED_FD_FLAGS
 
-/* get_user_pages has 6 params */
-#undef HAVE_GET_USER_PAGES_6_PARAMS
+/* get_user_pages has 8 params */
+#undef HAVE_GET_USER_PAGES_8_PARAMS
+
+/* get_user_pages uses gup_flags */
+#undef HAVE_GET_USER_PAGES_GUP_FLAGS
+
+/* get_user_pages_remote is defined with 7 parameters */
+#undef HAVE_GET_USER_PAGES_REMOTE_7_PARAMS
+
+/* get_user_pages_remote is defined with 8 parameters */
+#undef HAVE_GET_USER_PAGES_REMOTE_8_PARAMS
+
+/* get_user_pages_remote is defined with 8 parameters with locked */
+#undef HAVE_GET_USER_PAGES_REMOTE_8_PARAMS_W_LOCKED
 
 /* hlist_for_each_entry has 3 params */
 #undef HAVE_HLIST_FOR_EACH_ENTRY_3_PARAMS
-
-/* ib_query_gid takes 5 args */
-#undef HAVE_IB_QUERY_GID_ATTRS
-
-/* ib_signature_type is defined */
-#undef HAVE_IB_SIGNATURE
 
 /* icmpv6_send has 4 parameters */
 #undef HAVE_ICMPV6_SEND_4_PARAMS
@@ -201,11 +231,20 @@
 /* ieee_getmaxrate/ieee_setmaxrate is defined */
 #undef HAVE_IEEE_GET_SET_MAXRATE
 
+/* trust is defined */
+#undef HAVE_IFLA_VF_IB_NODE_PORT_GUID
+
+/* struct ifla_vf_stats is defined */
+#undef HAVE_IFLA_VF_STATS
+
 /* if_list is defined */
 #undef HAVE_INET6_IF_LIST
 
-/* __inet_ehashfn is defined */
-#undef HAVE_INET_EHASHFN
+/* inet_confirm_addr has 5 parameters */
+#undef HAVE_INET_CONFIRM_ADDR_5_PARAMS
+
+/* inet_confirm_addr is exported by the kernel */
+#undef HAVE_INET_CONFIRM_ADDR_EXPORTED
 
 /* inet_get_local_port_range has 3 parameters */
 #undef HAVE_INET_GET_LOCAL_PORT_RANGE_3_PARAMS
@@ -213,11 +252,8 @@
 /* include/linux/inet_lro.h exists */
 #undef HAVE_INET_LRO_H
 
-/* inet_num is defined */
-#undef HAVE_INET_SOCK_INET_NUM
-
-/* inode_lock is defined */
-#undef HAVE_INODE_LOCK
+/* include/linux/interval_tree_generic.h exists */
+#undef HAVE_INTERVAL_TREE_GENERIC_H
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
@@ -225,8 +261,20 @@
 /* io_mapping_map_wc has 3 params */
 #undef HAVE_IO_MAPPING_MAP_WC_3_PARAMS
 
+/* ip4_dst_hoplimit is defined */
+#undef HAVE_IP4_DST_HOPLIMIT
+
+/* ip6_dst_hoplimit is exported by the kernel */
+#undef HAVE_IP6_DST_HOPLIMIT
+
+/* ip6_rt_put is defined */
+#undef HAVE_IP6_RT_PUT
+
 /* ipv6_addr_copy is defined */
 #undef HAVE_IPV6_ADDR_COPY
+
+/* ipv6_chk_addr accepts a const second parameter */
+#undef HAVE_IPV6_CHK_ADDR_TAKES_CONST
 
 /* irq_data member affinity is defined */
 #undef HAVE_IRQ_DATA_AFFINITY
@@ -240,17 +288,38 @@
 /* irq_to_desc is exported by the kernel */
 #undef HAVE_IRQ_TO_DESC_EXPORTED
 
-/* attr_is_visible is defined */
-#undef HAVE_ISCSI_ATTR_IS_VISIBLE
+/* iscsit_find_cmd_from_itt is defined */
+#undef HAVE_ISCSIT_FIND_CMD_FROM_ITT
+
+/* iscsit_transport has member iscsit_get_sup_prot_ops */
+#undef HAVE_ISCSIT_TRANSPORT_HAS_GET_SUP_PROT_OPS
+
+/* iscsit_get_rx_pdu is defined */
+#undef HAVE_ISCSIT_TRANSPORT_ISCSIT_GET_RX_PDU
+
+/* rdma_shutdown is defined */
+#undef HAVE_ISCSIT_TRANSPORT_RDMA_SHUTDOWN
+
+/* iscsi_proto.h has structure iscsi_cmd */
+#undef HAVE_ISCSI_CMD
+
+/* iscsi_conn has members local_sockaddr */
+#undef HAVE_ISCSI_CONN_LOCAL_SOCKADDR
+
+/* iscsi_conn has member login_sockaddr */
+#undef HAVE_ISCSI_CONN_LOGIN_SOCKADDR
+
+/* iscsi_target_core.h and iscsi_target_stat.h are under include/ */
+#undef HAVE_ISCSI_TARGET_CORE_ISCSI_TARGET_STAT_H
 
 /* check_protection is defined */
-#undef HAVE_ISCSI_CHECK_PROTECTION
+#undef HAVE_ISCSI_TRANSPORT_CHECK_PROTECTION
 
-/* get_ep_param is defined */
-#undef HAVE_ISCSI_GET_EP_PARAM
+/* is_tcf_mirred_redirect is defined */
+#undef HAVE_IS_TCF_MIRRED_REDIRECT
 
-/* struct iscsi_scsi_req is defined */
-#undef HAVE_ISCSI_SCSI_REQ
+/* is_tcf_vlan is defined */
+#undef HAVE_IS_TCF_VLAN
 
 /* is_vlan_dev is defined */
 #undef HAVE_IS_VLAN_DEV
@@ -261,11 +330,14 @@
 /* kmalloc_array is defined */
 #undef HAVE_KMALLOC_ARRAY
 
-/* kmap_atomic has 1 parameter */
-#undef HAVE_KMAP_ATOMIC_1_PARAM
+/* highmem.h has kmap_atomic function with km_type */
+#undef HAVE_KM_TYPE
 
 /* struct kthread_work is defined */
 #undef HAVE_KTHREAD_WORK
+
+/* ktime_get_boot_ns is defined */
+#undef HAVE_KTIME_GET_BOOT_NS
 
 /* ktime_get_ns defined */
 #undef HAVE_KTIME_GET_NS
@@ -273,14 +345,20 @@
 /* ktime_get_real_ns is defined */
 #undef HAVE_KTIME_GET_REAL_NS
 
+/* enum netdev_lag_tx_type is defined */
+#undef HAVE_LAG_TX_TYPE
+
+/* nvm_dev dev is defined */
+#undef HAVE_LIGHTNVM_NVM_DEV
+
 /* linkstate is defined */
 #undef HAVE_LINKSTATE
 
 /* linux/printk.h is defined */
 #undef HAVE_LINUX_PRINTK_H
 
-/* skb_set_hash is defined */
-#undef HAVE_MEMCPY_TO_MSG
+/* memchr_inv is defined */
+#undef HAVE_MEMCHR_INV
 
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
@@ -288,17 +366,17 @@
 /* struct page has _count */
 #undef HAVE_MM_PAGE__COUNT
 
-/* sysfs_get_dirent gets kernfs_node */
-#undef HAVE_MODULE_ATTRIBUTE_GETS_MODULE_KOBJECT
+/* mm_types.h struct mm_struct has free_area_cache */
+#undef HAVE_MM_STRUCT_FREE_AREA_CACHE
 
-/* socket.h has msg_iter */
-#undef HAVE_MSGHDR_MSG_ITER
-
-/* msix_cap is defined */
-#undef HAVE_MSIX_CAP
+/* napi_alloc_skb is defined */
+#undef HAVE_NAPI_ALLOC_SKB
 
 /* napi_complete_done is defined */
 #undef HAVE_NAPI_COMPLETE_DONE
+
+/* napi_consume_skb is defined */
+#undef HAVE_NAPI_CONSUME_SKB
 
 /* napi_hash_add is defined */
 #undef HAVE_NAPI_HASH_ADD
@@ -306,14 +384,17 @@
 /* napi_schedule_irqoff is defined */
 #undef HAVE_NAPI_SCHEDULE_IRQOFF
 
-/* ndo_add_slave is defined */
-#undef HAVE_NDO_ADD_SLAVE
+/* ndo_busy_poll is defined */
+#undef HAVE_NDO_BUSY_POLL
 
 /* ndo_fix_features is defined */
 #undef HAVE_NDO_FIX_FEATURES
 
 /* ndo_get_iflink is defined */
 #undef HAVE_NDO_GET_IFLINK
+
+/* ndo_get_phys_port_name is defined */
+#undef HAVE_NDO_GET_PHYS_PORT_NAME
 
 /* ndo_get_stats64 is defined */
 #undef HAVE_NDO_GET_STATS64
@@ -330,9 +411,6 @@
 /* ndo_rx_flow_steer is defined */
 #undef HAVE_NDO_RX_FLOW_STEER
 
-/* ndo_select_queue exist */
-#undef HAVE_NDO_SELECT_QUEUE
-
 /* ndo_setup_tc is defined */
 #undef HAVE_NDO_SETUP_TC
 
@@ -342,32 +420,23 @@
 /* ndo_set_features is defined */
 #undef HAVE_NDO_SET_FEATURES
 
-/* ndo_set_multicast_list exist */
-#undef HAVE_NDO_SET_MULTICAST_LIST
-
 /* ndo_set_tx_maxrate is defined */
 #undef HAVE_NDO_SET_TX_MAXRATE
+
+/* ndo_set_vf_guid is defined */
+#undef HAVE_NDO_SET_VF_GUID
 
 /* ndo_set_vf_mac is defined */
 #undef HAVE_NDO_SET_VF_MAC
 
-/* trans_start is defined */
-#undef HAVE_ND_TRANS_START
-
-/* __QUEUE_STATE_XOFF is defined */
-#undef HAVE_NETDEVICE__QUEUE_STATE_XOFF
-
-/* addr_assign_type is defined */
-#undef HAVE_NETDEV_ADDR_ASSIGN_TYPE
+/* ndo_set_vf_vlan has 5 parameters */
+#undef HAVE_NDO_SET_VF_VLAN_HAS_5_PARAMS
 
 /* netdev_bonding_info is defined */
 #undef HAVE_NETDEV_BONDING_INFO
 
-/* netdev_master_upper_dev_get_rcu is defined */
-#undef HAVE_NETDEV_CHANGEUPPER
-
-/* netdev_class_create_file_ns is defined */
-#undef HAVE_NETDEV_CLASS_CREATE_FILE_NS
+/* is defined */
+#undef HAVE_NETDEV_EXTENDED_DEV_PORT
 
 /* is defined */
 #undef HAVE_NETDEV_EXTENDED_HW_FEATURES
@@ -393,20 +462,20 @@
 /* netdev_get_num_tc is defined */
 #undef HAVE_NETDEV_GET_NUM_TC
 
-/* netdev_get_prio_tc_map is defined */
-#undef HAVE_NETDEV_GET_PRIO_TC_MAP
-
 /* netdev_get_tx_queue is defined */
 #undef HAVE_NETDEV_GET_TX_QUEUE
 
-/* netdev_has_upper_dev is defined */
-#undef HAVE_NETDEV_HAS_UPPER_DEV
+/* netdev_has_upper_dev_all_rcu is defined */
+#undef HAVE_NETDEV_HAS_UPPER_DEV_ALL_RCU
 
 /* hw_enc_features is defined */
 #undef HAVE_NETDEV_HW_ENC_FEATURES
 
 /* hw_features is defined */
 #undef HAVE_NETDEV_HW_FEATURES
+
+/* IFF_LIVE_ADDR_CHANGE is defined */
+#undef HAVE_NETDEV_IFF_LIVE_ADDR_CHANGE
 
 /* IFF_UNICAST_FLT is defined */
 #undef HAVE_NETDEV_IFF_UNICAST_FLT
@@ -420,6 +489,12 @@
 /* is defined */
 #undef HAVE_NETDEV_NDO_GET_PHYS_PORT_ID
 
+/* netdev_notifier_changeupper_info is defined */
+#undef HAVE_NETDEV_NOTIFIER_CHANGEUPPER_INFO
+
+/* netdev_notifier_info_to_dev is defined */
+#undef HAVE_NETDEV_NOTIFIER_INFO_TO_DEV
+
 /* ndo_fix_features is defined in net_device_ops_ext */
 #undef HAVE_NETDEV_OPS_EXT_NDO_FIX_FEATURES
 
@@ -431,9 +506,6 @@
 
 /* ndo_set_vf_spoofchk is defined in net_device_ops_ext */
 #undef HAVE_NETDEV_OPS_EXT_NDO_SET_VF_SPOOFCHK
-
-/* ndo_set_vf_trust is defined in net_device_ops_ext */
-#undef HAVE_NETDEV_OPS_EXT_NDO_SET_VF_TRUST
 
 /* ndo_set_vf_link_state is defined in net_device_ops */
 #undef HAVE_NETDEV_OPS_NDO_SET_VF_LINK_STATE
@@ -447,26 +519,14 @@
 /* netdev_phys_item_id is defined */
 #undef HAVE_NETDEV_PHYS_ITEM_ID
 
-/* netdev_reset_tc is defined */
-#undef HAVE_NETDEV_RESET_TC
-
 /* netdev_rss_key_fill is defined */
 #undef HAVE_NETDEV_RSS_KEY_FILL
 
 /* rx_cpu_rmap is defined */
 #undef HAVE_NETDEV_RX_CPU_RMAP
 
-/* netdev_rx_handler_register is defined */
-#undef HAVE_NETDEV_RX_HANDLER_REGISTER
-
 /* netdev_set_num_tc is defined */
 #undef HAVE_NETDEV_SET_NUM_TC
-
-/* netdev_set_prio_tc_map is defined */
-#undef HAVE_NETDEV_SET_PRIO_TC_MAP
-
-/* netdev_set_tc_queue is defined */
-#undef HAVE_NETDEV_SET_TC_QUEUE
 
 /* netdev_stats_to_stats64 is defined */
 #undef HAVE_NETDEV_STATS_TO_STATS64
@@ -477,17 +537,23 @@
 /* is defined */
 #undef HAVE_NETDEV_UPDATE_FEATURES
 
-/* netdev_upper_dev_unlink is defined */
-#undef HAVE_NETDEV_UPPER_DEV_UNLINK
+/* netdev_walk_all_upper_dev_rcu is defined */
+#undef HAVE_NETDEV_WALK_ALL_UPPER_DEV_RCU
 
 /* wanted_features is defined */
 #undef HAVE_NETDEV_WANTED_FEATURES
 
+/* struct netdev_xdp is defined */
+#undef HAVE_NETDEV_XDP
+
+/* NETIF_F_GSO_PARTIAL is defined in netdev_features.h */
+#undef HAVE_NETIF_F_GSO_PARTIAL
+
 /* NETIF_F_GSO_UDP_TUNNEL is defined in netdev_features.h */
 #undef HAVE_NETIF_F_GSO_UDP_TUNNEL
 
-/* netdev_features.h has NETIF_F_HW_CSUM */
-#undef HAVE_NETIF_F_HW_CSUM
+/* NETIF_F_GSO_UDP_TUNNEL_CSUM is defined in netdev_features.h */
+#undef HAVE_NETIF_F_GSO_UDP_TUNNEL_CSUM
 
 /* NETIF_F_HW_VLAN_STAG_RX is defined in netdev_features.h */
 #undef HAVE_NETIF_F_HW_VLAN_STAG_RX
@@ -504,6 +570,9 @@
 /* NETIF_IS_BOND_MASTER is defined in netdev_features.h */
 #undef HAVE_NETIF_IS_BOND_MASTER
 
+/* netif_keep_dst is defined */
+#undef HAVE_NETIF_KEEP_DST
+
 /* netif_set_real_num_rx_queues is defined */
 #undef HAVE_NETIF_SET_REAL_NUM_RX_QUEUES
 
@@ -513,11 +582,14 @@
 /* is defined */
 #undef HAVE_NETIF_SET_XPS_QUEUE
 
+/* netif_trans_update is defined */
+#undef HAVE_NETIF_TRANS_UPDATE
+
+/* netif_tx_napi_add is defined */
+#undef HAVE_NETIF_TX_NAPI_ADD
+
 /* netif_tx_queue_stopped is defined */
 #undef HAVE_NETIF_TX_QUEUE_STOPPED
-
-/* netif_tx_start/stop_all_queues is defined */
-#undef HAVE_NETIF_TX_START_STOP_ALL_QUEUES
 
 /* netif_xmit_stopped is defined */
 #undef HAVE_NETIF_XMIT_STOPPED
@@ -546,17 +618,14 @@
 /* netlink_skb_params has sk */
 #undef HAVE_NETLINK_SKB_PARMS_SK
 
-/* struct netns_ipv4 has sysctl_tcp_mem */
-#undef HAVE_NETNS_IPV4_SYSCTL_TCP_MEM
-
 /* dev_port is defined */
 #undef HAVE_NET_DEVICE_DEV_PORT
 
 /* is defined */
 #undef HAVE_NET_DEVICE_EXTENDED_TX_EXT
 
-/* master is defined */
-#undef HAVE_NET_DEVICE_MASTER
+/* net_device min/max is defined */
+#undef HAVE_NET_DEVICE_MIN_MAX_MTU
 
 /* neigh_priv_len is defined */
 #undef HAVE_NET_DEVICE_NEIGH_PRIV_LEN
@@ -567,20 +636,14 @@
 /* net/flow_keys.h exists */
 #undef HAVE_NET_FLOW_KEYS_H
 
-/* net_get_random_once is defined */
-#undef HAVE_NET_GET_RANDOM_ONCE
+/* page_is_pfmemalloc is defined */
+#undef HAVE_PAGE_IS_PFMEMALLOC
 
-/* sendmsg has 4 parameters */
-#undef HAVE_NET_SENDMSG_4_PARAMS
+/* page_ref_count/add/sub/inc defined */
+#undef HAVE_PAGE_REF_COUNT_ADD_SUB_INC
 
-/* ib signature new api is defined */
-#undef HAVE_NEW_SIGNATURE_API
-
-/* alloc_etherdev_mqs, alloc_etherdev_mqs, num_tc extended is defined */
-#undef HAVE_NEW_TX_RING_SCHEME
-
-/* ns_to_timespec64 is defined */
-#undef HAVE_NS_TO_TIMESPACE64
+/* pat.h has pat_enabled as a function */
+#undef HAVE_PAT_ENABLED_AS_FUNCTION
 
 /* pcie_link_width is defined */
 #undef HAVE_PCIE_LINK_WIDTH
@@ -600,12 +663,6 @@
 /* pci_enable_msix_range is defined */
 #undef HAVE_PCI_ENABLE_MSIX_RANGE
 
-/* pci_enable_msi_exact is defined */
-#undef HAVE_PCI_ENABLE_MSI_EXACT
-
-/* pci_msix_vec_count is defined */
-#undef HAVE_PCI_MSIX_VEC_COUNT
-
 /* pci_num_vf is defined */
 #undef HAVE_PCI_NUM_VF
 
@@ -621,11 +678,8 @@
 /* PDE_DATA is defined */
 #undef HAVE_PDE_DATA
 
-/* percpu_counter_init takes 3 arguments */
-#undef HAVE_PERCPU_COUNTER_INIT_3_ARGS
-
-/* struct pernet_operations has id, size is defined */
-#undef HAVE_PERNET_OPERATIONS_ID_AND_SIZE
+/* pernet_operations_id is defined */
+#undef HAVE_PERENT_OPERATIONS_ID
 
 /* pinned_vm is defined */
 #undef HAVE_PINNED_VM
@@ -648,38 +702,23 @@
 /* ptp_clock_register has 2 params is defined */
 #undef HAVE_PTP_CLOCK_REGISTER_2_PARAMS
 
-/* PTR_ERR_OR_ZERO is defined */
-#undef HAVE_PTR_ERR_OR_ZERO
-
-/* __put_task_struct is exported by the kernel */
-#undef HAVE_PUT_TASK_STRUCT_EXPORTED
-
 /* reciprocal_scale is defined */
 #undef HAVE_RECIPROCAL_SCALE
 
+/* register_netdevice_notifier_rh is defined */
+#undef HAVE_REGISTER_NETDEVICE_NOTIFIER_RH
+
 /* register_net_sysctl is defined */
 #undef HAVE_REGISTER_NET_SYSCTL
-
-/* struct request_queue has request_fn_active */
-#undef HAVE_REQUEST_QUEUE_REQUEST_FN_ACTIVE
-
-/* rpc_xprt_ops.connect has 2 params */
-#undef HAVE_RPC_XPRT_OPS_CONNECT_2_PARAMS
-
-/* rq_next_page is defined */
-#undef HAVE_RQ_NEXT_PAGE
-
-/* rq_xmit_bytes_sent is defined */
-#undef HAVE_RQ_XMIT_BYTES_SENT
-
-/* idev is defined */
-#undef HAVE_RTABLE_IDEV
 
 /* dellink has 2 paramters */
 #undef HAVE_RTNL_LINK_OPS_DELLINK_2_PARAMS
 
 /* newlink has 4 paramters */
 #undef HAVE_RTNL_LINK_OPS_NEWLINK_4_PARAMS
+
+/* rtble has direct dst */
+#undef HAVE_RT_DIRECT_DST
 
 /* rt_uses_gateway is defined */
 #undef HAVE_RT_USES_GATEWAY
@@ -690,8 +729,41 @@
 /* get_rxfh_indir_size is defined in ethtool_ops_ext */
 #undef HAVE_RXFH_INDIR_SIZE_EXT
 
-/* scsi_prot_interval is defined */
-#undef HAVE_SCSI_PROT_INTERVAL
+/* scsi_change_queue_depth exist */
+#undef HAVE_SCSI_CHANGE_QUEUE_DEPTH
+
+/* scsi_cmnd has members prot_flags */
+#undef HAVE_SCSI_CMND_PROT_FLAGS
+
+/* scsi_device.h struct scsi_device has u64 lun */
+#undef HAVE_SCSI_DEVICE_U64_LUN
+
+/* Scsi_Host has members nr_hw_queues */
+#undef HAVE_SCSI_HOST_NR_HW_QUEUES
+
+/* scsi_host_template has members change_queue_type */
+#undef HAVE_SCSI_HOST_TEMPLATE_CHANGE_QUEUE_TYPE
+
+/* scsi_host_template has members track_queue_depth */
+#undef HAVE_SCSI_HOST_TEMPLATE_TRACK_QUEUE_DEPTH
+
+/* scsi_host_template has members use_blk_tags */
+#undef HAVE_SCSI_HOST_TEMPLATE_USE_BLK_TAGS
+
+/* scsi_host_template has members use_host_wide_tags */
+#undef HAVE_SCSI_HOST_TEMPLATE_USE_HOST_WIDE_TAGS
+
+/* Scsi_Host has members use_blk_mq */
+#undef HAVE_SCSI_HOST_USE_BLK_MQ
+
+/* SCSI_SCAN_INITIAL is defined */
+#undef HAVE_SCSI_SCAN_INITIAL
+
+/* scsi_tcq.h has function scsi_change_queue_type */
+#undef HAVE_SCSI_TCQ_SCSI_CHANGE_QUEUE_TYPE
+
+/* scsi_tcq.h has function scsi_init_shared_tag_map */
+#undef HAVE_SCSI_TCQ_SCSI_INIT_SHARED_TAG_MAP
 
 /* scsi_transfer_length is defined */
 #undef HAVE_SCSI_TRANSFER_LENGTH
@@ -708,17 +780,23 @@
 /* set_phys_id is defined in ethtool_ops_ext */
 #undef HAVE_SET_PHYS_ID_EXT
 
+/* struct se_cmd has member prot_checks */
+#undef HAVE_SE_CMD_HAS_PROT_CHECKS
+
+/* target_core_base.h se_cmd transport_complete_callback has three params */
+#undef HAVE_SE_CMD_TRANSPORT_COMPLETE_CALLBACK_HAS_THREE_PARAM
+
+/* SG_MAX_SEGMENTS is defined */
+#undef HAVE_SG_MAX_SEGMENTS
+
 /* SIOCGHWTSTAMP is defined */
 #undef HAVE_SIOCGHWTSTAMP
 
 /* skb_add_rx_frag has 5 params */
 #undef HAVE_SKB_ADD_RX_FRAG_5_PARAMS
 
-/* sock.h has skb_copy_to_page_nocache */
-#undef HAVE_SKB_COPY_TO_PAGE_NOCACHE
-
-/* skb_frag_struct has page.p */
-#undef HAVE_SKB_FRAG_STRUCT_PAGE_P
+/* skb_flow_dissect_flow_keys has 3 parameters */
+#undef HAVE_SKB_FLOW_DISSECT_FLOW_KEYS_HAS_3_PARAMS
 
 /* skb_inner_network_header is defined */
 #undef HAVE_SKB_INNER_NETWORK_HEADER
@@ -726,8 +804,8 @@
 /* skb_inner_transport_header is defined */
 #undef HAVE_SKB_INNER_TRANSPORT_HEADER
 
-/* skb_mark_napi_id is defined */
-#undef HAVE_SKB_MARK_NAPI_ID
+/* skb_inner_transport_offset is defined */
+#undef HAVE_SKB_INNER_TRANSPORT_OFFSET
 
 /* skb_pull_inline is defined */
 #undef HAVE_SKB_PULL_INLINE
@@ -738,11 +816,14 @@
 /* skb_shared_info has union tx_flags */
 #undef HAVE_SKB_SHARED_INFO_UNION_TX_FLAGS
 
+/* skb_transport_header_was_set is defined */
+#undef HAVE_SKB_TRANSPORT_HEADER_WAS_SET
+
+/* skb_vlan_pop is defined */
+#undef HAVE_SKB_VLAN_POP
+
 /* skwq_has_sleeper is defined */
 #undef HAVE_SKWQ_HAS_SLEEPER
-
-/* sk_alloc has 5 parameter */
-#undef HAVE_SK_ALLOC_5_PARAMS
 
 /* csum_level is defined */
 #undef HAVE_SK_BUFF_CSUM_LEVEL
@@ -750,32 +831,14 @@
 /* encapsulation is defined */
 #undef HAVE_SK_BUFF_ENCAPSULATION
 
-/* head_frag is defined */
-#undef HAVE_SK_BUFF_HEAD_FRAG
-
 /* xmit_more is defined */
 #undef HAVE_SK_BUFF_XMIT_MORE
 
 /* sk_clone_lock is defined */
 #undef HAVE_SK_CLONE_LOCK
 
-/* sk_data_ready has 2 params */
-#undef HAVE_SK_DATA_READY_2_PARAMS
-
-/* sk_page_frag is defined */
-#undef HAVE_SK_PAGE_FRAG
-
-/* sk_rmem_schedule has 3 params */
-#undef HAVE_SK_RMEM_SCHEDULE_3P
-
-/* sock.h has sk_v6_rcv_saddr */
-#undef HAVE_SK_V6_RCV_SADDR
-
 /* sk_wait_data has 3 params */
 #undef HAVE_SK_WAIT_DATA_3_PARAMS
-
-/* sock_wake_async takes socket_wq */
-#undef HAVE_SOCK_WAKE_ASYNC_TAKES_SOCKET_WQ
 
 /* split_page is exported by the kernel */
 #undef HAVE_SPLIT_PAGE_EXPORTED
@@ -801,29 +864,11 @@
 /* ieee_qcn is defined */
 #undef HAVE_STRUCT_IEEE_QCN
 
-/* linux/sunrpc/addr.h exists */
-#undef HAVE_SUNRPC_ADDR_H
+/* SWITCHDEV_ATTR_ID_PORT_PARENT_ID is defined */
+#undef HAVE_SWITCHDEV_ATTR_ID_PORT_PARENT_ID
 
-/* sc_reader defined */
-#undef HAVE_SVCXPRT_RDMA_SC_READER
-
-/* svc_rdma_get_page defined */
-#undef HAVE_SVC_RDMA_GET_PAGE
-
-/* svc_rdma_get_write_array defined */
-#undef HAVE_SVC_RDMA_GET_WRITE_ARRAY
-
-/* svc_rdma_rcl_chunk_counts defined */
-#undef HAVE_SVC_RDMA_RCL_CHUNK_COUNTS
-
-/* svc_xprt_init has 4 parameters */
-#undef HAVE_SVC_XPRT_INIT_4_PARAMS
-
-/* sysfs_get_dirent has 2 paramters */
-#undef HAVE_SYSFS_GET_DIRENT_2_PARAMS
-
-/* sysfs_get_dirent gets kernfs_node */
-#undef HAVE_SYSFS_GET_DIRENT_GETS_KERNFS_NODE
+/* HAVE_SWITCHDEV_OPS is defined */
+#undef HAVE_SWITCHDEV_OPS
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #undef HAVE_SYS_STAT_H
@@ -831,14 +876,35 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
-/* tcp.h has tcp_passive_fastopen */
-#undef HAVE_TCP_PASSIVE_FASTOPEN
+/* target_core_fabric.h has target_reverse_dma_direction function */
+#undef HAVE_TARGET_FABRIC_HAS_TARGET_REVERSE_DMA_DIRECTION
 
-/* this_cpu_ptr is defined */
-#undef HAVE_THIS_CPU_PTR
+/* target_put_sess_cmd in target_core_fabric.h has 1 parameter */
+#undef HAVE_TARGET_PUT_SESS_CMD_HAS_1_PARAM
 
-/* percpu.h has __this_cpu_read */
-#undef HAVE_THIS_CPU_READ
+/* target_core_base.h se_cmd supports compare_and_write */
+#undef HAVE_TARGET_SUPPORT_COMPARE_AND_WRITE
+
+/* tcf_exts_to_list is defined */
+#undef HAVE_TCF_EXTS_TO_LIST
+
+/* tcf_vlan_action is defined */
+#undef HAVE_TCF_VLAN_ACTION
+
+/* tcf_vlan_push_proto is defined */
+#undef HAVE_TCF_VLAN_PUSH_PROTO
+
+/* tcf_vlan_push_vid is defined */
+#undef HAVE_TCF_VLAN_PUSH_VID
+
+/* HAVE_TC_CLSFLOWER_STATS is defined */
+#undef HAVE_TC_CLSFLOWER_STATS
+
+/* struct tc_cls_flower_offload is defined */
+#undef HAVE_TC_FLOWER_OFFLOAD
+
+/* include/net/tc_act/tc_vlan.h exists */
+#undef HAVE_TC_VLAN_H
 
 /* timecounter_adjtime is defined */
 #undef HAVE_TIMECOUNTER_ADJTIME
@@ -849,14 +915,20 @@
 /* max_tx_rate is defined */
 #undef HAVE_TX_RATE_LIMIT
 
+/* type cycle_t is defined in linux/types.h */
+#undef HAVE_TYPE_CYCLE_T
+
 /* uapi/linux/if_bonding.h exists */
 #undef HAVE_UAPI_IF_BONDING_H
 
 /* uapi/linux/if_ether.h exist */
 #undef HAVE_UAPI_LINUX_IF_ETHER_H
 
-/* uio.h has struct iov_iter */
-#undef HAVE_UIO_IOV_ITER
+/* udp4_hwcsum is exported by the kernel */
+#undef HAVE_UDP4_HWCSUM
+
+/* udp_tunnel_get_rx_info is defined */
+#undef HAVE_UDP_TUNNEL_GET_RX_INFO
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
@@ -866,6 +938,9 @@
 
 /* update_pmtu has 4 paramters */
 #undef HAVE_UPDATE_PMTU_4_PARAMS
+
+/* include/generated/utsrelease.h exists */
+#undef HAVE_UTSRELEASE_H
 
 /* va_format is defined */
 #undef HAVE_VA_FORMAT
@@ -903,11 +978,11 @@
 /* vxlan_get_rx_port is defined */
 #undef HAVE_VXLAN_ENABLED
 
+/* vxlan_features_check is defined */
+#undef HAVE_VXLAN_FEATURES_CHECK
+
 /* vxlan_gso_check is defined */
 #undef HAVE_VXLAN_GSO_CHECK
-
-/* wanted_features is defined */
-#undef HAVE_WANTED_FEATURES
 
 /* WQ_HIGHPRI is defined */
 #undef HAVE_WQ_HIGHPRI
@@ -915,26 +990,17 @@
 /* WQ_MEM_RECLAIM is defined */
 #undef HAVE_WQ_MEM_RECLAIM
 
+/* WQ_NON_REENTRANT is defined */
+#undef HAVE_WQ_NON_REENTRANT
+
 /* WQ_UNBOUND is defined */
 #undef HAVE_WQ_UNBOUND
 
 /* WQ_UNBOUND_MAX_ACTIVE is defined */
 #undef HAVE_WQ_UNBOUND_MAX_ACTIVE
 
-/* xcl_ident defined */
-#undef HAVE_XCL_IDENT
-
-/* xpo_secure_port is defined */
-#undef HAVE_XPO_SECURE_PORT
-
-/* xprt_alloc has 3 params is defined */
-#undef HAVE_XPRT_ALLOC_HAS_3_PARAMS
-
-/* xprt_alloc has 4 params is defined */
-#undef HAVE_XPRT_ALLOC_HAS_4_PARAMS
-
-/* xprt_alloc_slot is defined */
-#undef HAVE_XPRT_ALLOC_SLOT
+/* xdp is defined */
+#undef HAVE_XDP_BUFF
 
 /* struct xps_map is defined */
 #undef HAVE_XPS_MAP
@@ -944,6 +1010,9 @@
 
 /* __ethtool_get_link_ksettings is defined */
 #undef HAVE___ETHTOOL_GET_LINK_KSETTINGS
+
+/* napi_gro_flush has 2 parameters */
+#undef NAPI_GRO_FLUSH_2_PARAMS
 
 /* if getapp returns int */
 #undef NDO_GETAPP_RETURNS_INT

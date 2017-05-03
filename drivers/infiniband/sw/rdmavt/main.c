@@ -36,7 +36,7 @@
 
 #define DRV_NAME	"rdmavt"
 #define DRV_VERSION	"2.0.0"
-#define DRV_RELDATE	"August 14, 2016"
+#define DRV_RELDATE	"November 07, 2016"
 
 MODULE_AUTHOR("Alaa Hleihel");
 MODULE_DESCRIPTION("rdmavt dummy kernel module");

@@ -10,4 +10,13 @@
 #define ipv6_addr_copy(a, b) (*(a) = *(b))
 #endif
 
+#ifndef HAVE_IP6_DST_HOPLIMIT
+#define ip6_dst_hoplimit  LINUX_BACKPORT(ip6_dst_hoplimit)
+int ip6_dst_hoplimit(struct dst_entry *dst);
+#endif
+#ifndef HAVE_IP4_DST_HOPLIMIT
+#define ip4_dst_hoplimit  LINUX_BACKPORT(ip4_dst_hoplimit)
+int ip4_dst_hoplimit(const struct dst_entry *dst);
+#endif
+
 #endif /* COMPAT_IPV6_H */

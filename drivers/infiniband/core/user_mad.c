@@ -59,19 +59,12 @@ MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("InfiniBand userspace MAD packet access");
 MODULE_LICENSE("Dual BSD/GPL");
 
-static int enable_rx_threshold;
-module_param(enable_rx_threshold, int, 0444);
-MODULE_PARM_DESC(enable_rx_threshold, "Enable threshold for receive queue if non-zero (default=0)");
-
 enum {
 	IB_UMAD_MAX_PORTS  = 64,
 	IB_UMAD_MAX_AGENTS = 32,
 
 	IB_UMAD_MAJOR      = 231,
-	IB_UMAD_MINOR_BASE = 0,
-
-	IB_UMAD_RX_THRESHOLD = 10000,
-	IB_UMAD_RX_MANAGER_THRESHOLD = 100000
+	IB_UMAD_MINOR_BASE = 0
 };
 
 /*
@@ -106,21 +99,14 @@ struct ib_umad_port {
 };
 
 struct ib_umad_device {
-	int                  start_port, end_port;
 	struct kobject       kobj;
 	struct ib_umad_port  port[0];
-};
-
-struct counted_list {
-	struct list_head	list;
-	int			count;
-	int			threshold;
 };
 
 struct ib_umad_file {
 	struct mutex		mutex;
 	struct ib_umad_port    *port;
-	struct counted_list	recv_list;
+	struct list_head	recv_list;
 	struct list_head	send_list;
 	struct list_head	port_list;
 	spinlock_t		send_lock;
@@ -147,7 +133,7 @@ static DEFINE_SPINLOCK(port_lock);
 static DECLARE_BITMAP(dev_map, IB_UMAD_MAX_PORTS);
 
 static void ib_umad_add_one(struct ib_device *device);
-static void ib_umad_remove_one(struct ib_device *device);
+static void ib_umad_remove_one(struct ib_device *device, void *client_data);
 
 static void ib_umad_release_dev(struct kobject *kobj)
 {
@@ -185,7 +171,7 @@ static int queue_packet(struct ib_umad_file *file,
 	     packet->mad.hdr.id < IB_UMAD_MAX_AGENTS;
 	     packet->mad.hdr.id++)
 		if (agent == __get_agent(file, packet->mad.hdr.id)) {
-			list_add_tail(&packet->list, &file->recv_list.list);
+			list_add_tail(&packet->list, &file->recv_list);
 			wake_up_interruptible(&file->recv_wait);
 			ret = 0;
 			break;
@@ -223,55 +209,14 @@ static void send_handler(struct ib_mad_agent *agent,
 	kfree(packet);
 }
 
-static int get_mads_count(int packet_length, int hdr_len)
-{
-	int seg_len, data_len, mads_count;
-
-	data_len = packet_length - hdr_len;
-	seg_len = sizeof(struct ib_mad) - hdr_len;
-	mads_count = (data_len - 1) / seg_len + 1;
-
-	return mads_count;
-}
-
-static int is_mad_rmpp(struct ib_mad_recv_wc *mad_recv_wc)
-{
-	struct ib_rmpp_mad *rmpp_mad;
-
-	rmpp_mad = (struct ib_rmpp_mad *)mad_recv_wc->recv_buf.mad;
-	if (ib_is_mad_class_rmpp(rmpp_mad->mad_hdr.mgmt_class) &&
-	    (ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) & IB_MGMT_RMPP_FLAG_ACTIVE)) {
-		return 1;
-	}
-	return 0;
-}
-
 static void recv_handler(struct ib_mad_agent *agent,
+			 struct ib_mad_send_buf *send_buf,
 			 struct ib_mad_recv_wc *mad_recv_wc)
 {
 	struct ib_umad_file *file = agent->context;
 	struct ib_umad_packet *packet;
-	int mgmt_class;
-	int data_offset;
-	int drop = 0;
-	int mad_is_rmpp;
-	int mads_count;
 
 	if (mad_recv_wc->wc->status != IB_WC_SUCCESS)
-		goto err1;
-
-	mad_is_rmpp = is_mad_rmpp(mad_recv_wc);
-	if (!agent->rmpp_version && mad_is_rmpp)
-		goto err1;
-
-	mutex_lock(&file->mutex);
-/*For now we accept all RMPPs packets, even though we crossed the threshold*/
-	if (enable_rx_threshold &&
-	    !mad_is_rmpp && file->recv_list.count >= file->recv_list.threshold)
-			drop = 1;
-	mutex_unlock(&file->mutex);
-
-	if (drop)
 		goto err1;
 
 	packet = kzalloc(sizeof *packet, GFP_KERNEL);
@@ -303,17 +248,8 @@ static void recv_handler(struct ib_mad_agent *agent,
 		packet->mad.hdr.flow_label = cpu_to_be32(ah_attr.grh.flow_label);
 	}
 
-	mgmt_class = mad_recv_wc->recv_buf.mad->mad_hdr.mgmt_class;
-	data_offset = ib_get_mad_data_offset(mgmt_class);
-	mads_count = get_mads_count(packet->length, data_offset);
-
 	if (queue_packet(file, agent, packet))
 		goto err2;
-
-	mutex_lock(&file->mutex);
-	file->recv_list.count += mads_count;
-	mutex_unlock(&file->mutex);
-
 	return;
 
 err2:
@@ -327,20 +263,23 @@ static ssize_t copy_recv_mad(struct ib_umad_file *file, char __user *buf,
 {
 	struct ib_mad_recv_buf *recv_buf;
 	int left, seg_payload, offset, max_seg_payload;
+	size_t seg_size;
+
+	recv_buf = &packet->recv_wc->recv_buf;
+	seg_size = packet->recv_wc->mad_seg_size;
 
 	/* We need enough room to copy the first (or only) MAD segment. */
-	recv_buf = &packet->recv_wc->recv_buf;
-	if ((packet->length <= sizeof (*recv_buf->mad) &&
+	if ((packet->length <= seg_size &&
 	     count < hdr_size(file) + packet->length) ||
-	    (packet->length > sizeof (*recv_buf->mad) &&
-	     count < hdr_size(file) + sizeof (*recv_buf->mad)))
+	    (packet->length > seg_size &&
+	     count < hdr_size(file) + seg_size))
 		return -EINVAL;
 
 	if (copy_to_user(buf, &packet->mad, hdr_size(file)))
 		return -EFAULT;
 
 	buf += hdr_size(file);
-	seg_payload = min_t(int, packet->length, sizeof (*recv_buf->mad));
+	seg_payload = min_t(int, packet->length, seg_size);
 	if (copy_to_user(buf, recv_buf->mad, seg_payload))
 		return -EFAULT;
 
@@ -357,7 +296,7 @@ static ssize_t copy_recv_mad(struct ib_umad_file *file, char __user *buf,
 			return -ENOSPC;
 		}
 		offset = ib_get_mad_data_offset(recv_buf->mad->mad_hdr.mgmt_class);
-		max_seg_payload = sizeof (struct ib_mad) - offset;
+		max_seg_payload = seg_size - offset;
 
 		for (left = packet->length - seg_payload, buf += seg_payload;
 		     left; left -= seg_payload, buf += seg_payload) {
@@ -403,20 +342,20 @@ static ssize_t ib_umad_read(struct file *filp, char __user *buf,
 
 	mutex_lock(&file->mutex);
 
-	while (list_empty(&file->recv_list.list)) {
+	while (list_empty(&file->recv_list)) {
 		mutex_unlock(&file->mutex);
 
 		if (filp->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 
 		if (wait_event_interruptible(file->recv_wait,
-					     !list_empty(&file->recv_list.list)))
+					     !list_empty(&file->recv_list)))
 			return -ERESTARTSYS;
 
 		mutex_lock(&file->mutex);
 	}
 
-	packet = list_entry(file->recv_list.list.next, struct ib_umad_packet, list);
+	packet = list_entry(file->recv_list.next, struct ib_umad_packet, list);
 	list_del(&packet->list);
 
 	mutex_unlock(&file->mutex);
@@ -429,21 +368,11 @@ static ssize_t ib_umad_read(struct file *filp, char __user *buf,
 	if (ret < 0) {
 		/* Requeue packet */
 		mutex_lock(&file->mutex);
-		list_add(&packet->list, &file->recv_list.list);
+		list_add(&packet->list, &file->recv_list);
 		mutex_unlock(&file->mutex);
 	} else {
-		if (packet->recv_wc) {
-			int mgmt_class;
-			int data_offset;
-
-			mgmt_class = packet->recv_wc->recv_buf.mad->mad_hdr.mgmt_class;
-			data_offset = ib_get_mad_data_offset(mgmt_class);
-			mutex_lock(&file->mutex);
-			file->recv_list.count -= get_mads_count(packet->length,
-								data_offset);
-			mutex_unlock(&file->mutex);
+		if (packet->recv_wc)
 			ib_free_recv_mad(packet->recv_wc);
-		}
 		kfree(packet);
 	}
 	return ret;
@@ -500,11 +429,11 @@ static int is_duplicate(struct ib_umad_file *file,
 		 * the same TID, reject the second as a duplicate.  This is more
 		 * restrictive than required by the spec.
 		 */
-		if (!ib_response_mad((struct ib_mad *) hdr)) {
-			if (!ib_response_mad((struct ib_mad *) sent_hdr))
+		if (!ib_response_mad(hdr)) {
+			if (!ib_response_mad(sent_hdr))
 				return 1;
 			continue;
-		} else if (!ib_response_mad((struct ib_mad *) sent_hdr))
+		} else if (!ib_response_mad(sent_hdr))
 			continue;
 
 		if (same_destination(&packet->mad.hdr, &sent_packet->mad.hdr))
@@ -525,6 +454,7 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	struct ib_rmpp_mad *rmpp_mad;
 	__be64 *tid;
 	int ret, data_len, hdr_len, copy_offset, rmpp_active;
+	u8 base_version;
 
 	if (count < hdr_size(file) + IB_MGMT_RMPP_HDR)
 		return -EINVAL;
@@ -591,11 +521,13 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 		rmpp_active = 0;
 	}
 
+	base_version = ((struct ib_mad_hdr *)&packet->mad.data)->base_version;
 	data_len = count - hdr_size(file) - hdr_len;
 	packet->msg = ib_create_send_mad(agent,
 					 be32_to_cpu(packet->mad.hdr.qpn),
 					 packet->mad.hdr.pkey_index, rmpp_active,
-					 hdr_len, data_len, GFP_KERNEL);
+					 hdr_len, data_len, GFP_KERNEL,
+					 base_version);
 	if (IS_ERR(packet->msg)) {
 		ret = PTR_ERR(packet->msg);
 		goto err_ah;
@@ -681,27 +613,10 @@ static unsigned int ib_umad_poll(struct file *filp, struct poll_table_struct *wa
 
 	poll_wait(filp, &file->recv_wait, wait);
 
-	if (!list_empty(&file->recv_list.list))
+	if (!list_empty(&file->recv_list))
 		mask |= POLLIN | POLLRDNORM;
 
 	return mask;
-}
-
-static void update_mgmt_threshold(struct ib_umad_file *file, struct ib_mad_reg_req req)
-{
-	int i;
-
-	/*Update managers' class rx threshold*/
-		for_each_set_bit(i, req.method_mask, IB_MGMT_MAX_METHODS) {
-			if (i == IB_MGMT_METHOD_GET ||
-			    i == IB_MGMT_METHOD_SET ||
-			    i == IB_MGMT_METHOD_REPORT ||
-			    i == IB_MGMT_METHOD_TRAP) {
-				file->recv_list.threshold =
-					IB_UMAD_RX_MANAGER_THRESHOLD;
-				break;
-			}
-		}
 }
 
 static int ib_umad_reg_agent(struct ib_umad_file *file, void __user *arg,
@@ -763,8 +678,6 @@ found:
 		} else
 			memcpy(req.method_mask, ureq.method_mask,
 			       sizeof req.method_mask);
-
-		update_mgmt_threshold(file, req);
 	}
 
 	agent = ib_register_mad_agent(file->port->ib_dev, file->port->port_num,
@@ -967,33 +880,6 @@ static long ib_umad_enable_pkey(struct ib_umad_file *file)
 	return ret;
 }
 
-static long ib_umad_update_threshold(struct ib_umad_file *file, void __user
-				     *arg)
-{
-	struct ib_user_mad_thresh_req ureq;
-	int ret = 0;
-
-	mutex_lock(&file->port->file_mutex);
-	mutex_lock(&file->mutex);
-
-	if (!file->port->ib_dev) {
-		ret = -EPIPE;
-		goto out;
-	}
-
-	if (copy_from_user(&ureq, arg, sizeof(ureq))) {
-		ret = -EFAULT;
-		goto out;
-	}
-
-	file->recv_list.threshold = ureq.threshold;
-out:
-	mutex_unlock(&file->mutex);
-	mutex_unlock(&file->port->file_mutex);
-
-	return ret;
-}
-
 static long ib_umad_ioctl(struct file *filp, unsigned int cmd,
 			  unsigned long arg)
 {
@@ -1006,8 +892,6 @@ static long ib_umad_ioctl(struct file *filp, unsigned int cmd,
 		return ib_umad_enable_pkey(filp->private_data);
 	case IB_USER_MAD_REGISTER_AGENT2:
 		return ib_umad_reg_agent2(filp->private_data, (void __user *) arg);
-	case IB_USER_MAD_UPDATE_THRESHOLD:
-		return ib_umad_update_threshold(filp->private_data, (void __user *)arg);
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -1026,20 +910,11 @@ static long ib_umad_compat_ioctl(struct file *filp, unsigned int cmd,
 		return ib_umad_enable_pkey(filp->private_data);
 	case IB_USER_MAD_REGISTER_AGENT2:
 		return ib_umad_reg_agent2(filp->private_data, compat_ptr(arg));
-	case IB_USER_MAD_UPDATE_THRESHOLD:
-		return ib_umad_update_threshold(filp->private_data, compat_ptr(arg));
 	default:
 		return -ENOIOCTLCMD;
 	}
 }
 #endif
-
-static void init_recv_list(struct counted_list *recv_list)
-{
-	INIT_LIST_HEAD(&recv_list->list);
-	recv_list->count = 0;
-	recv_list->threshold = IB_UMAD_RX_THRESHOLD;
-}
 
 /*
  * ib_umad_open() does not need the BKL:
@@ -1070,7 +945,7 @@ static int ib_umad_open(struct inode *inode, struct file *filp)
 
 	mutex_init(&file->mutex);
 	spin_lock_init(&file->send_lock);
-	init_recv_list(&file->recv_list);
+	INIT_LIST_HEAD(&file->recv_list);
 	INIT_LIST_HEAD(&file->send_list);
 	init_waitqueue_head(&file->recv_wait);
 
@@ -1107,7 +982,7 @@ static int ib_umad_close(struct inode *inode, struct file *filp)
 	already_dead = file->agents_dead;
 	file->agents_dead = 1;
 
-	list_for_each_entry_safe(packet, tmp, &file->recv_list.list, list) {
+	list_for_each_entry_safe(packet, tmp, &file->recv_list, list) {
 		if (packet->recv_wc)
 			ib_free_recv_mad(packet->recv_wc);
 		kfree(packet);
@@ -1404,16 +1279,10 @@ static void ib_umad_add_one(struct ib_device *device)
 {
 	struct ib_umad_device *umad_dev;
 	int s, e, i;
+	int count = 0;
 
-	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
-		return;
-
-	if (device->node_type == RDMA_NODE_IB_SWITCH)
-		s = e = 0;
-	else {
-		s = 1;
-		e = device->phys_port_cnt;
-	}
+	s = rdma_start_port(device);
+	e = rdma_end_port(device);
 
 	umad_dev = kzalloc(sizeof *umad_dev +
 			   (e - s + 1) * sizeof (struct ib_umad_port),
@@ -1423,38 +1292,49 @@ static void ib_umad_add_one(struct ib_device *device)
 
 	kobject_init(&umad_dev->kobj, &ib_umad_dev_ktype);
 
-	umad_dev->start_port = s;
-	umad_dev->end_port   = e;
-
 	for (i = s; i <= e; ++i) {
+		if (!rdma_cap_ib_mad(device, i))
+			continue;
+
 		umad_dev->port[i - s].umad_dev = umad_dev;
 
 		if (ib_umad_init_port(device, i, umad_dev,
 				      &umad_dev->port[i - s]))
 			goto err;
+
+		count++;
 	}
+
+	if (!count)
+		goto free;
 
 	ib_set_client_data(device, &umad_client, umad_dev);
 
 	return;
 
 err:
-	while (--i >= s)
-		ib_umad_kill_port(&umad_dev->port[i - s]);
+	while (--i >= s) {
+		if (!rdma_cap_ib_mad(device, i))
+			continue;
 
+		ib_umad_kill_port(&umad_dev->port[i - s]);
+	}
+free:
 	kobject_put(&umad_dev->kobj);
 }
 
-static void ib_umad_remove_one(struct ib_device *device)
+static void ib_umad_remove_one(struct ib_device *device, void *client_data)
 {
-	struct ib_umad_device *umad_dev = ib_get_client_data(device, &umad_client);
+	struct ib_umad_device *umad_dev = client_data;
 	int i;
 
 	if (!umad_dev)
 		return;
 
-	for (i = 0; i <= umad_dev->end_port - umad_dev->start_port; ++i)
-		ib_umad_kill_port(&umad_dev->port[i]);
+	for (i = 0; i <= rdma_end_port(device) - rdma_start_port(device); ++i) {
+		if (rdma_cap_ib_mad(device, i + rdma_start_port(device)))
+			ib_umad_kill_port(&umad_dev->port[i]);
+	}
 
 	kobject_put(&umad_dev->kobj);
 }

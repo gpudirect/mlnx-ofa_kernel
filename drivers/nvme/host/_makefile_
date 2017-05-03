@@ -88,8 +88,12 @@ default:
 # compile with ofed driver
 	-cp -f $(OFA)/Module*.symvers $(SRC_DIR)/Module.symvers
 	make -C $(K_BUILD) O=$(K_OBJ) SUBDIRS=$(shell pwd) $(WITH_MAKE_PARAMS) \
-		CONFIG_NVMF_HOST=m \
-		CONFIG_NVMF_HOST_DUMMY= \
+		CONFIG_NVME_CORE=m \
+		CONFIG_BLK_DEV_NVME=m \
+		CONFIG_NVME_FABRICS=m \
+		CONFIG_NVME_RDMA=m \
+		CONFIG_BLK_DEV_NVME_SCSI=y \
+		CONFIG_NVME_HOST_DUMMY= \
 		CONFIG_DTRACE= \
 		CONFIG_CC_STACKPROTECTOR_STRONG= \
 		CONFIG_CTF= \
@@ -144,7 +148,7 @@ binrpm: rpmcheck $(rpmspec)
 
 dist:
 	mkdir -p $(rpmroot)/$(PACKAGE)/
-	cp {$(rpmspec),makefile,Kbuild,dkms.conf,Module.supported} $(rpmroot)/$(PACKAGE)/
+	cp {$(rpmspec),makefile,Makefile,dkms.conf,Module.supported} $(rpmroot)/$(PACKAGE)/
 	cp *.c $(rpmroot)/$(PACKAGE)/
 	cp *.h $(rpmroot)/$(PACKAGE)/
 	cp -r debian $(rpmroot)/$(PACKAGE)/
@@ -154,7 +158,7 @@ dist:
 
 clean:
 	rm -f *.o
-	rm -f *.ko
+	rm -f *.ko *.ko.gz
 	rm -f *.mod.c
 	rm -f Module*.symvers modules*.order
 

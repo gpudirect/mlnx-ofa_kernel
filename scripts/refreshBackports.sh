@@ -63,6 +63,9 @@ echo
 
 for bdir in backports-2.6.16 backports
 do
+	if [ ! -d $bdir ]; then
+		continue
+	fi
 	echo -e "${GREEN}Reversing patches from${NORMAL}: ${BLUE}$bdir${NORMAL}"
 	rm -rf .pc
 	mv .pc-$bdir .pc

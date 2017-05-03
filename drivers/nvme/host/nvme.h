@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/kref.h>
 #include <linux/blk-mq.h>
+#include <linux/lightnvm.h>
 
 enum {
 	/*
@@ -40,6 +41,8 @@ extern unsigned char shutdown_timeout;
 
 #define NVME_DEFAULT_KATO	5
 #define NVME_KATO_GRACE		10
+
+extern unsigned int nvme_max_retries;
 
 enum {
 	NVME_NS_LBA		= 0,
@@ -68,7 +71,20 @@ enum nvme_quirks {
 	 * logical blocks.
 	 */
 	NVME_QUIRK_DISCARD_ZEROES		= (1 << 2),
+
+	/*
+	 * The controller needs a delay before starts checking the device
+	 * readiness, which is done by reading the NVME_CSTS_RDY bit.
+	 */
+	NVME_QUIRK_DELAY_BEFORE_CHK_RDY		= (1 << 3),
 };
+
+/* The below value is the specific amount of delay needed before checking
+ * readiness in case of the PCI_DEVICE(0x1c58, 0x0003), which needs the
+ * NVME_QUIRK_DELAY_BEFORE_CHK_RDY quirk enabled. The value (in ms) was
+ * found empirically.
+ */
+#define NVME_QUIRK_DELAY_AMOUNT		2000
 
 enum nvme_ctrl_state {
 	NVME_CTRL_NEW,
@@ -139,6 +155,7 @@ struct nvme_ns {
 	struct nvme_ctrl *ctrl;
 	struct request_queue *queue;
 	struct gendisk *disk;
+	struct nvm_dev *ndev;
 	struct kref kref;
 	int instance;
 
@@ -150,7 +167,6 @@ struct nvme_ns {
 	u16 ms;
 	bool ext;
 	u8 pi_type;
-	int type;
 	unsigned long flags;
 
 #define NVME_NS_REMOVING 0
@@ -169,7 +185,6 @@ struct nvme_ctrl_ops {
 	int (*reg_read64)(struct nvme_ctrl *ctrl, u32 off, u64 *val);
 	int (*reset_ctrl)(struct nvme_ctrl *ctrl);
 	void (*free_ctrl)(struct nvme_ctrl *ctrl);
-	void (*post_scan)(struct nvme_ctrl *ctrl);
 	void (*submit_async_event)(struct nvme_ctrl *ctrl, int aer_idx);
 	int (*delete_ctrl)(struct nvme_ctrl *ctrl);
 	const char *(*get_subsysnqn)(struct nvme_ctrl *ctrl);
@@ -226,7 +241,8 @@ static inline int nvme_error_status(u16 status)
 static inline bool nvme_req_needs_retry(struct request *req, u16 status)
 {
 	return !(status & NVME_SC_DNR || blk_noretry_request(req)) &&
-		(jiffies - req->start_time) < req->timeout;
+		(jiffies - req->start_time) < req->timeout &&
+		req->retries < nvme_max_retries;
 }
 
 void nvme_cancel_request(struct request *req, void *data, bool reserved);
@@ -276,9 +292,9 @@ int nvme_identify_ns(struct nvme_ctrl *dev, unsigned nsid,
 		struct nvme_id_ns **id);
 int nvme_get_log_page(struct nvme_ctrl *dev, struct nvme_smart_log **log);
 int nvme_get_features(struct nvme_ctrl *dev, unsigned fid, unsigned nsid,
-			dma_addr_t dma_addr, u32 *result);
+		      void *buffer, size_t buflen, u32 *result);
 int nvme_set_features(struct nvme_ctrl *dev, unsigned fid, unsigned dword11,
-			dma_addr_t dma_addr, u32 *result);
+		      void *buffer, size_t buflen, u32 *result);
 int nvme_set_queue_count(struct nvme_ctrl *ctrl, int *count);
 void nvme_start_keep_alive(struct nvme_ctrl *ctrl);
 void nvme_stop_keep_alive(struct nvme_ctrl *ctrl);
@@ -291,19 +307,34 @@ int nvme_sg_get_version_num(int __user *ip);
 
 #ifdef CONFIG_NVM
 int nvme_nvm_ns_supported(struct nvme_ns *ns, struct nvme_id_ns *id);
-int nvme_nvm_register(struct request_queue *q, char *disk_name);
-void nvme_nvm_unregister(struct request_queue *q, char *disk_name);
+int nvme_nvm_register(struct nvme_ns *ns, char *disk_name, int node,
+		      const struct attribute_group *attrs);
+void nvme_nvm_unregister(struct nvme_ns *ns);
+
+static inline struct nvme_ns *nvme_get_ns_from_dev(struct device *dev)
+{
+	if (dev->type->devnode)
+		return dev_to_disk(dev)->private_data;
+
+	return (container_of(dev, struct nvm_dev, dev))->private_data;
+}
 #else
-static inline int nvme_nvm_register(struct request_queue *q, char *disk_name)
+static inline int nvme_nvm_register(struct nvme_ns *ns, char *disk_name,
+				    int node,
+				    const struct attribute_group *attrs)
 {
 	return 0;
 }
 
-static inline void nvme_nvm_unregister(struct request_queue *q, char *disk_name) {};
+static inline void nvme_nvm_unregister(struct nvme_ns *ns) {};
 
 static inline int nvme_nvm_ns_supported(struct nvme_ns *ns, struct nvme_id_ns *id)
 {
 	return 0;
+}
+static inline struct nvme_ns *nvme_get_ns_from_dev(struct device *dev)
+{
+	return dev_to_disk(dev)->private_data;
 }
 #endif /* CONFIG_NVM */
 

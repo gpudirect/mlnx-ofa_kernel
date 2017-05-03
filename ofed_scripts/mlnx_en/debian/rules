@@ -81,6 +81,7 @@ override_dh_auto_test:
 override_dh_auto_install:
 ifneq ($(WITH_DKMS),1)
 	make install_modules KSRC=$(kernel_source_dir) KVERSION=$(kernelver) INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) INSTALL_MOD_PATH=$(INSTALL_MOD_PATH) KERNELRELEASE=$(kernelver)
+	find $(INSTALL_MOD_PATH) \( -type f -a -name "modules.*" \) -delete
 endif
 
 	# For dkms
@@ -111,6 +112,7 @@ endif
 	install -m 0755 source/ofed_scripts/show_gids			debian/$(putils)/usr/sbin
 	install -m 0755 source/ofed_scripts/compat_gid_gen			debian/$(putils)/usr/sbin
 	install -m 0755 source/ofed_scripts/cma_roce_mode			debian/$(putils)/usr/sbin
+	install -m 0755 source/ofed_scripts/cma_roce_tos			debian/$(putils)/usr/sbin
 	install -m 0755 source/ofed_scripts/*affinity*			debian/$(putils)/usr/sbin
 	install -m 0755 source/ofed_scripts/net-interfaces            debian/$(putils)/usr/sbin
 	install -m 0644 source/debian/mlnx-en.upstart			debian/$(putils)/etc/init/mlnx-en.conf

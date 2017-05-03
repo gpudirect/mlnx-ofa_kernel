@@ -4,7 +4,7 @@ kernel_source_dir=$2
 PACKAGE_NAME=$3
 PACKAGE_VERSION=$4
 
-config_flag=`/var/lib/dkms/${PACKAGE_NAME}/${PACKAGE_VERSION}/source/ofed_scripts/dkms_ofed $kernelver get-config`
+config_flag=`/var/lib/dkms/${PACKAGE_NAME}/${PACKAGE_VERSION}/source/ofed_scripts/dkms_ofed $kernelver $kernel_source_dir get-config`
 
 make distclean
 

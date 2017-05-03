@@ -82,7 +82,7 @@ rpmmacros =\
 		   --define='_sourcedir $(rpmroot)'\
 		   --define='_specdir $(PWD)'
 
-default: prep prep_bin
+default:
 ifneq ($(shell test -d $(OFA) && echo "true" || echo "" ),)
 # compile with ofed driver
 	-cp -f $(OFA)/Module*.symvers $(SRC_DIR)/Module.symvers
@@ -95,7 +95,6 @@ ifneq ($(shell test -d $(OFA) && echo "true" || echo "" ),)
 		LINUXINCLUDE=' \
 		$(EXTRA_CFLAGS) \
 		-include $(autoconf_h) \
-		-I$(PWD)/target \
 		$(KCONFIG_H) \
 		-include $(OFA)/include/linux/compat-2.6.h \
 		-I$(OFA)/include \
@@ -146,45 +145,24 @@ binrpm: rpmcheck $(rpmspec)
 		(exit 1); exit 1; \
 		fi
 
-dist: prep
+dist:
 	mkdir -p $(rpmroot)/$(PACKAGE)/
 	cp {$(rpmspec),Kconfig,makefile,Makefile,dkms.conf,Module.supported} $(rpmroot)/$(PACKAGE)/
 	cp *.c $(rpmroot)/$(PACKAGE)/
 	cp *.h $(rpmroot)/$(PACKAGE)/
 	cp -r debian $(rpmroot)/$(PACKAGE)/
 	cp -r tools $(rpmroot)/$(PACKAGE)/
-	cp -r target $(rpmroot)/$(PACKAGE)/
 	cd $(rpmroot) && tar czf $(PACKAGE).tgz $(PACKAGE)
 	cd $(rpmroot) && tar czf $(name)_$(VERSION).orig.tar.gz $(PACKAGE)
 
-prep:
-ifeq ($(shell test -f $(PWD)/../../../target/iscsi/iscsi_target_core.h  && echo "" || echo "false"),)
-	-cp -fr $(PWD)/../../../target $(PWD)
-	-cp -fr $(PWD)/../../../../include/target/* $(PWD)/target
-	-sed -i 's@<target/iscsi/iscsi_transport.h>@"target/iscsi/iscsi_transport.h"@g' $(PWD)/ib_isert.c
-	-sed -i 's@../../../drivers/target/iscsi/iscsi_target_core.h@iscsi_target_core.h@g' $(PWD)/target/iscsi/iscsi_transport.h
-endif
-
-prep_bin:
-ifeq ($(shell test -f $(K_BUILD)/include/target/iscsi/iscsi_target_core.h  && echo "" || echo "false"),)
-	-cp -fr $(K_BUILD)/include/target $(PWD)
-	-sed -i 's@<target/iscsi/iscsi_transport.h>@"target/iscsi/iscsi_transport.h"@g' $(PWD)/ib_isert.c
-	-sed -i 's@../../../drivers/target/iscsi/iscsi_target_core.h@iscsi_target_core.h@g' $(PWD)/target/iscsi/iscsi_transport.h
-else ifeq ($(shell test -f $(K_SRC)/drivers/target/iscsi/iscsi_target_core.h  && echo "" || echo "false"),)
-	-cp -fr $(K_SRC)/drivers/target/ $(PWD)
-	-sed -i 's@<target/iscsi/iscsi_transport.h>@"target/iscsi/iscsi_transport.h"@g' $(PWD)/ib_isert.c
-	-sed -i 's@../../../drivers/target/iscsi/iscsi_target_core.h@iscsi_target_core.h@g' $(PWD)/target/iscsi/iscsi_transport.h
-endif
-
 clean:
 	rm -f *.o
-	rm -f *.ko
+	rm -f *.ko *.ko.gz
 	rm -f *.mod.c
 	rm -f Module*.symvers modules*.order
 
 distclean: clean
 	@rm -rf $(PWD)/rpm-dist
 	rm -f makefile *.spec
-	rm -rf $(PWD)/target
 
 all: clean distclean dist srcrpm binrpm

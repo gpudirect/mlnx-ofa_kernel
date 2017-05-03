@@ -202,7 +202,7 @@ struct net *dev_net(const struct net_device *dev)
 #include <linux/unaligned/generic.h>
 
 #endif /* alpha */
-#ifdef CONFIG_ARM
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 
 /* arm */
 #include <linux/unaligned/le_byteshift.h>

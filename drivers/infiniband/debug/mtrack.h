@@ -167,6 +167,38 @@
 	__memtrack_addr;							\
 })
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
+#define kmalloc_array(n, size, flags) kzalloc((n)*(size), flags)
+#else
+#ifdef ZERO_OR_NULL_PTR
+#define kmalloc_array(n, size, flags) ({ \
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kmalloc_array", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kmalloc_array"); \
+	else									\
+		__memtrack_addr = kmalloc_array(n, size, flags);		\
+	if (!ZERO_OR_NULL_PTR(__memtrack_addr) && (n)*(size)) {			\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), (n)*(size), 0UL, 0, __FILE__, __LINE__, flags); \
+	}									\
+	__memtrack_addr;							\
+})
+#else
+#define kmalloc_array(n, size, flags) ({ \
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kmalloc_array", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kmalloc_array"); \
+	else									\
+		__memtrack_addr = kmalloc_array(n, size, flags);			\
+	if (__memtrack_addr && (n)*(size)) {					\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), (n)*(size), 0UL, 0, __FILE__, __LINE__, flags); \
+	}									\
+	__memtrack_addr;							\
+})
+#endif
+#endif
+
 #ifdef ZERO_OR_NULL_PTR
 #define kmemdup(src, sz, flgs) ({						\
 	void *__memtrack_addr = NULL;						\
@@ -432,6 +464,34 @@
 	__memtrack_addr;							\
 })
 
+#ifdef ARCH_HAS_IOREMAP_WC
+#define ioremap_wc(phys_addr, size) ({						\
+	void __iomem *__memtrack_addr = NULL;					\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "ioremap_wc", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "ioremap_wc");\
+	else									\
+		__memtrack_addr = ioremap_wc(phys_addr, size);			\
+	if (__memtrack_addr) {						\
+		memtrack_alloc(MEMTRACK_IOREMAP, 0UL, (unsigned long)(__memtrack_addr), size, 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
+	}									\
+	__memtrack_addr;							\
+})
+#else
+#define ioremap_wc(phys_addr, size) ({						\
+	void __iomem *__memtrack_addr = NULL;					\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "ioremap_wc", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "ioremap_wc");\
+	else									\
+		__memtrack_addr = ioremap_nocache(phys_addr, size);			\
+	if (__memtrack_addr) {						\
+		memtrack_alloc(MEMTRACK_IOREMAP, 0UL, (unsigned long)(__memtrack_addr), size, 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
+	}									\
+	__memtrack_addr;							\
+})
+#endif
+
 #define io_mapping_create_wc(base, size) ({					\
 	void __iomem *__memtrack_addr = NULL;					\
 										\
@@ -526,6 +586,19 @@
 		memtrack_alloc(MEMTRACK_PAGE_ALLOC, 0UL, (unsigned long)(page_addr), (unsigned long)(order), 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
 	}									\
 	page_addr;								\
+})
+
+#define dev_alloc_pages(order) ({                              \
+	struct page *page_addr = NULL;                                          \
+                                                                        \
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "dev_alloc_pages", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "dev_alloc_pages"); \
+	else                                                                    \
+	page_addr = (struct page *)dev_alloc_pages(order);      \
+	if (page_addr && !is_non_trackable_alloc_func(__func__)) {              \
+		memtrack_alloc(MEMTRACK_PAGE_ALLOC, 0UL, (unsigned long)(page_addr), (unsigned long)(order), 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
+	}                                                                       \
+	page_addr;                                                              \
 })
 
 #ifdef HAVE_SPLIT_PAGE_EXPORTED

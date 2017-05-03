@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2013-2017, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -32,6 +32,7 @@
 
 #include <linux/module.h>
 #include <linux/mlx5/driver.h>
+#include <linux/mlx5/vport.h>
 
 static char *guids;
 module_param_named(guids, guids, charp, 0444);

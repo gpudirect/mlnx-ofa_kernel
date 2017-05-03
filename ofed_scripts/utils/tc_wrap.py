@@ -83,15 +83,17 @@ class tcnum_sysfs(tcnum):
 		tcnum.__init__(self, intf)
 		self.path = path
 
-
 	def set(self, new):
+		self.get()
+		if self.tc_num == int(new):
+			return
 		f = open(self.path, "w")
 		f.write(new)
 		f.close()
 
 	def get(self):
 		f = open(self.path, "r")
-		self.tc_num = f.read()
+		self.tc_num = int(f.read().strip())
 		f.close()
 
 
@@ -138,9 +140,11 @@ if __name__ == "__main__":
 			  help="Interface name")
 
 	parser.add_option("-u", "--skprio_up", dest="skprio_up",
-			help="maps sk_prio to priority for RoCE. LIST is <=16 comma seperated priority. " +
+			help="maps sk_prio to priority for RoCE. LIST is <=16 comma separated priority. " +
 			"index of element is sk_prio.")
 
+	parser.add_option("-n", "--show_tc_num", action="store_true", default=False,
+			dest="show_tc_num", help="Show number of TCs for the interface and exists.")
 
 	(options, args) = parser.parse_args()
 
@@ -150,6 +154,18 @@ if __name__ == "__main__":
 
 		sys.exit(1)
 
+	output = Popen("ls /sys/class/net/%s/device/infiniband/ 2> /dev/null"%options.intf, shell=True,
+			bufsize=4096, stdout=PIPE).stdout
+
+	mlx_dev = None
+	for line in output:
+		m = re.search(r'mlx\d_\d', line)
+		if m:
+			mlx_dev = m.group(0)
+
+	if not mlx_dev and options.skprio_up:
+		print "Couldn't find RDMA device for %s. Can't set skprio."%options.intf
+		sys.exit(1)
 
 	empty = True
 	output = Popen("ibdev2netdev", shell=True,
@@ -159,16 +175,15 @@ if __name__ == "__main__":
 		m = re.search(r'port (\d+) ==> (\w+)', line)
 		if m:
 			if (m.group(2) == options.intf):
-				empty=False
+				empty = False
 				port_num = m.group(1)
 	if (empty):
-		print "Could not find interface " + options.intf + " in ibdev2netdev output"
+		print "Could not find interface %s in ibdev2netdev output"%options.intf
 		sys.exit(1)
 
-
-# try using sysfs - if not exist fallback to tc tool
-	tc_num_path = "/sys/class/net/" + options.intf + "/qos/tc_num"
-	skprio2up_path = "/sys/class/infiniband/mlx4_0/ports/" + str(port_num)+"/skprio2up"
+	# try using sysfs - if not exist fallback to tc tool
+	tc_num_path = "/sys/class/net/%s/qos/tc_num"%options.intf
+	skprio2up_path = "/sys/class/infiniband/%s/ports/%s/skprio2up"%(mlx_dev, port_num)
 
 	try:
 		if (os.path.exists(tc_num_path)):
@@ -180,7 +195,6 @@ if __name__ == "__main__":
 		print e
 		sys.exit(1)
 
-
 	tcnum.set(max_tc_num)
 
 	try:
@@ -190,15 +204,18 @@ if __name__ == "__main__":
 			skprio2up.set(options.skprio_up.split(","))
 		else:
 			if (options.skprio_up is not None):
-				print "skprio2up is availabe only for RoCE in kernels that don't support set_egress_map"
+				print "skprio2up is available only for RoCE in kernels that don't support set_egress_map"
 
 	except Exception, e:
 		print e
 		sys.exit(1)
 
+	if options.show_tc_num:
+		print tcnum.tc_num
+		sys.exit(0)
 
 	tcnum.get()
-	print "Tarrfic classes are set to " + tcnum.tc_num
+	print "Traffic classes are set to %s"%tcnum.tc_num
 
 	skprio2up.refresh()
 

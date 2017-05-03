@@ -75,35 +75,4 @@ struct iser_ctrl {
 	__be64  read_va;
 } __packed;
 
-/**
- * struct iser_hello - iSER Hello header
- *
- * @opcode:       opcode (must be set to ISER_HELLO)
- * @max_min_ver:  maximum and minimum iser versions
- * @iser_ird:     iSER IRD
- * @rsvd:         reserved
- */
-struct iser_hello {
-	u8      opcode;
-	u8	max_min_ver;
-	u16	iser_ird;
-	u8	rsvd[20];
-} __packed;
-
-/**
- * struct iser_hello_rep - iSER Hello reply header
- *
- * @opcode_rej:   opcode (must be set to ISER_HELLORPLY)
- *                lower bit is reject bit
- * @max_cur_ver:  maximum and current iser versions
- * @iser_ord:     iSER ORD
- * @rsvd:         reserved
- */
-struct iser_hello_rep {
-	u8      opcode_rej;
-	u8	max_cur_ver;
-	u16	iser_ord;
-	u8	rsvd[20];
-} __packed;
-
 #endif /* ISCSI_ISER_H */

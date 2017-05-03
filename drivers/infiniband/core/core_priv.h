@@ -35,40 +35,45 @@
 
 #include <linux/list.h>
 #include <linux/spinlock.h>
-#include <net/net_namespace.h>
 
 #include <rdma/ib_verbs.h>
 
+#if IS_ENABLED(CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS)
 int cma_configfs_init(void);
 void cma_configfs_exit(void);
+#else
+static inline int cma_configfs_init(void)
+{
+	return 0;
+}
+
+static inline void cma_configfs_exit(void)
+{
+}
+#endif
 struct cma_device;
+void cma_ref_dev(struct cma_device *cma_dev);
+void cma_deref_dev(struct cma_device *cma_dev);
 typedef bool (*cma_device_filter)(struct ib_device *, void *);
 struct cma_device *cma_enum_devices_by_ibdev(cma_device_filter	filter,
 					     void		*cookie);
-int cma_get_default_gid_type(struct cma_device *cma_dev, unsigned
-			     int port);
+int cma_get_default_gid_type(struct cma_device *cma_dev,
+			     unsigned int port);
 int cma_set_default_gid_type(struct cma_device *cma_dev,
 			     unsigned int port,
 			     enum ib_gid_type default_gid_type);
-void cma_ref_dev(struct cma_device *cma_dev);
-void cma_deref_dev(struct cma_device *cma_dev);
+u8 cma_get_default_roce_tos(struct cma_device *cma_dev, unsigned int port);
+int cma_set_default_roce_tos(struct cma_device *a_dev, unsigned int port,
+			     u8 default_roce_tos);
 struct ib_device *cma_get_ib_dev(struct cma_device *cma_dev);
-
-extern struct workqueue_struct *roce_gid_mgmt_wq;
 
 int  ib_device_register_sysfs(struct ib_device *device,
 			      int (*port_callback)(struct ib_device *,
 						   u8, struct kobject *));
 void ib_device_unregister_sysfs(struct ib_device *device);
 
-int  ib_sysfs_setup(void);
-void ib_sysfs_cleanup(void);
-
-int  ib_cache_setup(void);
+void ib_cache_setup(void);
 void ib_cache_cleanup(void);
-
-int ib_resolve_eth_dmac(struct ib_qp *qp,
-			struct ib_qp_attr *qp_attr, int *qp_attr_mask);
 
 typedef void (*roce_netdev_callback)(struct ib_device *device, u8 port,
 	      struct net_device *idev, void *cookie);
@@ -76,75 +81,76 @@ typedef void (*roce_netdev_callback)(struct ib_device *device, u8 port,
 typedef int (*roce_netdev_filter)(struct ib_device *device, u8 port,
 	     struct net_device *idev, void *cookie);
 
-struct roce_netdev_list {
-	struct list_head list;
-	struct net_device *ndev;
+void ib_enum_roce_netdev(struct ib_device *ib_dev,
+			 roce_netdev_filter filter,
+			 void *filter_cookie,
+			 roce_netdev_callback cb,
+			 void *cookie);
+void ib_enum_all_roce_netdevs(roce_netdev_filter filter,
+			      void *filter_cookie,
+			      roce_netdev_callback cb,
+			      void *cookie);
+
+enum ib_cache_gid_default_mode {
+	IB_CACHE_GID_DEFAULT_MODE_SET,
+	IB_CACHE_GID_DEFAULT_MODE_DELETE
 };
 
-unsigned long gid_type_mask_support(struct ib_device *ib_dev, u8 port);
+int ib_cache_gid_parse_type_str(const char *buf);
 
-void ib_dev_roce_ports_of_netdev(struct ib_device *ib_dev,
-				 roce_netdev_filter filter,
-				 void *filter_cookie,
-				 roce_netdev_callback cb,
-				 void *cookie);
-void ib_enum_roce_ports_of_netdev(roce_netdev_filter filter,
-				  void *filter_cookie,
-				  roce_netdev_callback cb,
-				  void *cookie);
+const char *ib_cache_gid_type_str(enum ib_gid_type gid_type);
 
-const char *roce_gid_cache_type_str(enum ib_gid_type gid_type);
-int roce_gid_cache_parse_gid_str(const char *buf);
+void ib_cache_gid_set_default_gid(struct ib_device *ib_dev, u8 port,
+				  struct net_device *ndev,
+				  unsigned long gid_type_mask,
+				  enum ib_cache_gid_default_mode mode);
 
-int roce_gid_cache_get_gid(struct ib_device *ib_dev, u8 port, int index,
-			   union ib_gid *gid, struct ib_gid_attr *attr);
+int ib_cache_gid_add(struct ib_device *ib_dev, u8 port,
+		     union ib_gid *gid, struct ib_gid_attr *attr);
 
-int roce_gid_cache_find_gid(struct ib_device *ib_dev, union ib_gid *gid,
-			    enum ib_gid_type gid_type, struct net *net,
-			    int if_index, u8 *port, u16 *index);
+int ib_cache_gid_del(struct ib_device *ib_dev, u8 port,
+		     union ib_gid *gid, struct ib_gid_attr *attr);
 
-int roce_gid_cache_find_gid_by_port(struct ib_device *ib_dev, union ib_gid *gid,
-				    enum ib_gid_type gid_type, u8 port,
-				    struct net *net, int if_index, u16 *index);
-
-int roce_gid_cache_find_gid_by_filter(struct ib_device *ib_dev,
-				      union ib_gid *gid,
-				      u8 port,
-				      bool (*filter)(const union ib_gid *gid,
-						     const struct ib_gid_attr *,
-						     void *),
-				      void *context,
-				      u16 *index);
-
-int roce_gid_cache_is_active(struct ib_device *ib_dev, u8 port);
-
-enum roce_gid_cache_default_mode {
-	ROCE_GID_CACHE_DEFAULT_MODE_SET,
-	ROCE_GID_CACHE_DEFAULT_MODE_DELETE
-};
-
-void roce_gid_cache_set_default_gid(struct ib_device *ib_dev, u8 port,
-				    struct net_device *ndev,
-				    unsigned long gid_type_mask,
-				    enum roce_gid_cache_default_mode mode);
-
-int roce_gid_cache_setup(void);
-void roce_gid_cache_cleanup(void);
-
-int roce_add_gid(struct ib_device *ib_dev, u8 port,
-		 union ib_gid *gid, struct ib_gid_attr *attr);
-
-int roce_del_gid(struct ib_device *ib_dev, u8 port,
-		 union ib_gid *gid, struct ib_gid_attr *attr);
-
-int roce_del_all_netdev_gids(struct ib_device *ib_dev, u8 port,
-			     struct net_device *ndev);
+int ib_cache_gid_del_all_netdev_gids(struct ib_device *ib_dev, u8 port,
+				     struct net_device *ndev);
 
 int roce_gid_mgmt_init(void);
 void roce_gid_mgmt_cleanup(void);
 
 int roce_rescan_device(struct ib_device *ib_dev);
-int roce_sync_all_netdev_gids(struct ib_device *ib_dev, u8 port,
-			      struct list_head *list);
+unsigned long roce_gid_type_mask_support(struct ib_device *ib_dev, u8 port);
+
+int ib_cache_setup_one(struct ib_device *device);
+void ib_cache_cleanup_one(struct ib_device *device);
+void ib_cache_release_one(struct ib_device *device);
+
+static inline bool rdma_is_upper_dev_rcu(struct net_device *dev,
+					 struct net_device *upper)
+{
+	struct net_device *_upper = NULL;
+	struct list_head *iter;
+
+	netdev_for_each_all_upper_dev_rcu(dev, _upper, iter)
+		if (_upper == upper)
+			break;
+
+	return _upper == upper;
+}
+
+int addr_init(void);
+void addr_cleanup(void);
+
+int ib_mad_init(void);
+void ib_mad_cleanup(void);
+
+int ib_sa_init(void);
+void ib_sa_cleanup(void);
+
+int ib_nl_handle_resolve_resp(struct sk_buff *skb,
+			      struct netlink_callback *cb);
+int ib_nl_handle_set_timeout(struct sk_buff *skb,
+			     struct netlink_callback *cb);
+int ib_nl_handle_ip_res_resp(struct sk_buff *skb,
+			     struct netlink_callback *cb);
 
 #endif /* _CORE_PRIV_H */

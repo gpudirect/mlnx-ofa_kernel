@@ -24,6 +24,9 @@
 #ifdef kmalloc
 	#undef kmalloc
 #endif
+#ifdef kmalloc_array
+	#undef kmalloc_array
+#endif
 #ifdef kmemdup
 	#undef kmemdup
 #endif
@@ -66,6 +69,9 @@
 #ifdef ioremap
 	#undef ioremap
 #endif
+#ifdef ioremap_wc
+	#undef ioremap_wc
+#endif
 #ifdef io_mapping_create_wc
 	#undef io_mapping_create_wc
 #endif
@@ -80,6 +86,9 @@
 #endif
 #ifdef alloc_pages
 	#undef alloc_pages
+#endif
+#ifdef dev_alloc_pages
+	#undef dev_alloc_pages
 #endif
 #ifdef free_pages
 	#undef free_pages
@@ -731,12 +740,10 @@ int is_non_trackable_alloc_func(const char *func_name)
 		"mlx4_en_destroy_allocator",
 		"mlx4_en_complete_rx_desc",
 		"mlx4_alloc_pages",
-		"mlx5e_alloc_rx_linear_mpwqe",
-		"mlx5e_free_rx_linear_mpwqe",
-		"mlx5e_alloc_and_map_page",
-		"mlx5e_free_rx_fragmented_mpwqe",
-		"mlx5e_get_rx_skb",
-		"free_striding_rq_res",
+		"mlx5e_page_alloc_mapped",
+		"mlx5e_page_release",
+		"mlx5e_rx_free_page_cache",
+		"mlx5e_rx_cache_reduce_clean_pending",
 		/* vnic skb functions */
 		"free_single_frag",
 		"vnic_alloc_rx_skb",

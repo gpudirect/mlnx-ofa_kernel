@@ -31,17 +31,6 @@
  */
 
 #include "en.h"
-#include <linux/irq.h>
-#include <linux/prefetch.h>
-
-void mlx5e_prefetch_cqe(struct mlx5e_cq *cq)
-{
-	struct mlx5_cqwq *wq = &cq->wq;
-	u32 ci = mlx5_cqwq_get_ci(wq);
-	struct mlx5_cqe64 *cqe = mlx5_cqwq_get_wqe(wq, ci);
-
-	prefetch(cqe);
-}
 
 struct mlx5_cqe64 *mlx5e_get_cqe(struct mlx5e_cq *cq)
 {
@@ -60,26 +49,20 @@ struct mlx5_cqe64 *mlx5e_get_cqe(struct mlx5e_cq *cq)
 	return cqe;
 }
 
-static inline bool mlx5e_no_channel_affinity_change(struct mlx5e_channel *c)
-{
-	int current_cpu = smp_processor_id();
-	struct cpumask *aff = irq_desc_get_irq_data(c->irq_desc)->affinity;
-
-	return cpumask_test_cpu(current_cpu, aff);
-}
-
 static void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 {
+	struct mlx5e_sq *sq = container_of(cq, struct mlx5e_sq, cq);
 	struct mlx5_wq_cyc *wq;
 	struct mlx5_cqe64 *cqe;
-	struct mlx5e_sq *sq;
 	u16 sqcc;
+
+	if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
+		return;
 
 	cqe = mlx5e_get_cqe(cq);
 	if (likely(!cqe))
 		return;
 
-	sq = container_of(cq, struct mlx5e_sq, cq);
 	wq = &sq->wq;
 
 	/* sq->cc must be updated only after mlx5_cqwq_update_db_record(),
@@ -89,7 +72,7 @@ static void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 
 	do {
 		u16 ci = be16_to_cpu(cqe->wqe_counter) & wq->sz_m1;
-		struct mlx5e_ico_wqe_info *icowi = &sq->ico_wqe_info[ci];
+		struct mlx5e_sq_wqe_info *icowi = &sq->db.ico_wqe[ci];
 
 		mlx5_cqwq_pop(&cq->wq);
 		sqcc += icowi->num_wqebbs;
@@ -104,7 +87,7 @@ static void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 		case MLX5_OPCODE_NOP:
 			break;
 		case MLX5_OPCODE_UMR:
-			mlx5e_post_rx_fragmented_mpwqe(&sq->channel->rq);
+			mlx5e_post_rx_mpwqe(&sq->channel->rq);
 			break;
 		default:
 			WARN_ONCE(true,
@@ -122,33 +105,98 @@ static void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 	sq->cc = sqcc;
 }
 
+static inline bool mlx5e_poll_xdp_tx_cq(struct mlx5e_cq *cq)
+{
+	struct mlx5e_sq *sq;
+	u16 sqcc;
+	int i;
+
+	sq = container_of(cq, struct mlx5e_sq, cq);
+
+	if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
+		return false;
+
+	/* sq->cc must be updated only after mlx5_cqwq_update_db_record(),
+	 * otherwise a cq overrun may occur
+	 */
+	sqcc = sq->cc;
+
+	for (i = 0; i < MLX5E_TX_CQ_POLL_BUDGET; i++) {
+		struct mlx5_cqe64 *cqe;
+		u16 wqe_counter;
+		bool last_wqe;
+
+		cqe = mlx5e_get_cqe(cq);
+		if (!cqe)
+			break;
+
+		mlx5_cqwq_pop(&cq->wq);
+
+		wqe_counter = be16_to_cpu(cqe->wqe_counter);
+
+		do {
+			struct mlx5e_sq_wqe_info *wi;
+			struct mlx5e_dma_info *di;
+			u16 ci;
+
+			last_wqe = (sqcc == wqe_counter);
+
+			ci = sqcc & sq->wq.sz_m1;
+			di = &sq->db.xdp.di[ci];
+			wi = &sq->db.xdp.wqe_info[ci];
+
+			if (unlikely(wi->opcode == MLX5_OPCODE_NOP)) {
+				sqcc++;
+				continue;
+			}
+
+			sqcc += wi->num_wqebbs;
+			/* Recycle RX page */
+			mlx5e_page_release(&sq->channel->rq, di, true);
+		} while (!last_wqe);
+	}
+
+	mlx5_cqwq_update_db_record(&cq->wq);
+
+	/* ensure cq space is freed before enabling more cqes */
+	wmb();
+
+	sq->cc = sqcc;
+	return (i == MLX5E_TX_CQ_POLL_BUDGET);
+}
+
 int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 {
 	struct mlx5e_channel *c = container_of(napi, struct mlx5e_channel,
 					       napi);
 	bool busy = false;
+	int work_done;
 	int i;
 
 	clear_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags);
 
-	busy |= mlx5e_poll_rx_cq(&c->rq.cq, budget);
+	for (i = 0; i < c->num_tx; i++)
+		busy |= mlx5e_poll_tx_cq(&c->sq[i].cq, budget);
+
+	work_done = mlx5e_poll_rx_cq(&c->rq.cq, budget);
+	busy |= work_done == budget;
+
+	if (c->xdp)
+		busy |= mlx5e_poll_xdp_tx_cq(&c->xdp_sq.cq);
 
 	mlx5e_poll_ico_cq(&c->icosq.cq);
 
 	busy |= mlx5e_post_rx_wqes(&c->rq);
 
-	for (i = 0; i < c->num_tx; i++)
-		busy |= mlx5e_poll_tx_cq(&c->sq[i].cq);
-
-	if (busy && likely(mlx5e_no_channel_affinity_change(c)))
+	if (busy)
 		return budget;
 
-	napi_complete(napi);
+	napi_complete_done(napi, work_done);
 
 	/* avoid losing completion event during/after polling cqs */
 	if (test_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags)) {
 		napi_schedule(napi);
-		return 0;
+		return work_done;
 	}
 
 	for (i = 0; i < c->num_tx; i++)
@@ -160,7 +208,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	mlx5e_cq_arm(&c->rq.cq);
 	mlx5e_cq_arm(&c->icosq.cq);
 
-	return 0;
+	return work_done;
 }
 
 void mlx5e_completion_event(struct mlx5_core_cq *mcq)
@@ -169,7 +217,6 @@ void mlx5e_completion_event(struct mlx5_core_cq *mcq)
 
 	cq->event_ctr++;
 	set_bit(MLX5E_CHANNEL_NAPI_SCHED, &cq->channel->flags);
-	barrier();
 	napi_schedule(cq->napi);
 }
 

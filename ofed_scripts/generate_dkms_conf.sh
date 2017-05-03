@@ -38,13 +38,13 @@ echo STRIP_MODS=\${STRIP_MODS:-"yes"}
 echo kernelver=\${kernelver:-\$\(uname -r\)}
 echo kernel_source_dir=\${kernel_source_dir:-"/lib/modules/\$kernelver/build"}
 
-modules=`./dkms_ofed $kernelver get-modules`
+modules=`./dkms_ofed $kernelver $kernel_source_dir get-modules`
 
 i=0
 
 for module in $modules
 do
-	name=`echo ${module##*/} | sed -e "s/.ko//"`
+	name=`echo ${module##*/} | sed -e "s/.ko.gz//" -e "s/.ko//"`
 	echo BUILT_MODULE_NAME[$i]=$name
 	echo BUILT_MODULE_LOCATION[$i]=${module%*/*}
 	echo DEST_MODULE_NAME[$i]=$name
@@ -61,6 +61,7 @@ echo REMAKE_INITRD=yes
 echo AUTOINSTALL=yes
 # W/A for DKMS parallel build on kernel update which causes ULP build to fail
 echo POST_INSTALL=\"ofed_scripts/dkms_build_ulps.sh \$kernelver\"
+echo POST_BUILD=\"ofed_scripts/dkms_ofed_post_build.sh\"
 
 
 #       POST_ADD=

@@ -34,50 +34,109 @@
 #include "en.h"
 
 enum {
-	MLX5E_PTP_SHIFT	= 23
+	MLX5E_CYCLES_SHIFT	= 23
 };
 
-void mlx5e_fill_hwstamp(struct mlx5e_tstamp *tstamp,
-			struct skb_shared_hwtstamps *hwts,
-			u64 timestamp)
+void mlx5e_fill_hwstamp(struct mlx5e_tstamp *tstamp, u64 timestamp,
+			struct skb_shared_hwtstamps *hwts)
 {
-	unsigned long flags;
 	u64 nsec;
 
-	memset(hwts, 0, sizeof(struct skb_shared_hwtstamps));
-	if (!tstamp->ptp)
-		return;
-
-	read_lock_irqsave(&tstamp->lock, flags);
+	read_lock(&tstamp->lock);
 	nsec = timecounter_cyc2time(&tstamp->clock, timestamp);
-	read_unlock_irqrestore(&tstamp->lock, flags);
+	read_unlock(&tstamp->lock);
 
 	hwts->hwtstamp = ns_to_ktime(nsec);
 }
 
-static cycle_t mlx5e_read_clock(const struct cyclecounter *cc)
+static cycle_t mlx5e_read_internal_timer(const struct cyclecounter *cc)
 {
 	struct mlx5e_tstamp *tstamp = container_of(cc, struct mlx5e_tstamp,
 						   cycles);
-	struct mlx5e_priv *priv = container_of(tstamp, struct mlx5e_priv,
-					       tstamp);
-	struct mlx5_core_dev *dev = priv->mdev;
 
-	return mlx5_core_read_clock(dev) & cc->mask;
+	return mlx5_read_internal_timer(tstamp->mdev) & cc->mask;
 }
 
-void mlx5e_ptp_overflow_check(struct mlx5e_priv *priv)
+static void mlx5e_timestamp_overflow(struct work_struct *work)
 {
-	bool timeout = time_is_before_jiffies(priv->tstamp.last_overflow_check +
-					      priv->tstamp.overflow_period);
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct mlx5e_tstamp *tstamp = container_of(dwork, struct mlx5e_tstamp,
+						   overflow_work);
 	unsigned long flags;
 
-	if (timeout) {
-		write_lock_irqsave(&priv->tstamp.lock, flags);
-		timecounter_read(&priv->tstamp.clock);
-		write_unlock_irqrestore(&priv->tstamp.lock, flags);
-		priv->tstamp.last_overflow_check = jiffies;
+	write_lock_irqsave(&tstamp->lock, flags);
+	timecounter_read(&tstamp->clock);
+	write_unlock_irqrestore(&tstamp->lock, flags);
+	schedule_delayed_work(&tstamp->overflow_work, tstamp->overflow_period);
+}
+
+int mlx5e_hwstamp_set(struct net_device *dev, struct ifreq *ifr)
+{
+	struct mlx5e_priv *priv = netdev_priv(dev);
+	struct hwtstamp_config config;
+
+	if (!MLX5_CAP_GEN(priv->mdev, device_frequency_khz))
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	/* TX HW timestamp */
+	switch (config.tx_type) {
+	case HWTSTAMP_TX_OFF:
+	case HWTSTAMP_TX_ON:
+		break;
+	default:
+		return -ERANGE;
 	}
+
+	mutex_lock(&priv->state_lock);
+	/* RX HW timestamp */
+	switch (config.rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		/* Reset CQE compression to Admin default */
+		mlx5e_modify_rx_cqe_compression_locked(priv, priv->params.rx_cqe_compress_def);
+		break;
+	case HWTSTAMP_FILTER_ALL:
+	case HWTSTAMP_FILTER_SOME:
+	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+		/* Disable CQE compression */
+		netdev_warn(dev, "Disabling cqe compression");
+		mlx5e_modify_rx_cqe_compression_locked(priv, false);
+		config.rx_filter = HWTSTAMP_FILTER_ALL;
+		break;
+	default:
+		mutex_unlock(&priv->state_lock);
+		return -ERANGE;
+	}
+
+	memcpy(&priv->tstamp.hwtstamp_config, &config, sizeof(config));
+	mutex_unlock(&priv->state_lock);
+
+	return copy_to_user(ifr->ifr_data, &config,
+			    sizeof(config)) ? -EFAULT : 0;
+}
+
+int mlx5e_hwstamp_get(struct net_device *dev, struct ifreq *ifr)
+{
+	struct mlx5e_priv *priv = netdev_priv(dev);
+	struct hwtstamp_config *cfg = &priv->tstamp.hwtstamp_config;
+
+	if (!MLX5_CAP_GEN(priv->mdev, device_frequency_khz))
+		return -EOPNOTSUPP;
+
+	return copy_to_user(ifr->ifr_data, cfg, sizeof(*cfg)) ? -EFAULT : 0;
 }
 
 static int mlx5e_ptp_settime(struct ptp_clock_info *ptp,
@@ -129,8 +188,8 @@ static int mlx5e_ptp_adjfreq(struct ptp_clock_info *ptp, s32 delta)
 {
 	u64 adj;
 	u32 diff;
-	int neg_adj = 0;
 	unsigned long flags;
+	int neg_adj = 0;
 	struct mlx5e_tstamp *tstamp = container_of(ptp, struct mlx5e_tstamp,
 						  ptp_info);
 
@@ -167,50 +226,50 @@ static const struct ptp_clock_info mlx5e_ptp_clock_info = {
 	.enable		= NULL,
 };
 
-
-static void mlx5e_ptp_init_config(struct mlx5e_tstamp *tstamp)
+static void mlx5e_timestamp_init_config(struct mlx5e_tstamp *tstamp)
 {
-	tstamp->hwtstamp_config.flags = 0;
 	tstamp->hwtstamp_config.tx_type = HWTSTAMP_TX_OFF;
 	tstamp->hwtstamp_config.rx_filter = HWTSTAMP_FILTER_NONE;
 }
 
-void mlx5e_ptp_init(struct mlx5e_priv *priv)
+void mlx5e_timestamp_init(struct mlx5e_priv *priv)
 {
-	struct net_device *netdev = priv->netdev;
 	struct mlx5e_tstamp *tstamp = &priv->tstamp;
-	unsigned long flags;
-	u64 ns, zero = 0;
+	u64 ns;
+	u64 frac = 0;
+	u32 dev_freq;
 
-	rwlock_init(&tstamp->lock);
-	mlx5e_ptp_init_config(tstamp);
-	memset(&tstamp->cycles, 0, sizeof(tstamp->cycles));
-	if (!MLX5_CAP_GEN(priv->mdev, device_frequency_khz)) {
-		netdev_dbg(netdev, "%s: invalid device_frequency_khz. ptp_clock_register failed\n",
-			   __func__);
+	mlx5e_timestamp_init_config(tstamp);
+	dev_freq = MLX5_CAP_GEN(priv->mdev, device_frequency_khz);
+	if (!dev_freq) {
+		mlx5_core_warn(priv->mdev, "invalid device_frequency_khz, aborting HW clock init\n");
 		return;
 	}
-	tstamp->cycles.read = mlx5e_read_clock;
-	tstamp->cycles.shift = MLX5E_PTP_SHIFT;
-	tstamp->cycles.mult =
-		clocksource_khz2mult(MLX5_CAP_GEN(priv->mdev,
-						  device_frequency_khz),
-				     tstamp->cycles.shift);
+	rwlock_init(&tstamp->lock);
+	tstamp->cycles.read = mlx5e_read_internal_timer;
+	tstamp->cycles.shift = MLX5E_CYCLES_SHIFT;
+	tstamp->cycles.mult = clocksource_khz2mult(dev_freq,
+						   tstamp->cycles.shift);
 	tstamp->nominal_c_mult = tstamp->cycles.mult;
 	tstamp->cycles.mask = CLOCKSOURCE_MASK(41);
+	tstamp->mdev = priv->mdev;
 
-	write_lock_irqsave(&tstamp->lock, flags);
 	timecounter_init(&tstamp->clock, &tstamp->cycles,
 			 ktime_to_ns(ktime_get_real()));
-	write_unlock_irqrestore(&tstamp->lock, flags);
 
 	/* Calculate period in seconds to call the overflow watchdog - to make
 	 * sure counter is checked at least once every wrap around.
 	 */
-	ns = cyclecounter_cyc2ns(&tstamp->cycles, tstamp->cycles.mask, zero,
-				 &zero);
+	ns = cyclecounter_cyc2ns(&tstamp->cycles, tstamp->cycles.mask,
+				 frac, &frac);
 	do_div(ns, NSEC_PER_SEC / 2 / HZ);
 	tstamp->overflow_period = ns;
+
+	INIT_DELAYED_WORK(&tstamp->overflow_work, mlx5e_timestamp_overflow);
+	if (tstamp->overflow_period)
+		schedule_delayed_work(&tstamp->overflow_work, 0);
+	else
+		mlx5_core_warn(priv->mdev, "invalid overflow period, overflow_work is not scheduled\n");
 
 	/* Configure the PHC */
 	tstamp->ptp_info = mlx5e_ptp_clock_info;
@@ -219,16 +278,23 @@ void mlx5e_ptp_init(struct mlx5e_priv *priv)
 	tstamp->ptp = ptp_clock_register(&tstamp->ptp_info,
 					 &priv->mdev->pdev->dev);
 	if (IS_ERR(tstamp->ptp)) {
+		mlx5_core_warn(priv->mdev, "ptp_clock_register failed %ld\n",
+			       PTR_ERR(tstamp->ptp));
 		tstamp->ptp = NULL;
-		netdev_err(netdev, "%s: ptp_clock_register failed\n",
-			   __func__);
 	}
 }
 
-void mlx5e_ptp_cleanup(struct mlx5e_priv *priv)
+void mlx5e_timestamp_cleanup(struct mlx5e_priv *priv)
 {
+	struct mlx5e_tstamp *tstamp = &priv->tstamp;
+
+	if (!MLX5_CAP_GEN(priv->mdev, device_frequency_khz))
+		return;
+
 	if (priv->tstamp.ptp) {
 		ptp_clock_unregister(priv->tstamp.ptp);
 		priv->tstamp.ptp = NULL;
 	}
+
+	cancel_delayed_work_sync(&tstamp->overflow_work);
 }

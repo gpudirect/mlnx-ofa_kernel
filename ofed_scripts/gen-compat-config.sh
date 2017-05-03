@@ -785,3 +785,8 @@ if (grep -qw "const struct dcbnl_rtnl_ops \*dcbnl_ops" ${KLIB_BUILD}/include/lin
 	set_config CONFIG_COMPAT_IS_DCBNL_OPS_CONST y
 fi
 
+if (grep -qw "static.* fib_lookup" ${KLIB_BUILD}/include/net/ip_fib.h > /dev/null 2>&1 || grep -qw "static.* fib_lookup" /lib/modules/${KVERSION}/source/include/net/ip_fib.h > /dev/null 2>&1) &&
+   (grep -qw "extern.* fib_lookup" ${KLIB_BUILD}/include/net/ip_fib.h > /dev/null 2>&1 || grep -qw "extern.* fib_lookup" /lib/modules/${KVERSION}/source/include/net/ip_fib.h > /dev/null 2>&1); then
+	set_config CONFIG_COMPAT_IS_FIB_LOOKUP_STATIC_AND_EXTERN y
+fi
+

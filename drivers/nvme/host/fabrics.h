@@ -34,7 +34,7 @@ struct nvmf_host {
 	struct kref		ref;
 	struct list_head	list;
 	char			nqn[NVMF_NQN_SIZE];
-	uuid_le			id;
+	uuid_be			id;
 };
 
 /**
@@ -52,6 +52,7 @@ enum {
 	NVMF_OPT_KATO		= 1 << 7,
 	NVMF_OPT_HOSTNQN	= 1 << 8,
 	NVMF_OPT_RECONNECT_DELAY = 1 << 9,
+	NVMF_OPT_HOST_TRADDR	= 1 << 10,
 };
 
 /**
@@ -64,13 +65,14 @@ enum {
  *		being added.
  * @subsysnqn:	Hold the fully qualified NQN subystem name (format defined
  *		in the NVMe specification, "NVMe Qualified Names").
- * @traddr:	network address that will be used by the host to communicate
- *		to the added NVMe controller.
- * @trsvcid:	network port used for host-controller communication.
+ * @traddr:	The transport-specific TRADDR field for a port on the
+ *              subsystem which is adding a controller.
+ * @trsvcid:	The transport-specific TRSVCID field for a port on the
+ *              subsystem which is adding a controller.
+ * @host_traddr: A transport-specific field identifying the NVME host port
+ *              to use for the connection to the controller.
  * @queue_size: Number of IO queue elements.
  * @nr_io_queues: Number of controller IO queues that will be established.
- * @tl_retry_count: Number of transport layer retries for a fabric queue before
- *		     kicking upper layer(s) error recovery.
  * @reconnect_delay: Time between two consecutive reconnect attempts.
  * @discovery_nqn: indicates if the subsysnqn is the well-known discovery NQN.
  * @kato:	Keep-alive timeout.
@@ -82,9 +84,9 @@ struct nvmf_ctrl_options {
 	char			*subsysnqn;
 	char			*traddr;
 	char			*trsvcid;
+	char			*host_traddr;
 	size_t			queue_size;
 	unsigned int		nr_io_queues;
-	unsigned short		tl_retry_count;
 	unsigned int		reconnect_delay;
 	bool			discovery_nqn;
 	unsigned int		kato;

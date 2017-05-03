@@ -73,30 +73,16 @@ int mlx4_en_create_cq(struct mlx4_en_priv *priv,
 	 */
 	set_dev_node(&mdev->dev->persist->pdev->dev, node);
 	err = mlx4_alloc_hwq_res(mdev->dev, &cq->wqres,
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 				cq->buf_size);
-#else
-				cq->buf_size, 2 * PAGE_SIZE);
-#endif
 	set_dev_node(&mdev->dev->persist->pdev->dev, mdev->dev->numa_node);
 	if (err)
 		goto err_cq;
-
-#if !defined(CONFIG_ARM) && !defined(CONFIG_ARM64)
-	err = mlx4_en_map_buffer(&cq->wqres.buf);
-	if (err)
-		goto err_res;
-#endif
 
 	cq->buf = (struct mlx4_cqe *)cq->wqres.buf.direct.buf;
 	*pcq = cq;
 
 	return 0;
 
-#if !defined(CONFIG_ARM) && !defined(CONFIG_ARM64)
-err_res:
-	mlx4_free_hwq_res(mdev->dev, &cq->wqres, cq->buf_size);
-#endif
 err_cq:
 	kfree(cq);
 	*pcq = NULL;
@@ -105,7 +91,7 @@ err_cq:
 
 #define MLX4_EN_EQ_NAME_PRIORITY	2
 
-static void mlx4_en_cq_eq_cb(unsigned vector, u32 uuid, void *data)
+static void mlx4_en_cq_eq_cb(unsigned int vector, u32 uuid, void *data)
 {
 	int err;
 	struct mlx4_en_cq **pcq = data;
@@ -131,7 +117,6 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 {
 	struct mlx4_en_dev *mdev = priv->mdev;
 	int err = 0;
-	char name[25];
 	int timestamp_en = 0;
 	bool assigned_eq = false;
 
@@ -155,8 +140,8 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 					     &priv->rx_cq[cq_idx],
 					     &cq->vector);
 			if (err) {
-				mlx4_err(mdev, "Failed assigning an EQ to %s\n",
-					 name);
+				mlx4_err(mdev, "Failed assigning an EQ to CQ vector %d\n",
+					 cq->vector);
 				goto free_eq;
 			}
 
@@ -180,7 +165,15 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 		/* For TX we use the same irq per
 		ring we assigned for the RX    */
 		struct mlx4_en_cq *rx_cq;
+		int xdp_index;
 
+		/* The xdp tx irq must align with the rx ring that forwards to
+		 * it, so reindex these from 0. This should only happen when
+		 * tx_ring_num is not a multiple of rx_ring_num.
+		 */
+		xdp_index = (priv->xdp_ring_num - priv->tx_ring_num) + cq_idx;
+		if (xdp_index >= 0)
+			cq_idx = xdp_index;
 		cq_idx = cq_idx % priv->rx_ring_num;
 		rx_cq = priv->rx_cq[cq_idx];
 		cq->vector = rx_cq->vector;
@@ -202,15 +195,13 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 	cq->mcq.comp  = cq->is_tx ? mlx4_en_tx_irq : mlx4_en_rx_irq;
 	cq->mcq.event = mlx4_en_cq_event;
 
-	if (cq->is_tx) {
-		netif_napi_add(cq->dev, &cq->napi,
-			       vgtp_cq ? mlx4_en_vgtp_poll_tx_cq :
-			       mlx4_en_poll_tx_cq,
-			       NAPI_POLL_WEIGHT);
-	} else {
+	if (cq->is_tx)
+		netif_tx_napi_add(cq->dev, &cq->napi,
+				  vgtp_cq ? mlx4_en_vgtp_poll_tx_cq :
+				  mlx4_en_poll_tx_cq,
+				  NAPI_POLL_WEIGHT);
+	else
 		netif_napi_add(cq->dev, &cq->napi, mlx4_en_poll_rx_cq, 64);
-		napi_hash_add(&cq->napi);
-	}
 
 	napi_enable(&cq->napi);
 
@@ -218,8 +209,10 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 
 free_eq:
 	if (assigned_eq)
-		mlx4_release_eq(mdev->dev, MLX4_EQ_ID_TO_UUID(
-					MLX4_EQ_ID_EN, priv->port, cq_idx),
+		mlx4_release_eq(mdev->dev,
+				MLX4_EQ_ID_TO_UUID(MLX4_EQ_ID_EN,
+						   priv->port,
+						   cq_idx),
 				cq->vector);
 	cq->vector = mdev->dev->caps.num_comp_vectors;
 	return err;
@@ -230,25 +223,17 @@ void mlx4_en_destroy_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq **pcq)
 	struct mlx4_en_dev *mdev = priv->mdev;
 	struct mlx4_en_cq *cq = *pcq;
 
-#if !defined(CONFIG_ARM) && !defined(CONFIG_ARM64)
-	mlx4_en_unmap_buffer(&cq->wqres.buf);
-#endif
 	mlx4_free_hwq_res(mdev->dev, &cq->wqres, cq->buf_size);
-	if (mlx4_is_eq_vector_valid(mdev->dev, priv->port, cq->vector) &&
-	    cq->is_tx == RX)
-		mlx4_release_eq(priv->mdev->dev, MLX4_EQ_ID_TO_UUID(
-					MLX4_EQ_ID_EN, priv->port,
-					pcq - priv->rx_cq),
-				cq->vector);
-	cq->vector = 0;
 	cq->buf_size = 0;
 	cq->buf = NULL;
 	kfree(cq);
 	*pcq = NULL;
 }
 
-void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
+void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq **pcq)
 {
+	struct mlx4_en_cq *cq = *pcq;
+
 	napi_disable(&cq->napi);
 	if (!cq->is_tx) {
 		napi_hash_del(&cq->napi);
@@ -257,6 +242,16 @@ void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
 	netif_napi_del(&cq->napi);
 
 	mlx4_cq_free(priv->mdev->dev, &cq->mcq);
+
+	if (mlx4_is_eq_vector_valid(priv->mdev->dev, priv->port, cq->vector) &&
+	    cq->is_tx == RX)
+		mlx4_release_eq(priv->mdev->dev,
+				MLX4_EQ_ID_TO_UUID(MLX4_EQ_ID_EN,
+						   priv->port,
+						   pcq - priv->rx_cq),
+				cq->vector);
+
+	cq->vector = priv->mdev->dev->caps.num_comp_vectors;
 }
 
 /* Set rx cq moderation parameters */

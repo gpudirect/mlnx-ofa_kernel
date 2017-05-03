@@ -38,7 +38,7 @@
 %global kernel_version %{KVERSION}
 %global krelver %(echo -n %{KVERSION} | sed -e 's/-/_/g')
 # take path to kernel sources if provided, otherwise look in default location (for non KMP rpms).
-%{!?K_SRC: %global K_SRC /lib/modules/%{KVERSION}/source}
+%{!?K_SRC: %global K_SRC /lib/modules/%{KVERSION}/build}
 
 # define release version
 %{!?src_release: %global src_release %{_release}_%{krelver}}
@@ -53,7 +53,7 @@ Summary: %{_name} Driver
 Name: %{_name}
 Version: %{_version}
 Release: %{_release1}%{?_dist}
-License: GPL/BSD
+License: GPLv2
 Url: http://www.mellanox.com
 Group: System Environment/Base
 Source: %{_name}-%{_version}.tgz
@@ -69,7 +69,7 @@ BuildRequires: %kernel_module_package_buildreqs
 %(mkdir -p %{buildroot})
 %(echo '%defattr (-,root,root)' > %{buildroot}/file_list)
 %(echo '/lib/modules/%2-%1' >> %{buildroot}/file_list)
-%(echo '%{_sysconfdir}/depmod.d/%{name}-%1.conf' >> %{buildroot}/file_list)
+%(echo '%{_sysconfdir}/depmod.d/zz02-%{name}-%1.conf' >> %{buildroot}/file_list)
 %{kernel_module_package -f %{buildroot}/file_list -r %{_kmp_rel} }
 %else
 %global kernel_source() %{K_SRC}
@@ -89,7 +89,7 @@ BuildRequires: %kernel_module_package_buildreqs
 %if "%{WITH_MOD_SIGN}" == "1"
 # call module sign script
 %global __modsign_install_post \
-    %{_builddir}/%{name}-%{version}/source/tools/sign-modules %{buildroot}/lib/modules/ || exit 1 \
+    %{_builddir}/%{name}-%{version}/source/tools/sign-modules %{buildroot}/lib/modules/ %{kernel_source default} || exit 1 \
 %{nil}
 
 %global __debug_package 1
@@ -139,8 +139,8 @@ export EXTRA_CFLAGS='-DVERSION=\"%version\"'
 export INSTALL_MOD_DIR=%{install_mod_dir}
 export CONF_OPTIONS="%{configure_options}"
 for flavor in %{flavors_to_build}; do
-	export K_SRC=%{kernel_source $flavor}
-	export KVER=%{kernel_release $K_SRC}
+	export K_BUILD=%{kernel_source $flavor}
+	export KVER=%{kernel_release $K_BUILD}
 	export LIB_MOD_DIR=/lib/modules/$KVER/$INSTALL_MOD_DIR
 	rm -rf obj/$flavor
 	cp -r source obj/$flavor
@@ -154,8 +154,8 @@ export INSTALL_MOD_PATH=%{buildroot}
 export INSTALL_MOD_DIR=%{install_mod_dir}
 export PREFIX=%{_prefix}
 for flavor in %flavors_to_build; do
-	export K_SRC=%{kernel_source $flavor}
-	export KVER=%{kernel_release $K_SRC}
+	export K_BUILD=%{kernel_source $flavor}
+	export KVER=%{kernel_release $K_BUILD}
 	cd $PWD/obj/$flavor
 	make install KERNELRELEASE=$KVER
 	# Cleanup unnecessary kernel-generated module dependency files.
@@ -164,32 +164,32 @@ for flavor in %flavors_to_build; do
 done
 
 # Set the module(s) to be executable, so that they will be stripped when packaged.
-find %{buildroot} -type f -name \*.ko -exec %{__chmod} u+x \{\} \;
+find %{buildroot} \( -type f -name '*.ko' -o -name '*ko.gz' \) -exec %{__chmod} u+x \{\} \;
 
 %{__install} -d %{buildroot}%{_sysconfdir}/depmod.d/
-for module in `find %{buildroot}/ -name '*.ko'`
+for module in `find %{buildroot}/ -name '*.ko' -o -name '*.ko.gz'`
 do
 ko_name=${module##*/}
-mod_name=${ko_name/.ko/}
+mod_name=${ko_name/.ko*/}
 mod_path=${module/*\/%{name}}
 mod_path=${mod_path/\/${ko_name}}
 %if "%{_vendor}" == "suse"
     %if "%{KMP}" == "1"
         for flavor in %{flavors_to_build}; do
             if [[ $module =~ $flavor ]];then
-                echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}-$flavor.conf
+                echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz02-%{name}-$flavor.conf
             fi
         done
     %else
-        echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}.conf
+        echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz02-%{name}.conf
     %endif
 %else
     %if 0%{?fedora}
-        echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}.conf
+        echo "override ${mod_name} * updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz02-%{name}.conf
     %else
-        echo "override ${mod_name} * extra/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}.conf
+        echo "override ${mod_name} * extra/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz02-%{name}.conf
         %if "%{KMP}" == "1"
-            echo "override ${mod_name} * weak-updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}.conf
+            echo "override ${mod_name} * weak-updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz02-%{name}.conf
         %endif
     %endif
 %endif
@@ -201,26 +201,18 @@ rm -rf %{buildroot}
 
 %post
 if [ $1 -ge 1 ]; then # This package is being installed or reinstalled
-  if [ -f /etc/depmod.d/mlnx-ofa_kernel.conf ]; then
-    sed -i -e '/^override svcrdma/s/^/#/' /etc/depmod.d/mlnx-ofa_kernel.conf
-    sed -i -e '/^override xprtrdma/s/^/#/' /etc/depmod.d/mlnx-ofa_kernel.conf
-  fi
   /sbin/depmod %{KVERSION}
 fi
 # END of post
 
 %postun
-if [ -f /etc/depmod.d/mlnx-ofa_kernel.conf ]; then
-  sed -i -e '/^#override svcrdma/s/^#//' /etc/depmod.d/mlnx-ofa_kernel.conf
-  sed -i -e '/^#override xprtrdma/s/^#//' /etc/depmod.d/mlnx-ofa_kernel.conf
-fi
 /sbin/depmod %{KVERSION}
 
 %if "%{KMP}" != "1"
 %files
 %defattr(-,root,root,-)
 /lib/modules/%{KVERSION}/
-%{_sysconfdir}/depmod.d/%{name}.conf
+%{_sysconfdir}/depmod.d/zz02-%{name}.conf
 %endif
 
 %changelog

@@ -28,6 +28,7 @@
 #
 
 WDIR=${0%*/*}
+NEED_CORE_DUMMY_MODS=0
 
 usage()
 {
@@ -53,7 +54,6 @@ def_configure_options=" \
 	--with-mlx4_en-mod \
 	--with-mlx5-mod \
 	--with-ipoib-mod \
-	--with-e_ipoib-mod \
 	"
 # check if dkms.conf exists and parse it, otherwise use the env variable or the default
 if [ -f $WDIR/../dkms.conf ];then
@@ -84,7 +84,7 @@ module_to_flag()
 	flag=
 
 	case "$module" in
-		mlx_compat|compat|ib_core|ib_mad|ib_sa|ib_cm|iw_cm)
+		mlx_compat|compat|ib_core|ib_cm|iw_cm)
 		flag=--with-core-mod
 		;;
 		ib_umad)
@@ -93,7 +93,7 @@ module_to_flag()
 		ib_uverbs|ib_ucm)
 		flag=--with-user_access-mod
 		;;
-		ib_addr|rdma_cm|rdma_ucm|ib_netlink)
+		rdma_cm|rdma_ucm)
 		flag=--with-addr_trans-mod
 		;;
 		mlx4_core|mlx4_ib)
@@ -111,11 +111,11 @@ module_to_flag()
 		ib_ipoib)
 		flag=--with-ipoib-mod
 		;;
-		eth_ipoib)
-		flag=--with-e_ipoib-mod
-		;;
 		memtrack)
 		flag=--with-memtrack
+		;;
+		ib_mad|ib_sa|ib_addr)
+		flag=--with-dummy-core-mods
 		;;
 		*)
 		;;
@@ -135,10 +135,13 @@ get-modules()
 			modules="$modules \
 				compat/mlx_compat \
 				drivers/infiniband/core/ib_core \
-				drivers/infiniband/core/ib_mad \
-				drivers/infiniband/core/ib_sa \
 				drivers/infiniband/core/ib_cm \
 				drivers/infiniband/core/iw_cm"
+			if [ $NEED_CORE_DUMMY_MODS -eq 1 ]; then
+				modules="$modules \
+					drivers/infiniband/core/ib_mad \
+					drivers/infiniband/core/ib_sa"
+			fi
 			;;
 			--with-user_mad-mod )
 			modules="$modules \
@@ -151,10 +154,12 @@ get-modules()
 			;;
 			--with-addr_trans-mod )
 			modules="$modules \
-				drivers/infiniband/core/ib_addr \
-				drivers/infiniband/core/ib_netlink \
 				drivers/infiniband/core/rdma_cm \
 				drivers/infiniband/core/rdma_ucm"
+			if [ $NEED_CORE_DUMMY_MODS -eq 1 ]; then
+				modules="$modules \
+					drivers/infiniband/core/ib_addr"
+			fi
 			;;
 			--with-mlx4-mod )
 			modules="$modules \
@@ -178,10 +183,6 @@ get-modules()
 			modules="$modules \
 				drivers/infiniband/ulp/ipoib/ib_ipoib"
 			;;
-			--with-e_ipoib-mod )
-			modules="$modules \
-				drivers/net/eipoib/eth_ipoib"
-			;;
 			--with-memtrack )
 			modules="$modules \
 				drivers/infiniband/debug/memtrack"
@@ -194,8 +195,13 @@ get-modules()
 	echo $modules
 }
 
-kernelver=$1
-shift
+kernelver=$1; shift
+kernel_source_dir=$1; shift
+
+if (grep -wq ib_sa $kernel_source_dir/drivers/infiniband/core/Makefile >/dev/null) ||
+   (modinfo -k "$kernelver" ib_sa &>/dev/null); then
+    NEED_CORE_DUMMY_MODS=1
+fi
 
 case "$1" in
 	get-config)

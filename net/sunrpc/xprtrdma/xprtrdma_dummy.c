@@ -33,19 +33,35 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
+#include <linux/kmod.h>
+#include <linux/printk.h>
 
 #define DRV_NAME	"xprtrdma"
 #define PFX		DRV_NAME ": "
-#define DRV_VERSION	"2.0.0"
-#define DRV_RELDATE	"August 15, 2016"
+#define DRV_VERSION	"2.0.1"
+#define DRV_RELDATE	"November 15, 2016"
 
 MODULE_AUTHOR("Alaa Hleihel");
 MODULE_DESCRIPTION("xprtrdma dummy kernel module");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(DRV_VERSION);
 
+#define RPCRDMA_MOD "rpcrdma"
+
 static int __init xprtrdma_init(void)
 {
+	int err;
+
+	pr_info("%s: %s is obsoleted, loading %s instead\n",
+		DRV_NAME,
+		DRV_NAME,
+		RPCRDMA_MOD);
+	err = request_module_nowait(RPCRDMA_MOD);
+	if (err)
+		pr_info("%s: failed request module on %s\n",
+			DRV_NAME,
+			RPCRDMA_MOD);
+
 	return 0;
 }
 

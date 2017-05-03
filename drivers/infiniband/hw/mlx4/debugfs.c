@@ -58,7 +58,7 @@ void mlx4_ib_create_debug_files(struct mlx4_ib_dev *dev)
 			     i < CTRL_ALGO_SZ; i++) {
 				void *algo_alloced =
 					con_ctrl_dbgfs_add_algo(ecn, dev, i);
-				if (algo_alloced != NULL) {
+				if (algo_alloced) {
 					INIT_LIST_HEAD((struct list_head *)
 						 algo_alloced);
 					list_add((struct list_head *)

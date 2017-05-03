@@ -11,13 +11,6 @@
 #define PF_IB		AF_IB
 #endif /* AF_IB */
 
-#define netdev_notifier_info_to_dev LINUX_BACKPORT(netdev_notifier_info_to_dev)
-static inline struct net_device *
-netdev_notifier_info_to_dev(void *ptr)
-{
-	return (struct net_device *)ptr;
-}
-
 #if !defined(CONFIG_COMPAT_IFLA_VF_LINK_STATE_MAX)
 enum {
 	IFLA_VF_LINK_STATE_AUTO,	/* link state of the uplink */

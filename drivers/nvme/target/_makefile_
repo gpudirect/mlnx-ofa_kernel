@@ -88,8 +88,10 @@ default:
 # compile with ofed driver
 	-cp -f $(OFA)/Module*.symvers $(SRC_DIR)/Module.symvers
 	make -C $(K_BUILD) O=$(K_OBJ) SUBDIRS=$(shell pwd) $(WITH_MAKE_PARAMS) \
-		CONFIG_NVMF_TARGET=m \
-		CONFIG_NVMF_TARGET_DUMMY= \
+		CONFIG_NVME_TARGET=m \
+		CONFIG_NVME_TARGET_LOOP=m \
+		CONFIG_NVME_TARGET_RDMA=m \
+		CONFIG_NVME_TARGET_DUMMY= \
 		CONFIG_DTRACE= \
 		CONFIG_CC_STACKPROTECTOR_STRONG= \
 		CONFIG_CTF= \
@@ -144,17 +146,23 @@ binrpm: rpmcheck $(rpmspec)
 
 dist:
 	mkdir -p $(rpmroot)/$(PACKAGE)/
-	cp {$(rpmspec),makefile,Kbuild,dkms.conf,Module.supported} $(rpmroot)/$(PACKAGE)/
+	cp {$(rpmspec),makefile,Makefile,dkms.conf,Module.supported} $(rpmroot)/$(PACKAGE)/
 	cp *.c $(rpmroot)/$(PACKAGE)/
 	cp *.h $(rpmroot)/$(PACKAGE)/
 	cp -r debian $(rpmroot)/$(PACKAGE)/
 	cp -r tools $(rpmroot)/$(PACKAGE)/
+ifeq ($(shell test -f $(PWD)/../host/nvme.h  && echo "" || echo "false"),)
+	-cp -fr $(PWD)/../host/nvme.h $(rpmroot)/$(PACKAGE)/
+	-cp -fr $(PWD)/../host/fabrics.h $(rpmroot)/$(PACKAGE)/
+	-sed -i 's@../host/nvme.h@nvme.h@g' $(rpmroot)/$(PACKAGE)/loop.c
+	-sed -i 's@../host/fabrics.h@fabrics.h@g' $(rpmroot)/$(PACKAGE)/loop.c
+endif
 	cd $(rpmroot) && tar czf $(PACKAGE).tgz $(PACKAGE)
 	cd $(rpmroot) && tar czf $(name)_$(VERSION).orig.tar.gz $(PACKAGE)
 
 clean:
 	rm -f *.o
-	rm -f *.ko
+	rm -f *.ko *.ko.gz
 	rm -f *.mod.c
 	rm -f Module*.symvers modules*.order
 

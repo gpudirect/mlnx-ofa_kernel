@@ -14,6 +14,18 @@
 #define SIZE_MAX       (~(size_t)0)
 #endif
 
+#ifndef U16_MAX
+#define U16_MAX        ((u16)~0U)
+#endif
+
+#ifndef U32_MAX
+#define U32_MAX        ((u32)~0U)
+#endif
+
+#ifndef U64_MAX
+#define U64_MAX        ((u64)~0U)
+#endif
+
 #ifdef __KERNEL__
 #ifndef HAVE_RECIPROCAL_SCALE
 static inline u32 reciprocal_scale(u32 val, u32 ep_ro)

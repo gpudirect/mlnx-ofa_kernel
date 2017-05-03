@@ -104,11 +104,9 @@ fi
 cd $DEVICE/ports/$PORT
 
 if [ $MODE -eq 1 ] ; then
-	echo "IB/RoCE V1" |sudo tee default_roce_mode
+	echo "IB/RoCE v1" |sudo tee default_roce_mode
 elif [ $MODE -eq 2 ] ; then
-	echo "RoCE V2" |sudo tee default_roce_mode
-elif [ $MODE -eq 3 ] ; then
-	echo "RoCE V1.5"|sudo tee default_roce_mode
+	echo "RoCE v2" |sudo tee default_roce_mode
 else
 	cat default_roce_mode
 fi

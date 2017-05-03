@@ -148,7 +148,9 @@ parser.add_option("-r", "--ratelimit", dest="ratelimit",
 		  help="Rate limit for TCs (in Gbps). LIST is a comma seperated " +
 		  "Gbps limit for each TC. Example: 1,8,8 will limit TC0 to " +
 		  "1Gbps, and TC1,TC2 to 8 Gbps each.", metavar="LIST")
-
+parser.add_option("-d", "--dcbx", dest="dcbx",
+                  help="get the dcbx mode(get) or set dcbx mode to firmware controlled(fw) or " +
+		  "os controlled(os)")
 parser.add_option("-i", "--interface", dest="intf",
                   help="Interface name")
 
@@ -177,6 +179,19 @@ prio_tc = [0, 0, 0, 0, 0, 0, 0, 0]
 printall = False
 
 ctrl = DcbController(options.intf)
+
+if (options.dcbx != None):
+	if (options.dcbx == "os"):
+		ctrl.set_dcbx(ctrl.get_dcbx() | DCB_CAP_DCBX_HOST);
+	elif (options.dcbx == "fw"):
+		ctrl.set_dcbx(0);
+
+	if (ctrl.get_dcbx() & DCB_CAP_DCBX_HOST):
+		print ("DCBX mode: OS controlled")
+	else:
+		print ("DCBX mode: Firmware controlled")
+
+	sys.exit(1)
 
 try:
 	ratelimit = []

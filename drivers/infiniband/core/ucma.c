@@ -42,6 +42,7 @@
 #include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/module.h>
+#include <linux/nsproxy.h>
 
 #include <rdma/rdma_user_cm.h>
 #include <rdma/ib_marshall.h>
@@ -90,7 +91,11 @@ struct ucma_context {
 
 	struct list_head	list;
 	struct list_head	mc_list;
+	/* mark that device is in process of destroying the internal HW
+	 * resources, protected by the global mut
+	 */
 	int			closing;
+	/* sync between removal event and id destroy, protected by file mut */
 	int			destroying;
 	struct work_struct	close_work;
 };
@@ -101,6 +106,7 @@ struct ucma_multicast {
 	int			events_reported;
 
 	u64			uid;
+	u8			join_state;
 	struct list_head	list;
 	struct sockaddr_storage	addr;
 };
@@ -164,12 +170,6 @@ static void ucma_close_event_id(struct work_struct *work)
 static void ucma_close_id(struct work_struct *work)
 {
 	struct ucma_context *ctx =  container_of(work, struct ucma_context, close_work);
-
-	/* Fence to ensure that ctx->closing was seen by all
-	 * ucma_get_ctx running
-	 */
-	mutex_lock(&mut);
-	mutex_unlock(&mut);
 
 	/* once all inflight tasks are finished, we close all underlying
 	 * resources. The context is still alive till its explicit destryoing
@@ -297,7 +297,9 @@ static void ucma_removal_event_handler(struct rdma_cm_id *cm_id)
 	 * handled separately below.
 	 */
 	if (ctx->cm_id == cm_id) {
+		mutex_lock(&mut);
 		ctx->closing = 1;
+		mutex_unlock(&mut);
 		queue_work(ctx->file->close_wq, &ctx->close_work);
 		return;
 	}
@@ -313,7 +315,7 @@ static void ucma_removal_event_handler(struct rdma_cm_id *cm_id)
 		}
 	}
 	if (!event_found)
-		printk(KERN_ERR "ucma_removal_event_handler: warning: connect request event wasn't found\n");
+		pr_err("ucma_removal_event_handler: warning: connect request event wasn't found\n");
 }
 
 static int ucma_event_handler(struct rdma_cm_id *cm_id,
@@ -410,7 +412,6 @@ static ssize_t ucma_get_event(struct ucma_file *file, const char __user *inbuf,
 		ctx->cm_id = uevent->cm_id;
 		ctx->cm_id->context = ctx;
 		uevent->resp.id = ctx->id;
-		ctx->cm_id->ucontext = ctx;
 	}
 
 	if (copy_to_user((void __user *)(unsigned long)cmd.response,
@@ -473,13 +474,12 @@ static ssize_t ucma_create_id(struct ucma_file *file, const char __user *inbuf,
 		return -ENOMEM;
 
 	ctx->uid = cmd.uid;
-	ctx->cm_id = rdma_create_id(ucma_event_handler, ctx, cmd.ps, qp_type);
+	ctx->cm_id = rdma_create_id(current->nsproxy->net_ns,
+				    ucma_event_handler, ctx, cmd.ps, qp_type);
 	if (IS_ERR(ctx->cm_id)) {
 		ret = PTR_ERR(ctx->cm_id);
 		goto err1;
 	}
-
-	ctx->cm_id->ucontext = ctx;
 
 	resp.id = ctx->id;
 	if (copy_to_user((void __user *)(unsigned long)cmd.response,
@@ -596,10 +596,14 @@ static ssize_t ucma_destroy_id(struct ucma_file *file, const char __user *inbuf,
 	flush_workqueue(ctx->file->close_wq);
 	/* At this point it's guaranteed that there is no inflight
 	 * closing task */
+	mutex_lock(&mut);
 	if (!ctx->closing) {
+		mutex_unlock(&mut);
 		ucma_put_ctx(ctx);
 		wait_for_completion(&ctx->comp);
 		rdma_destroy_id(ctx->cm_id);
+	} else {
+		mutex_unlock(&mut);
 	}
 
 	resp.events_reported = ucma_free_ctx(ctx);
@@ -820,26 +824,13 @@ static ssize_t ucma_query_route(struct ucma_file *file,
 
 	resp.node_guid = (__force __u64) ctx->cm_id->device->node_guid;
 	resp.port_num = ctx->cm_id->port_num;
-	switch (rdma_node_get_transport(ctx->cm_id->device->node_type)) {
-	case RDMA_TRANSPORT_IB:
-		switch (rdma_port_get_link_layer(ctx->cm_id->device,
-			ctx->cm_id->port_num)) {
-		case IB_LINK_LAYER_INFINIBAND:
-			ucma_copy_ib_route(&resp, &ctx->cm_id->route);
-			break;
-		case IB_LINK_LAYER_ETHERNET:
-			ucma_copy_iboe_route(&resp, &ctx->cm_id->route);
-			break;
-		default:
-			break;
-		}
-		break;
-	case RDMA_TRANSPORT_IWARP:
+
+	if (rdma_cap_ib_sa(ctx->cm_id->device, ctx->cm_id->port_num))
+		ucma_copy_ib_route(&resp, &ctx->cm_id->route);
+	else if (rdma_protocol_roce(ctx->cm_id->device, ctx->cm_id->port_num))
+		ucma_copy_iboe_route(&resp, &ctx->cm_id->route);
+	else if (rdma_protocol_iwarp(ctx->cm_id->device, ctx->cm_id->port_num))
 		ucma_copy_iw_route(&resp, &ctx->cm_id->route);
-		break;
-	default:
-		break;
-	}
 
 out:
 	if (copy_to_user((void __user *)(unsigned long)cmd.response,
@@ -1237,22 +1228,12 @@ static int ucma_set_ib_path(struct ucma_context *ctx,
 static int ucma_set_option_ib(struct ucma_context *ctx, int optname,
 			      void *optval, size_t optlen)
 {
-	int ret = -ENOSYS;
+	int ret;
 
 	switch (optname) {
 	case RDMA_OPTION_IB_PATH:
 		ret = ucma_set_ib_path(ctx, optval, optlen);
 		break;
-
-	case RDMA_OPTION_IB_APM:
-		if (optlen != sizeof(u8)) {
-			ret = -EINVAL;
-			break;
-		}
-		if (*(u8 *)optval)
-			ret = rdma_enable_apm(ctx->cm_id, RDMA_ALT_PATH_BEST);
-		break;
-
 	default:
 		ret = -ENOSYS;
 	}
@@ -1337,12 +1318,20 @@ static ssize_t ucma_process_join(struct ucma_file *file,
 	struct ucma_multicast *mc;
 	struct sockaddr *addr;
 	int ret;
+	u8 join_state;
 
 	if (out_len < sizeof(resp))
 		return -ENOSPC;
 
 	addr = (struct sockaddr *) &cmd->addr;
-	if (cmd->reserved || !cmd->addr_size || (cmd->addr_size != rdma_addr_size(addr)))
+	if (!cmd->addr_size || (cmd->addr_size != rdma_addr_size(addr)))
+		return -EINVAL;
+
+	if (cmd->join_flags == RDMA_MC_JOIN_FLAG_FULLMEMBER)
+		join_state = BIT(FULLMEMBER_JOIN);
+	else if (cmd->join_flags == RDMA_MC_JOIN_FLAG_SENDONLY_FULLMEMBER)
+		join_state = BIT(SENDONLY_FULLMEMBER_JOIN);
+	else
 		return -EINVAL;
 
 	ctx = ucma_get_ctx(file, cmd->id);
@@ -1355,10 +1344,11 @@ static ssize_t ucma_process_join(struct ucma_file *file,
 		ret = -ENOMEM;
 		goto err1;
 	}
-
+	mc->join_state = join_state;
 	mc->uid = cmd->uid;
 	memcpy(&mc->addr, addr, cmd->addr_size);
-	ret = rdma_join_multicast(ctx->cm_id, (struct sockaddr *) &mc->addr, mc);
+	ret = rdma_join_multicast(ctx->cm_id, (struct sockaddr *)&mc->addr,
+				  join_state, mc);
 	if (ret)
 		goto err2;
 
@@ -1402,7 +1392,7 @@ static ssize_t ucma_join_ip_multicast(struct ucma_file *file,
 	join_cmd.uid = cmd.uid;
 	join_cmd.id = cmd.id;
 	join_cmd.addr_size = rdma_addr_size((struct sockaddr *) &cmd.addr);
-	join_cmd.reserved = 0;
+	join_cmd.join_flags = RDMA_MC_JOIN_FLAG_FULLMEMBER;
 	memcpy(&join_cmd.addr, &cmd.addr, join_cmd.addr_size);
 
 	return ucma_process_join(file, &join_cmd, out_len);
@@ -1441,10 +1431,10 @@ static ssize_t ucma_leave_multicast(struct ucma_file *file,
 		mc = ERR_PTR(-ENOENT);
 	else if (mc->ctx->file != file)
 		mc = ERR_PTR(-EINVAL);
-	else {
+	else if (!atomic_inc_not_zero(&mc->ctx->ref))
+		mc = ERR_PTR(-ENXIO);
+	else
 		idr_remove(&multicast_idr, mc->id);
-		atomic_inc(&mc->ctx->ref);
-	}
 	mutex_unlock(&mut);
 
 	if (IS_ERR(mc)) {
@@ -1474,10 +1464,10 @@ static void ucma_lock_files(struct ucma_file *file1, struct ucma_file *file2)
 	/* Acquire mutex's based on pointer comparison to prevent deadlock. */
 	if (file1 < file2) {
 		mutex_lock(&file1->mut);
-		mutex_lock(&file2->mut);
+		mutex_lock_nested(&file2->mut, SINGLE_DEPTH_NESTING);
 	} else {
 		mutex_lock(&file2->mut);
-		mutex_lock(&file1->mut);
+		mutex_lock_nested(&file1->mut, SINGLE_DEPTH_NESTING);
 	}
 }
 
@@ -1648,11 +1638,17 @@ static int ucma_open(struct inode *inode, struct file *filp)
 	if (!file)
 		return -ENOMEM;
 
+	file->close_wq = alloc_ordered_workqueue("ucma_close_id",
+						 WQ_MEM_RECLAIM);
+	if (!file->close_wq) {
+		kfree(file);
+		return -ENOMEM;
+	}
+
 	INIT_LIST_HEAD(&file->event_list);
 	INIT_LIST_HEAD(&file->ctx_list);
 	init_waitqueue_head(&file->poll_wait);
 	mutex_init(&file->mut);
-	file->close_wq = create_singlethread_workqueue("ucma_close_id");
 
 	filp->private_data = file;
 	file->filp = filp;
@@ -1679,11 +1675,17 @@ static int ucma_close(struct inode *inode, struct file *filp)
 		 * was flushed we are safe from any inflights handlers that
 		 * might put other closing task.
 		 */
-		if (!ctx->closing)
+		mutex_lock(&mut);
+		if (!ctx->closing) {
+			mutex_unlock(&mut);
 			/* rdma_destroy_id ensures that no event handlers are
 			 * inflight for that id before releasing it.
 			 */
 			rdma_destroy_id(ctx->cm_id);
+		} else {
+			mutex_unlock(&mut);
+		}
+
 		ucma_free_ctx(ctx);
 		mutex_lock(&file->mut);
 	}
@@ -1728,13 +1730,13 @@ static int __init ucma_init(void)
 
 	ret = device_create_file(ucma_misc.this_device, &dev_attr_abi_version);
 	if (ret) {
-		printk(KERN_ERR "rdma_ucm: couldn't create abi_version attr\n");
+		pr_err("rdma_ucm: couldn't create abi_version attr\n");
 		goto err1;
 	}
 
 	ucma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_ucm", ucma_ctl_table);
 	if (!ucma_ctl_table_hdr) {
-		printk(KERN_ERR "rdma_ucm: couldn't register sysctl paths\n");
+		pr_err("rdma_ucm: couldn't register sysctl paths\n");
 		ret = -ENOMEM;
 		goto err2;
 	}
@@ -1752,6 +1754,7 @@ static void __exit ucma_cleanup(void)
 	device_remove_file(ucma_misc.this_device, &dev_attr_abi_version);
 	misc_deregister(&ucma_misc);
 	idr_destroy(&ctx_idr);
+	idr_destroy(&multicast_idr);
 }
 
 module_init(ucma_init);

@@ -7,6 +7,7 @@ fi
 cpulist=$1
 interface=$2
 NCPUS=$(cat /proc/cpuinfo | grep -c processor)
+ONLINE_CPUS=$(cat /proc/cpuinfo | grep processor | cut -d ":" -f 2)
 
 source common_irq_affinity.sh
 
@@ -36,7 +37,21 @@ I=1
 for IRQ in $IRQS
 do 
 	core_id=$(echo $cpulist | cut -d "," -f $I)
-	if [ $core_id -ge $NCPUS ]; then
+	online=1
+	if [ $core_id -ge $NCPUS ]
+	then
+		online=0
+		for online_cpu in $ONLINE_CPUS
+		do
+			if [ "$online_cpu" == "$core_id" ]
+			then
+				online=1
+				break
+			fi
+		done
+	fi
+	if [ $online -eq 0 ]
+	then
 		echo "irq $IRQ: Error - core $core_id does not exist"
 	else
 		echo Assign irq $IRQ core_id $core_id

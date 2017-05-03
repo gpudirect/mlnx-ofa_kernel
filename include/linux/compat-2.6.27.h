@@ -230,7 +230,7 @@ static inline int iwe_stream_lcp_len(struct iw_request_info *info)
 	return IW_EV_LCP_LEN;
 }
 
-#ifdef CONFIG_ARM
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 
 /*
  * The caller asks to handle a range between offset and offset + size,

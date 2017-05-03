@@ -64,13 +64,14 @@ override_dh_auto_test:
 override_dh_auto_install:
 ifneq ($(WITH_DKMS),1)
 	make install INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) INSTALL_MOD_PATH=$(INSTALL_MOD_PATH) KERNELRELEASE=$(KVER) KVER=$(KVER) K_BUILD=$(K_BUILD)
+	find $(INSTALL_MOD_PATH) \( -type f -a -name "modules.*" \) -delete
 endif
 
 	# For dkms
 ifeq ($(WITH_DKMS),1)
 	dh_installdirs -p$(pdkms)  usr/src/$(pname)-$(pversion)
 	cp makefile debian/$(pdkms)/usr/src/$(pname)-$(pversion)
-	cp Kbuild debian/$(pdkms)/usr/src/$(pname)-$(pversion)
+	cp Makefile debian/$(pdkms)/usr/src/$(pname)-$(pversion)
 	cp dkms.conf debian/$(pdkms)/usr/src/$(pname)-$(pversion)
 	cp *.c debian/$(pdkms)/usr/src/$(pname)-$(pversion)
 	cp *.h debian/$(pdkms)/usr/src/$(pname)-$(pversion)

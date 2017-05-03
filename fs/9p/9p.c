@@ -35,8 +35,8 @@
 #include <linux/errno.h>
 
 #define DRV_NAME	"9p"
-#define DRV_VERSION	"3.4-1.0.0"
-#define DRV_RELDATE	"25 Sep 2016"
+#define DRV_VERSION	"4.0-2.0.0"
+#define DRV_RELDATE	"28 Mar 2017"
 
 MODULE_AUTHOR("Vladimir Sokolovsky");
 MODULE_DESCRIPTION("9p dummy kernel module");

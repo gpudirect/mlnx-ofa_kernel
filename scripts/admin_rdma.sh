@@ -227,7 +227,7 @@ fi
 cd $GIT_TREE
 ts=$(/bin/date +"%Y-%m-%d_%H-%M-%S" 2>/dev/null)
 ex git checkout $LINUX_BRANCH -b ${LINUX_BRANCH}_tmp_${ts}
-LINUX_COMMIT=$(git log 2>/dev/null | grep commit | head -1 2>/dev/null | awk {'print $NF'} 2>/dev/null)
+LINUX_COMMIT=$(git log -1 --format="%H" 2>/dev/null)
 if [ -z "$LINUX_COMMIT" ]; then
 	echo "-E- Failed to get last commit ID of branch $LINUX_BRANCH"
 fi

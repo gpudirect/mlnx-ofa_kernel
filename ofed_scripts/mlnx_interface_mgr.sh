@@ -57,6 +57,18 @@ echo $bootID > /var/run/mlx_ifc-${i}.bootid
 if [[ "X$last_bootID" == "X" || "X$last_bootID" != "X$bootID" ]]; then
     OS_IS_BOOTING=1
 fi
+start_time=$(cat /var/run/mlx_os_booting 2>/dev/null)
+if [ "X$start_time" != "X" ]; then
+    let run_time=$(date +%s | tr -d '[:space:]')-${start_time}
+    if [ $run_time -lt 300 ]; then
+        OS_IS_BOOTING=1
+    fi
+fi
+# If driver was loaded manually after last boot, then OS boot is over
+last_bootID_manual=$(cat /var/run/mlx_ifc.manual 2>/dev/null)
+if [[ "X$last_bootID_manual" != "X" && "X$last_bootID_manual" == "X$bootID" ]]; then
+    OS_IS_BOOTING=0
+fi
 
 . $CONFIG
 IPOIB_MTU=${IPOIB_MTU:-65520}
@@ -140,21 +152,33 @@ set_RPS_cpu()
     local i=$1
     shift
 
-    # Silently ignore Pkeys
-    if [ ! -e /sys/class/net/${i}/device ]; then
-        return 0
-    fi
-
     if [ ! -e /sys/class/net/${i}/queues/rx-0/rps_cpus ]; then
-        log_msg "set_RPS_cpu: Failed to configure RPS cpu for ${i}"
+        log_msg "set_RPS_cpu: Failed to configure RPS cpu for ${i}; missing queues/rx-0/rps_cpus"
         return 1
     fi
 
-    cat /sys/class/net/${i}/device/local_cpus >  /sys/class/net/${i}/queues/rx-0/rps_cpus
+    local LOCAL_CPUS=
+    # try to get local_cpus of the device
+    if [ -e /sys/class/net/${i}/device/local_cpus ]; then
+        LOCAL_CPUS=$(cat /sys/class/net/${i}/device/local_cpus)
+    elif [ -e /sys/class/net/${i}/parent ]; then
+        # Pkeys do not have local_cpus, so take it from their parent
+        local parent=$(cat /sys/class/net/${i}/parent)
+        if [ -e /sys/class/net/${parent}/device/local_cpus ]; then
+            LOCAL_CPUS=$(cat /sys/class/net/${parent}/device/local_cpus)
+        fi
+    fi
+
+    if [ "X$LOCAL_CPUS" == "X" ]; then
+        log_msg "set_RPS_cpu: Failed to configure RPS cpu for ${i}; cannot get local_cpus"
+        return 1
+    fi
+
+    echo "$LOCAL_CPUS" > /sys/class/net/${i}/queues/rx-0/rps_cpus
     if [ $? -eq 0 ]; then
-        log_msg "set_RPS_cpu: Configured RPS cpu for ${i}"
+        log_msg "set_RPS_cpu: Configured RPS cpu for ${i} to $LOCAL_CPUS"
     else
-        log_msg "set_RPS_cpu: Failed to configure RPS cpu for ${i}"
+        log_msg "set_RPS_cpu: Failed to configure RPS cpu for ${i} to $LOCAL_CPUS"
         return 1
     fi
 
@@ -218,7 +242,13 @@ bring_up()
         return 4
     fi
 
-    /sbin/ifup ${i} >/dev/null 2>&1
+    if [ $OS_IS_BOOTING -eq 1 ]; then
+        log_msg "OS is booting, will not run ifup on $i"
+        unset $KNOWN_CONF_VARS
+        return 6
+    fi
+
+    /sbin/ifup ${i}
     if [ $? -eq 0 ]; then
         log_msg "Bringing up interface $i: PASSED"
     else
@@ -231,8 +261,8 @@ bring_up()
         log_msg "$i - briging up bond master: $MASTER ..."
         local is_up=`/sbin/ip link show $MASTER | grep -w UP`
         if [ -z "$is_up" ]; then
-            /sbin/ifup $MASTER >dev/null 2>&1
-            if [ $? -ne 0 ]; then
+            /sbin/ifup $MASTER
+            if [ $? -eq 0 ]; then
                 log_msg "$i - briging up bond master $MASTER: PASSED"
             else
                 log_msg "$i - briging up bond master $MASTER: FAILED"
@@ -246,8 +276,8 @@ bring_up()
     # bring up the relevant bridge interface
     if [ "X$BRIDGE" != "X" ]; then
         log_msg "$i - briging up bridge interface: $BRIDGE ..."
-        /sbin/ifup $BRIDGE >dev/null 2>&1
-        if [ $? -ne 0 ]; then
+        /sbin/ifup $BRIDGE
+        if [ $? -eq 0 ]; then
             log_msg "$i - briging up bridge interface $BRIDGE: PASSED"
         else
             log_msg "$i - briging up bridge interface $BRIDGE: FAILED"

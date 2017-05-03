@@ -46,6 +46,11 @@ log_msg()
     logger -i "openibd: $@"
 }
 
+cleanup()
+{
+    /bin/rm -f /var/run/mlx_os_booting &>/dev/null
+}
+
 # config: /etc/infiniband/openib.conf
 OPENIBD_CONFIG=${OPENIBD_CONFIG:-"/etc/infiniband/openib.conf"}
 CONFIG=$OPENIBD_CONFIG
@@ -67,6 +72,10 @@ if [ -e /etc/profile.d/ofed.sh ]; then
         . /etc/profile.d/ofed.sh
 fi
 
+IS_IN_CONTAINER=0
+if [ -e /.dockerenv ]; then
+    IS_IN_CONTAINER=1
+fi
 # Only use ONBOOT option if called by a runlevel directory.
 systemd_auto=0
 bootID=${2##*=}
@@ -80,11 +89,14 @@ if [ "X$bootID" != "X" ]; then
     fi
 fi
 
+start_time=$(date +%s | tr -d '[:space:]')
+
 base=${0##*/}
 link=${base#*[SK][0-9][0-9]}
 if [[ "X$2" == "Xauto" || $systemd_auto -eq 1 || "X$link" != "X$base" ]]; then
     RUNMODE=auto
     log_msg "running in auto mode"
+    echo "$start_time" 2>/dev/null > /var/run/mlx_os_booting
 else
     RUNMODE=manual
     ONBOOT=yes
@@ -111,6 +123,7 @@ FORCE=0
 # Check if OpenIB configured to start automatically
 if [ "X${ONBOOT}" != "Xyes" ]; then
     log_msg "running in auto mode and ONBOOT=no --> exiting"
+    cleanup
     exit 0
 fi
 
@@ -118,6 +131,7 @@ if ( grep -i 'SuSE Linux' /etc/issue >/dev/null 2>&1 ); then
     if [ -n "$INIT_VERSION" ] ; then
         # MODE=onboot
             if LANG=C egrep -L "^ONBOOT=['\"]?[Nn][Oo]['\"]?" ${CONFIG} > /dev/null ; then
+                    cleanup
                     exit 0
             fi
     fi
@@ -264,6 +278,7 @@ if [ -f /etc/debian_version ]; then
 else
     echo_failure "You system is not supported for IPoIB configuration"
     echo "Try to load driver manually using configuration files from $WD directory"
+    cleanup
     exit 1
 fi
 
@@ -277,6 +292,7 @@ if [ "X$RUNMODE" == "Xmanual" ]; then
             echo $curr_bootid 2>/dev/null > /var/run/mlx_ifc-${i}.bootid
         done
     fi
+    echo $curr_bootid 2>/dev/null > /var/run/mlx_ifc.manual
 fi
 
 # Define kernel version prefix
@@ -295,11 +311,6 @@ UVERBS_LOAD=${UVERBS_LOAD:-"yes"}
 
 if [ "X${SDP_LOAD}" == "Xyes" ]; then
     POST_LOAD_MODULES="$POST_LOAD_MODULES ib_sdp"
-    IPOIB_LOAD="yes"
-fi
-
-if [ "X${E_IPOIB_LOAD}" == "Xyes" ]; then
-    POST_LOAD_MODULES="$POST_LOAD_MODULES eth_ipoib"
     IPOIB_LOAD="yes"
 fi
 
@@ -328,10 +339,6 @@ if [ "X${UCM_LOAD}" == "Xyes" ]; then
     POST_LOAD_MODULES="$POST_LOAD_MODULES ib_ucm"
 fi
 
-if [ "X${RDS_LOAD}" == "Xyes" ]; then
-    POST_LOAD_MODULES="$POST_LOAD_MODULES rds rds_rdma rds_tcp"
-fi
-
 if [ "X${RDMA_UCM_LOAD}" == "Xyes" ]; then
     POST_LOAD_MODULES="$POST_LOAD_MODULES rdma_ucm"
 fi
@@ -343,9 +350,9 @@ UNLOAD_MODULES="$UNLOAD_MODULES ib_qib"
 UNLOAD_MODULES="$UNLOAD_MODULES eth_ipoib ib_ipoib mlx4_vnic ib_madeye ib_rds"
 UNLOAD_MODULES="$UNLOAD_MODULES rds_rdma rds_tcp rds ib_ucm kdapl ib_srp_target scsi_target ib_srp ib_iser ib_sdp"
 UNLOAD_MODULES="$UNLOAD_MODULES rdma_ucm rdma_cm iw_cm ib_cm ib_local_sa findex"
-UNLOAD_MODULES="$UNLOAD_MODULES ib_sa ib_uverbs ib_umad ib_mad ib_core ib_addr ib_netlink"
+UNLOAD_MODULES="$UNLOAD_MODULES ib_sa ib_uverbs ib_umad ib_mad ib_core ib_addr ib_netlink rdma_rxe"
 
-STATUS_MODULES="rdma_ucm ib_rds rds rds_rdma rds_tcp ib_srp qlgc_vnic ib_sdp rdma_cm ib_addr ib_local_sa findex ib_ipoib ib_ehca ib_ipath ipath_core mlx4_core mlx4_ib mlx4_en mlx4_vnic mlx5_core mlx5_ib ib_mthca ib_uverbs ib_umad ib_ucm ib_sa ib_cm ib_mad ib_core eth_ipoib iw_nes cxgb3i iw_cxgb3 cxgb3 iw_cxgb4 cxgb4i iw_cxgb4 cxgb4 ib_netlink"
+STATUS_MODULES="rdma_ucm ib_srp qlgc_vnic ib_sdp rdma_cm ib_local_sa findex ib_ipoib ib_ehca ib_ipath ipath_core mlx4_core mlx4_ib mlx4_en mlx4_vnic mlx5_core mlx5_ib ib_mthca ib_uverbs ib_umad ib_ucm ib_cm ib_core iw_nes cxgb3i iw_cxgb3 cxgb3 iw_cxgb4 cxgb4i iw_cxgb4 cxgb4"
 STATUS_MODULES="$STATUS_MODULES ib_qib"
 
 if (modinfo scsi_transport_srp 2>/dev/null | grep depends: | grep -q compat 2>/dev/null) ||
@@ -385,6 +392,46 @@ is_module()
     return $RC
 }
 
+# W/A for containers; load modules using insmod instead of modprobe
+load_module_insmod()
+{
+    local module=$1
+
+    case "$module" in
+        mlx4_core | mlx5_core)
+            if ! is_module ib_core && ! (modinfo mlx4_ib 2>/dev/null | grep -qwi dummy) && ! (modinfo mlx5_ib 2>/dev/null | grep -qwi dummy); then
+                load_module_insmod ib_core
+                if [ $? -ne 0 ]; then
+                    return 1
+                fi
+            fi
+        ;;
+    esac
+
+    local deplist=$(/sbin/modprobe --show-depends $module 2>/dev/null)
+
+    OIFS="${IFS}"
+    NIFS=$'\n'
+    IFS="${NIFS}"
+    for ismodFileLine in $deplist
+    do
+        IFS="${OIFS}"
+        local curr_mod=$(echo $ismodFileLine | awk '{print $2}' 2>/dev/null)
+        curr_mod=$(basename $curr_mod 2>/dev/null | sed -e 's/\.ko.gz$//g' -e 's/\.ko$//g' 2>/dev/null)
+        if is_module $curr_mod; then
+            IFS="${NIFS}"
+            continue
+        fi
+        $ismodFileLine >/dev/null
+        if [ $? -ne 0 ]; then
+            IFS="${OIFS}"
+            return 1
+        fi
+        IFS="${NIFS}"
+    done
+    IFS="${OIFS}"
+}
+
 load_module()
 {
     local module=$1
@@ -397,12 +444,17 @@ load_module()
         return 0
     fi
 
-    if ! ( echo $filename | grep -q "updates/dkms/${module}.ko$" ) && [ $FORCE -eq 0 ]; then
+    if ! ( echo $filename | grep -q "updates/dkms/${module}.ko" ) && [ $FORCE -eq 0 ]; then
         echo_failure "Module $module does not belong to MLNX_OFED, skipping..."
         log_msg "ERROR: Module $module does not belong to MLNX_OFED, skipping..."
         load_module_RC=3
     else
-        ${modprobe} $module > /dev/null 2>&1
+        if [ $IS_IN_CONTAINER -eq 0 ]; then
+            ${modprobe} $module > /dev/null 2>&1
+        else
+            load_module_insmod $module
+            return $?
+        fi
     fi
 }
 
@@ -773,28 +825,61 @@ run_fw_updater()
     fi
 }
 
+# Module paramter values printed by the kernel can be different
+# than what we have in conf files. Covert their values to be similar to
+# kernel's output, so that we can compare them.
+convert_mod_param()
+{
+    local mod=$1; shift
+    local param_name=$1; shift
+    local val=$1; shift
+
+    export param_name
+    local paramdesc=$(modinfo "$mod" | perl -ne '/$ENV{"param_name"}/ && do {$a=1; print; next}; /parm:/ && do {$a=0}; print if $a')
+    unset param_name
+
+    case "$paramdesc" in
+        *\(int\)* | *\(uint\)* | *\(long\)* | *\(ulong\)* | *\(short\)* | *\(ushort\)*)
+        val=$(printf "%d" "$val")
+        ;;
+        *\(bool\)*)
+        case "$val" in
+            0 | n | N)
+            val=N
+            ;;
+            1 | y | Y)
+            val=Y
+            ;;
+        esac
+        ;;
+    esac
+
+    echo $val
+}
+
 start()
 {
     local RC=0
 
     if is_active_vf; then
         echo "There are active virtual functions. Cannot continue..."
+        cleanup
         exit 1
     fi
 
     # W/A: inbox drivers are loaded at boot instead of new ones
-    local loaded_modules=$(/sbin/lsmod 2>/dev/null | grep -E '^be2net|^cxgb|^mlx|^iw_nes|^iw_cxgb|^ib_qib|^ib_mthca|^ocrdma|^ib_ipoib|^ib_srp|^ib_iser|^ib_uverbs|^ib_addr|^ib_mad|^ib_sa|^iw_cm|^ib_core|^ib_ucm|^ib_cm|^rdma_ucm|^ib_umad|^rdma_cm|^compat|^ib_netlink' | awk '{print $1}')
+    local loaded_modules=$(/sbin/lsmod 2>/dev/null | grep -E '^be2net|^cxgb|^mlx|^iw_nes|^iw_cxgb|^ib_qib|^ib_mthca|^ocrdma|^ib_ipoib|^ib_srp|^ib_iser|^ib_uverbs|^ib_addr|^ib_mad|^ib_sa|^iw_cm|^ib_core|^ib_ucm|^ib_cm|^rdma_ucm|^ib_umad|^rdma_cm|^compat|^ib_netlink|^rdma_rxe' | awk '{print $1}')
     for loaded_module in $loaded_modules
     do
         local loaded_srcver=$(/bin/cat /sys/module/$loaded_module/srcversion 2>/dev/null)
         local curr_srcver=$(/sbin/modinfo $loaded_module 2>/dev/null | grep srcversion | awk '{print $NF}')
         if [ "X$loaded_srcver" != "X$curr_srcver" ]; then
             log_msg "start(): Detected loaded old version of module '$loaded_module', calling stop..."
+            stop
             # cleanup bootid files for all interfaces to honor ONBOOT in conf file.
             if [ "X$RUNMODE" == "Xauto" ]; then
                 /bin/rm -f /var/run/mlx_ifc-*.bootid &>/dev/null
             fi
-            stop
             break
         fi
     done
@@ -804,7 +889,7 @@ start()
     OIFS="${IFS}"
     NIFS=$'\n'
     IFS="${NIFS}"
-    for line in $(grep -rE "options.*mlx" /etc/modprobe.d/*.conf 2>/dev/null | grep -v ":#" | cut -d":" -f"2" | uniq)
+    for line in $(grep -rE "options.*mlx" /etc/modprobe.d/*.conf 2>/dev/null | grep -v ":#" | cut -d":" -f"2-" | uniq)
     do
         IFS="${OIFS}"
         local curr_mod=$(echo $line | sed -r -e 's/.*options //g' | awk '{print $NR}')
@@ -816,14 +901,16 @@ start()
             local param=${item%=*}
             local conf_value=${item##*=}
             local real_value=$(cat /sys/module/${curr_mod}/parameters/${param} 2>/dev/null)
+            conf_value=$(convert_mod_param $curr_mod $param $conf_value)
+            real_value=$(convert_mod_param $curr_mod $param $real_value)
             if [ "X$conf_value" != "X$real_value" ]; then
-                log_msg "start(): Detected '$curr_mod' loaded with '$param=$real_value' instead of '$param=$conf_value' as configured in '$file', calling stop..."
+                log_msg "start(): Detected '$curr_mod' loaded with '$param=$real_value' instead of '$param=$conf_value' as configured under /etc/modprobe.d/, calling stop..."
                 goFlag=0
+                stop
                 # cleanup bootid files for all interfaces to honor ONBOOT in conf file.
                 if [ "X$RUNMODE" == "Xauto" ]; then
                     /bin/rm -f /var/run/mlx_ifc-*.bootid &>/dev/null
                 fi
-                stop
                 break
             fi
         done
@@ -922,15 +1009,6 @@ start()
     if [ "X${MLX4_VNIC_LOAD}" == "Xyes" ]; then
         if ! is_module mlx4_core; then
                 load_module mlx4_core
-        fi
-        if ! is_module ib_sa; then
-                load_module ib_sa
-        fi
-        if ! is_module ib_mad; then
-                load_module ib_mad
-        fi
-        if ! is_module ib_mad; then
-                load_module ib_mad
         fi
         if ! is_module ib_core; then
                 load_module ib_core
@@ -1068,6 +1146,7 @@ start()
     else
         echo_failure $"Loading HCA driver and Access Layer: "
         get_debug_info
+        cleanup
         exit 1
     fi
 
@@ -1207,6 +1286,7 @@ start()
             run_fw_updater >/dev/null 2>&1 &
     fi
 
+    /bin/rm -f /var/run/mlx_os_booting &>/dev/null
     return $RC
 }
 
@@ -1222,7 +1302,8 @@ unload_rec()
                         for dep in `/sbin/rmmod $mod 2>&1 | grep "is in use by" | sed -r -e 's/.*use by[:]* //g' | sed -e 's/,/ /g'`
                         do
                                 # if $dep was not loaded by openibd, don't unload it; fail with error.
-                                if ! `echo $UNLOAD_MODULES | grep -q $dep` && [ $FORCE -eq 0 ]; then
+                                # unless force option was given or OS is booting
+                                if ! `echo $UNLOAD_MODULES | grep -q $dep` && [ $FORCE -eq 0 ] && [ "X$RUNMODE" != "Xauto" ]; then
                                         rm_mod $mod
                                 else
                                         unload_rec $dep
@@ -1261,6 +1342,7 @@ rm_mod()
             fi
             # get_debug_info
             [ ! -z $2 ] && echo $2
+            cleanup
             exit 1
         fi
 }
@@ -1309,61 +1391,114 @@ unload()
 stop()
 {
 
-        # Check if Lustre is loaded
-        if ( grep -q "ko2iblnd" /proc/modules ); then
-            echo
-            echo "Please stop Lustre services before unloading the"
-            echo "Infiniband stack."
-            echo
-            exit 1
-        fi
-
-        if is_active_vf; then
-            echo "There are active virtual functions. Cannot continue..."
-            exit 1
-        fi
-
-        # Check if applications which use infiniband are running
-        local apps="opensm osmtest ibbs ibns ibacm"
-        local pid
-
-        for app in $apps
-        do
-            if ( /usr/bin/pgrep $app > /dev/null 2>&1 ); then
+        # Refuse to stop if not running automatically (on boot) and some conditions are met
+        if [ "X$RUNMODE" != "Xauto" ]; then
+            # Check if Lustre is loaded
+            if ( grep -q "ko2iblnd" /proc/modules ); then
                 echo
-                echo "Please stop \"$app\" and all applications running over InfiniBand"
-                echo "Then run \"$0 $ACTION\""
+                echo "Please stop Lustre services before unloading the"
+                echo "Infiniband stack."
                 echo
+                cleanup
                 exit 1
             fi
-        done
 
-        # Lookup for remaining applications using infiniband devices
-        local entries
+            if is_active_vf; then
+                echo "There are active virtual functions. Cannot continue..."
+                cleanup
+                exit 1
+            fi
 
-        if [ -d /dev/infiniband ]; then
-            entries=$(lsof +c 0 -a +d /dev/infiniband 2>/dev/null | grep -v "^COMMAND" | \
-            awk '{print $1 " " $2 " " $3 " " $NF}' | sort -u)
+            # Check if applications which use infiniband are running
+            local apps="opensm osmtest ibbs ibns ibacm"
+            local pid
+
+            for app in $apps
+            do
+                if ( /usr/bin/pgrep $app > /dev/null 2>&1 ); then
+                    echo
+                    echo "Please stop \"$app\" and all applications running over InfiniBand"
+                    echo "Then run \"$0 $ACTION\""
+                    echo
+                    cleanup
+                    exit 1
+                fi
+            done
+
+            # Lookup for remaining applications using infiniband devices
+            local entries
+
+            if [ -d /dev/infiniband ]; then
+                entries=$(lsof +c 0 -a +d /dev/infiniband 2>/dev/null | grep -v "^COMMAND" | \
+                awk '{print $1 " " $2 " " $3 " " $NF}' | sort -u)
+            fi
+
+            if [ -n "$entries" ]; then
+
+                echo "Please stop the following applications still using Infiniband devices:"
+
+                while IFS= read -r entry; do
+                    app=$(echo "$entry" | cut -f1 -d' ')
+                    pid=$(echo "$entry" | cut -f2 -d' ')
+                    owner=$(echo "$entry" | cut -f3 -d' ')
+                    device=$(echo "$entry" | cut -f4 -d' ' | awk -F/ '{print $NF}')
+
+                    echo "$app($pid) user $owner is using device $device"
+                done <<< "$entries"
+
+                echo
+                echo "Then run \"$0 $ACTION\""
+
+                cleanup
+                exit 1
+            fi
+
+            # Check if open-iscsi is running and if there are open iSER sessions
+            if [ $(pidof iscsid | wc -w) -gt 0 ]; then
+                    iser_session_cnt=$(iscsiadm -m session 2>&1 | grep -c "^iser")
+
+                    if [ $iser_session_cnt -gt 0 ]; then
+                            echo
+                            # If it's RH4, open-iscsi must be stopped before openibd
+                            if [[ -f /etc/redhat-release && $(grep -c "Red Hat Enterprise Linux AS release 4" /etc/redhat-release) -eq 1 ]]; then
+                                echo "Please stop open-iscsi: /etc/init.d/iscsi stop"
+                            else
+                                echo "Please logout from all open-iscsi over iSER sessions"
+                            fi
+                            echo "Then run \"$0 $ACTION\""
+                            echo
+                            cleanup
+                            exit 1
+                    fi
+            fi
+
+            # Check for any multipath devices running over SRP devices
+            if is_module ib_srp; then
+                for f in `/bin/ls /sys/class/scsi_host`; do
+                    if [ -f /sys/class/scsi_host/$f/local_ib_port ]; then
+                        for i in `/bin/ls /sys/class/scsi_host/$f/device/target*/*/block* | awk -F: '{print $NF}'`
+                        do
+                            holders=`ls /sys/block/$i/holders 2> /dev/null`
+                            if [ -n "$holders" ]; then
+                                echo "Please flush multipath devices running over SRP devices"
+                                echo
+                                cleanup
+                                exit 1
+                            fi
+                        done
+                    fi
+                done
+            fi
+
+            if is_module ib_isert; then
+                echo "Cannot unload driver while ib_isert is loaded..."
+                echo "Please close all isert sessions and unload ib_isert module first."
+                echo
+                cleanup
+                exit 1
+            fi
         fi
-
-        if [ -n "$entries" ]; then
-
-            echo "Please stop the following applications still using Infiniband devices:"
-
-            while IFS= read -r entry; do
-                app=$(echo "$entry" | cut -f1 -d' ')
-                pid=$(echo "$entry" | cut -f2 -d' ')
-                owner=$(echo "$entry" | cut -f3 -d' ')
-                device=$(echo "$entry" | cut -f4 -d' ' | awk -F/ '{print $NF}')
-
-                echo "$app($pid) user $owner is using device $device"
-            done <<< "$entries"
-
-            echo
-            echo "Then run \"$0 $ACTION\""
-
-            exit 1
-        fi
+        # end of "X$RUNMODE" != "Xauto"
 
         # W/A for http://bugs.openfabrics.org/bugzilla/show_bug.cgi?id=2259
         for bond in $(cat /sys/class/net/bonding_masters 2> /dev/null) ; do
@@ -1375,48 +1510,6 @@ stop()
                         echo -$bond > /sys/class/net/bonding_masters
                 fi
         done
-
-        # Check if open-iscsi is running and if there are open iSER sessions
-        if [ $(pidof iscsid | wc -w) -gt 0 ]; then
-                iser_session_cnt=$(iscsiadm -m session 2>&1 | grep -c "^iser")
-
-                if [ $iser_session_cnt -gt 0 ]; then
-                        echo
-                        # If it's RH4, open-iscsi must be stopped before openibd
-                        if [[ -f /etc/redhat-release && $(grep -c "Red Hat Enterprise Linux AS release 4" /etc/redhat-release) -eq 1 ]]; then
-                            echo "Please stop open-iscsi: /etc/init.d/iscsi stop"
-                        else
-                            echo "Please logout from all open-iscsi over iSER sessions"
-                        fi
-                        echo "Then run \"$0 $ACTION\""
-                        echo
-                        exit 1
-                fi
-        fi
-
-        # Check for any multipath devices running over SRP devices
-        if is_module ib_srp; then
-            for f in `/bin/ls /sys/class/scsi_host`; do
-                if [ -f /sys/class/scsi_host/$f/local_ib_port ]; then
-                    for i in `/bin/ls /sys/class/scsi_host/$f/device/target*/*/block* | awk -F: '{print $NF}'`
-                    do
-                        holders=`ls /sys/block/$i/holders 2> /dev/null`
-                        if [ -n "$holders" ]; then
-                            echo "Please flush multipath devices running over SRP devices"
-                            echo
-                            exit 1
-                        fi
-                    done
-                fi
-            done
-        fi
-
-        if is_module ib_isert; then
-            echo "Cannot unload driver while ib_isert is loaded..."
-            echo "Please close all isert sessions and unload ib_isert module first."
-            echo
-            exit 1
-        fi
 
         # W/A for ib_ipoib getting loaded in the middle of openibd stop
         if (grep -q "^alias netdev-ib" /etc/modprobe.d/ib_ipoib.conf); then
@@ -1619,7 +1712,6 @@ status()
 
 
 RC=0
-start_time=$(date +%s | tr -d '[:space:]')
 
 trap_handler()
 {
@@ -1643,26 +1735,26 @@ fi
 
 case $ACTION in
         start)
-                [ ! -z $OPENIBD_PRE_START ] && [ -f $OPENIBD_PRE_START ] && . $OPENIBD_PRE_START
+                [ ! -z $OPENIBD_PRE_START ] && [ -x $OPENIBD_PRE_START ] && $OPENIBD_PRE_START
                 start
                 RC=$?
-                [ ! -z $OPENIBD_POST_START ] && [ -f $OPENIBD_POST_START ] && . $OPENIBD_POST_START
+                [ ! -z $OPENIBD_POST_START ] && [ -x $OPENIBD_POST_START ] && $OPENIBD_POST_START
                 ;;
         stop)
-                [ ! -z $OPENIBD_PRE_STOP ] && [ -f $OPENIBD_PRE_STOP ] && . $OPENIBD_PRE_STOP
+                [ ! -z $OPENIBD_PRE_STOP ] && [ -x $OPENIBD_PRE_STOP ] && $OPENIBD_PRE_STOP
                 stop
                 RC=$?
-                [ ! -z $OPENIBD_POST_STOP ] && [ -f $OPENIBD_POST_STOP ] && . $OPENIBD_POST_STOP
+                [ ! -z $OPENIBD_POST_STOP ] && [ -x $OPENIBD_POST_STOP ] && $OPENIBD_POST_STOP
                 ;;
         restart)
-                [ ! -z $OPENIBD_PRE_STOP ] && [ -f $OPENIBD_PRE_STOP ] && . $OPENIBD_PRE_STOP
+                [ ! -z $OPENIBD_PRE_STOP ] && [ -x $OPENIBD_PRE_STOP ] && $OPENIBD_PRE_STOP
                 stop
                 RC=$?
-                [ ! -z $OPENIBD_POST_STOP ] && [ -f $OPENIBD_POST_STOP ] && . $OPENIBD_POST_STOP
-                [ ! -z $OPENIBD_PRE_START ] && [ -f $OPENIBD_PRE_START ] && . $OPENIBD_PRE_START
+                [ ! -z $OPENIBD_POST_STOP ] && [ -x $OPENIBD_POST_STOP ] && $OPENIBD_POST_STOP
+                [ ! -z $OPENIBD_PRE_START ] && [ -x $OPENIBD_PRE_START ] && $OPENIBD_PRE_START
                 start
                 RC=$(($RC + $?))
-                [ ! -z $OPENIBD_POST_START ] && [ -f $OPENIBD_POST_START ] && . $OPENIBD_POST_START
+                [ ! -z $OPENIBD_POST_START ] && [ -x $OPENIBD_POST_START ] && $OPENIBD_POST_START
                 ;;
         status)
                 status
@@ -1672,6 +1764,7 @@ case $ACTION in
                 echo
                 echo "Usage: `basename $0` {start|force-start|stop|force-stop|restart|force-restart|status}"
                 echo
+                cleanup
                 exit 1
                 ;;
 esac
@@ -1680,4 +1773,5 @@ if [ $load_module_RC -ne 0 ] && [ $RC -eq 0 ]; then
     RC=$load_module_RC
 fi
 
+cleanup
 exit $RC

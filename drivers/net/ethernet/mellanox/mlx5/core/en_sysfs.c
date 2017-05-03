@@ -32,8 +32,10 @@
 
 #include <linux/device.h>
 #include <linux/netdevice.h>
+#include <linux/dcbnl.h>
 #include "en.h"
 #include "en_ecn.h"
+#include "eswitch.h"
 
 #define MLX5E_SKPRIOS_NUM   16
 #define MLX5E_GBPS_TO_KBPS 1000000
@@ -48,7 +50,7 @@ static ssize_t mlx5e_show_tc_num(struct device *device,
 	struct net_device *netdev = priv->netdev;
 	int len = 0;
 
-	len = sprintf(buf + len,  "%d\n", netdev_get_num_tc(netdev));
+	len += sprintf(buf + len,  "%d\n", netdev_get_num_tc(netdev));
 
 	return len;
 }
@@ -67,7 +69,7 @@ static ssize_t mlx5e_store_tc_num(struct device *device,
 	if (err != 1)
 		return -EINVAL;
 
-	if (tc_num != MLX5E_MAX_NUM_PRIO && tc_num != MLX5E_MIN_NUM_PRIO)
+	if (tc_num != MLX5E_MAX_NUM_TC && tc_num != MLX5E_MIN_NUM_TC)
 		return -EINVAL;
 
 	rtnl_lock();
@@ -82,8 +84,8 @@ static  ssize_t mlx5e_show_maxrate(struct device *device,
 				   char *buf)
 {
 	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
-	u8 max_bw_value[MLX5_MAX_NUM_TC];
-	u8 max_bw_unit[MLX5_MAX_NUM_TC];
+	u8 max_bw_value[MLX5E_MAX_NUM_TC];
+	u8 max_bw_unit[MLX5E_MAX_NUM_TC];
 	int len = 0;
 	int ret;
 	int i;
@@ -115,8 +117,8 @@ static ssize_t mlx5e_store_maxrate(struct device *device,
 	 __u64 upper_limit_mbps = roundup(255 * MLX5E_100MBPS_TO_KBPS,
 						MLX5E_GBPS_TO_KBPS);
 	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
-	u8 max_bw_value[MLX5_MAX_NUM_TC];
-	u8 max_bw_unit[MLX5_MAX_NUM_TC];
+	u8 max_bw_value[MLX5E_MAX_NUM_TC];
+	u8 max_bw_unit[MLX5E_MAX_NUM_TC];
 	u64 tc_maxrate[IEEE_8021QAZ_MAX_TCS];
 	int i = 0;
 	char delimiter;
@@ -217,6 +219,7 @@ static ssize_t mlx5e_store_lro_timeout(struct device *device,
 	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
 	struct net_device *netdev = priv->netdev;
 	struct mlx5e_params new_params;
+	bool was_opened;
 	u32 lro_timeout;
 	int err = 0;
 
@@ -227,10 +230,18 @@ static ssize_t mlx5e_store_lro_timeout(struct device *device,
 
 	rtnl_lock();
 	mutex_lock(&priv->state_lock);
+
+	was_opened = test_bit(MLX5E_STATE_OPENED, &priv->state);
+	if (was_opened)
+		mlx5e_close_locked(priv->netdev);
+
 	new_params = priv->params;
 	new_params.lro_timeout = mlx5e_choose_lro_timeout(priv->mdev,
 							  lro_timeout);
-	err = mlx5e_update_priv_params(priv, &new_params);
+
+	if (was_opened)
+		err = mlx5e_open_locked(priv->netdev);
+
 	mutex_unlock(&priv->state_lock);
 	rtnl_unlock();
 
@@ -480,6 +491,52 @@ static void mlx5e_fill_attributes(struct mlx5e_priv *priv,
 	}
 }
 
+static ssize_t mlx5e_show_vf_roce(struct device *device,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5_core_dev *mdev = priv->mdev;
+	struct mlx5_eswitch *esw = mdev->priv.eswitch;
+	int len = 0;
+	bool mode;
+	int err = 0;
+	int i;
+
+	for (i = 1; i < esw->total_vports; i++) {
+		err = mlx5_eswitch_vport_get_other_hca_cap_roce(esw, i, &mode);
+		if (err)
+			break;
+		len += sprintf(buf + len, "vf_num %d: %d\n", i - 1, mode);
+	}
+
+	if (err)
+		return 0;
+
+	return len;
+}
+
+static ssize_t mlx5e_store_vf_roce(struct device *device,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5_core_dev *mdev = priv->mdev;
+	struct mlx5_eswitch *esw = mdev->priv.eswitch;
+	int vf_num, err;
+	int mode;
+
+	err = sscanf(buf, "%d %d", &vf_num, &mode);
+	if (err != 2)
+		return -EINVAL;
+
+	err = mlx5_eswitch_vport_modify_other_hca_cap_roce(esw, vf_num + 1, (bool)mode);
+	if (err)
+		return err;
+
+	return count;
+}
+
 static void mlx5e_remove_attributes(struct mlx5e_priv *priv,
 				    int proto)
 {
@@ -508,6 +565,20 @@ static void mlx5e_remove_attributes(struct mlx5e_priv *priv,
 		break;
 	}
 }
+
+static DEVICE_ATTR(vf_roce, S_IRUGO | S_IWUSR,
+		   mlx5e_show_vf_roce,
+		   mlx5e_store_vf_roce);
+
+static struct attribute *mlx5e_settings_attrs[] = {
+	&dev_attr_vf_roce.attr,
+	NULL,
+};
+
+static struct attribute_group settings_group = {
+	.name = "settings",
+	.attrs = mlx5e_settings_attrs,
+};
 
 static struct attribute *mlx5e_debug_group_attrs[] = {
 	&dev_attr_lro_timeout.attr,
@@ -545,6 +616,10 @@ int mlx5e_sysfs_create(struct net_device *dev)
 		mlx5e_fill_attributes(priv, i);
 	}
 
+	err = sysfs_create_group(&dev->dev.kobj, &settings_group);
+	if (err)
+		return err;
+
 	err = sysfs_create_group(&dev->dev.kobj, &qos_group);
 	if (err)
 		return err;
@@ -560,6 +635,7 @@ void mlx5e_sysfs_remove(struct net_device *dev)
 
 	sysfs_remove_group(&dev->dev.kobj, &qos_group);
 	sysfs_remove_group(&dev->dev.kobj, &debug_group);
+	sysfs_remove_group(&dev->dev.kobj, &settings_group);
 
 	for (i = 1; i < MLX5E_CONG_PROTOCOL_NUM; i++) {
 		mlx5e_remove_attributes(priv, i);

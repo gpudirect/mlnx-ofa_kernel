@@ -50,14 +50,6 @@
 
 #define random32() prandom_u32()
 
-#ifndef HAVE_NETIF_IS_BOND_MASTER
-#define netif_is_bond_master LINUX_BACKPORT(netif_is_bond_master)
-static inline bool netif_is_bond_master(struct net_device *dev)
-{
-	return dev->flags & IFF_MASTER && dev->priv_flags & IFF_BONDING;
-}
-#endif
-
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)) */
 
 #endif /* LINUX_3_10_COMPAT_H */

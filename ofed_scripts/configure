@@ -65,20 +65,14 @@ Usage:  `basename $0` [options]
     --with-ipoib_debug_data-mod    make CONFIG_INFINIBAND_IPOIB_DEBUG_DATA=y [no]
     --without-ipoib_debug_data-mod    [yes]
 
-    --with-e_ipoib-mod    make CONFIG_E_IPOIB=m [no]
-    --without-e_ipoib-mod    [yes]
-
-    --with-sdp-mod    make CONFIG_INFINIBAND_SDP=m [no]
-    --without-sdp-mod    [yes]
-
-    --with-sdp_debug-mod    make CONFIG_INFINIBAND_SDP_DEBUG=y [yes]
-    --without-sdp_debug-mod   [no]
-
     --with-sdp_debug_data-mod    make CONFIG_INFINIBAND_SDP_DEBUG_DATA=y [no]
     --without-sdp_debug_data-mod    [yes]
 
     --with-srp-mod    make CONFIG_INFINIBAND_SRP=m [no]
     --without-srp-mod    [yes]
+
+    --with-rxe-mod    make CONFIG_RDMA_RXE=m [no]
+    --without-rxe-mod    [yes]
 
     --with-user_mad-mod    make CONFIG_INFINIBAND_USER_MAD=m [no]
     --without-user_mad-mod    [yes]
@@ -88,12 +82,6 @@ Usage:  `basename $0` [options]
 
     --with-addr_trans-mod    make CONFIG_INFINIBAND_ADDR_TRANS=y [no]
     --without-addr_trans-mod    [yes]
-
-    --with-mthca-mod    make CONFIG_INFINIBAND_MTHCA=m [no]
-    --without-mthca-mod    [yes]
-
-    --with-mthca_debug-mod    make CONFIG_INFINIBAND_MTHCA_DEBUG=y [yes]
-    --without-mthca_debug-mod    [no]
 
     --with-mlx4-mod         make CONFIG_MLX4_CORE=y CONFIG_MLX4_INFINIBAND=y [no]
     --without-mlx4-mod      [yes]
@@ -110,14 +98,8 @@ Usage:  `basename $0` [options]
     --with-mlx4_en-mod         make CONFIG_MLX4_EN=y [no]
     --without-mlx4_en-mod      [yes]
 
-    --with-mlx4_vnic-mod         make CONFIG_MLX4_VNIC=y [no]
-    --without-mlx4_vnic-mod      [yes]
-
     --with-mlx4_en-perf-stat     make CONFIG_MLX4_EN_PERF_STAT=y [no]
     --without-mlx4_en-perf-stat  [yes]
-
-    --with-mlx4_vnic_debug-mod    make CONFIG_MLX4_VNIC_DEBUG=y [yes]
-    --without-mlx4_vnic_debug-mod    [no]
 
     --with-mlx4_inf-mod         make CONFIG_MLX4_INFINIBAND=y [no]
     --without-mlx4_inf-mod      [yes]
@@ -134,65 +116,14 @@ Usage:  `basename $0` [options]
     --with-mlx5_debug-mod         make CONFIG_MLX5_DEBUG=y [yes]
     --without-mlx5_debug-mod      [no]
 
-    --with-ipath_inf-mod    make CONFIG_INFINIBAND_IPATH=m [no]
-    --without-ipath_inf-mod    [yes]
-
-    --with-9pnet_rdma-mod    make CONFIG_NET_9P_RDMA=m [no]
-    --without-9pnet_rdma-mod    [yes]
-
-    --with-9p-mod    make CONFIG_9P_FS=m [no]
-    --without-9p-mod    [yes]
-
-    --with-qib-mod    make CONFIG_INFINIBAND_QIB=m [no]
-    --without-qib-mod    [yes]
-
     --with-iser-mod    make CONFIG_INFINIBAND_ISER=m [no]
     --without-iser-mod    [yes]
 
     --with-isert-mod    make CONFIG_INFINIBAND_ISERT=m [no]
     --without-isert-mod    [yes]
 
-    --with-ehca-mod    make CONFIG_INFINIBAND_EHCA=m [no]
-    --without-ehca-mod    [yes]
-
-    --with-rds-mod    make CONFIG_RDS=m [no]
-    --without-rds-mod   [no]
-
-    --with-rds_debug-mod    make CONFIG_RDS_DEBUG=y [no]
-    --without-rds_debug-mod    [yes]
-
     --with-madeye-mod   make CONFIG_INFINIBAND_MADEYE=m [no]
     --without-madeye-mod    [yes]
-
-    --with-qlgc_vnic-mod    make CONFIG_INFINIBAND_QLGC_VNIC=m [no]
-    --without-qlgc_vnic-mod    [yes]
-
-    --with-qlgc_vnic_stats-mod    make CONFIG_INFINIBAND_QLGC_VNIC_STATS=y [no]
-    --without-qlgc_vnic_stats-mod    [yes]
-
-    --with-cxgb3-mod    make CONFIG_INFINIBAND_CXGB3=m [no]
-    --without-cxgb3-mod    [yes]
-
-    --with-cxgb3i-mod    make CONFIG_SCSI_CXGB3_ISCSI=m [no]
-    --without-cxgb3i-mod    [yes]
-
-    --with-cxgb3_debug-mod    make CONFIG_INFINIBAND_CXGB3_DEBUG=y [no]
-    --without-cxgb3_debug-mod    [yes]
-
-    --with-cxgb4-mod    make CONFIG_INFINIBAND_CXGB4=m [no]
-    --without-cxgb4-mod    [yes]
-
-    --with-cxgb4i-mod    make CONFIG_SCSI_CXGB4_ISCSI=m [no]
-    --without-cxgb4i-mod    [yes]
-
-    --with-nes-mod    make CONFIG_INFINIBAND_NES=m [no]
-    --without-nes-mod    [yes]
-
-    --with-ocrdma-mod    make CONFIG_INFINIBAND_OCRDMA=m [no]
-    --without-ocrdma-mod    [yes]
-
-    --with-nes_debug-mod    make CONFIG_INFINIBAND_NES_DEBUG=y [no]
-    --without-nes_debug-mod    [yes]
 
     --with-memtrack  enable momory tracking [no]
     --without-memtrack disable memory tracking [yes]
@@ -202,9 +133,6 @@ Usage:  `basename $0` [options]
 
     --with-nfsrdma-mod    make CONFIG_SUNRPC_XPRT_RDMA=m [no]
     --without-nfsrdma-mod    [yes]
-
-    --with-amso1100-mod    make CONFIG_INFINIBAND_AMSO1100=m [no]
-    --without-amso1100-mod    [yes]
 
     --with-scsi_transport_srp-mod    make CONFIG_SCSI_SRP_ATTRS=m [no]
     --without-scsi_transport_srp-mod    [yes]
@@ -218,10 +146,10 @@ Usage:  `basename $0` [options]
     --with-pa-mr             make CONFIG_INFINIBAND_PA_MR=y [no]
     --without-pa-mr             [yes]
 
-    --with-nvmf_host-mod    make CONFIG_NVMF_HOST=m [no]
+    --with-nvmf_host-mod    make CONFIG_NVME_HOST=m [no]
     --without-nvmf_host-mod    [yes]
 
-    --with-nvmf_target-mod    make CONFIG_NVMF_TARGET=m [no]
+    --with-nvmf_target-mod    make CONFIG_NVME_TARGET=m [no]
     --without-nvmf_target-mod    [yes]
 
     --help - print out options
@@ -298,23 +226,27 @@ FORCE_AUTOGEN=${FORCE_AUTOGEN:-0}
 CONFIG_MEMTRACK=${CONFIG_MEMTRACK:-''}
 CONFIG_DEBUG_INFO=${CONFIG_DEBUG_INFO:-'y'}
 CONFIG_INFINIBAND=${CONFIG_INFINIBAND:-''}
+CONFIG_INFINIBAND_CORE_DUMMY=${CONFIG_INFINIBAND_CORE_DUMMY:-''}
 CONFIG_INFINIBAND_IPOIB=${CONFIG_INFINIBAND_IPOIB:-''}
 CONFIG_INFINIBAND_IPOIB_CM=${CONFIG_INFINIBAND_IPOIB_CM:-''}
-CONFIG_INFINIBAND_SDP=${CONFIG_INFINIBAND_SDP:-''}
-CONFIG_INFINIBAND_SDP_DUMMY=${CONFIG_INFINIBAND_SDP_DUMMY:-''}
 CONFIG_INFINIBAND_SRP=${CONFIG_INFINIBAND_SRP:-''}
 CONFIG_INFINIBAND_SRP_DUMMY=${CONFIG_INFINIBAND_SRP_DUMMY:-''}
+
+CONFIG_RDMA_RXE=${CONFIG_RDMA_RXE:-''}
+CONFIG_RDMA_RXE_DUMMY=${CONFIG_RDMA_RXE_DUMMY:-''}
 
 CONFIG_INFINIBAND_USER_MAD=${CONFIG_INFINIBAND_USER_MAD:-''}
 CONFIG_INFINIBAND_USER_ACCESS=${CONFIG_INFINIBAND_USER_ACCESS:-''}
 CONFIG_INFINIBAND_ADDR_TRANS=${CONFIG_INFINIBAND_ADDR_TRANS:-''}
+CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS=''
 CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM:-''}
-CONFIG_INFINIBAND_MTHCA=${CONFIG_INFINIBAND_MTHCA:-''}
 
 CONFIG_MLX4_CORE=${CONFIG_MLX4_CORE:-''}
 CONFIG_MLX5_CORE=${CONFIG_MLX5_CORE:-''}
+CONFIG_MLX5_CORE_EN=${CONFIG_MLX5_CORE_EN:-''}
+CONFIG_MLX5_CORE_EN_DCB=${CONFIG_MLX5_CORE_EN_DCB:-''}
+CONFIG_MLX5_INNER_RSS=${CONFIG_MLX5_INNER_RSS:-''}
 CONFIG_MLX4_EN=${CONFIG_MLX4_EN:-''}
-CONFIG_MLX4_VNIC=${CONFIG_MLX4_VNIC:-''}
 CONFIG_MLX4_INFINIBAND=${CONFIG_MLX4_INFINIBAND:-''}
 CONFIG_MLX5_INFINIBAND=${CONFIG_MLX5_INFINIBAND:-''}
 CONFIG_MLX4_DEBUG=${CONFIG_MLX4_DEBUG:-''}
@@ -331,48 +263,26 @@ CONFIG_INFINIBAND_ISERT=${CONFIG_INFINIBAND_ISERT:-''}
 CONFIG_INFINIBAND_ISERT_DUMMY=${CONFIG_INFINIBAND_ISERT_DUMMY:-''}
 CONFIG_SCSI_ISCSI_ATTRS=${CONFIG_SCSI_ISCSI_ATTRS:-''}
 CONFIG_ISCSI_TCP=${CONFIG_ISCSI_TCP:-''}
-CONFIG_INFINIBAND_EHCA=${CONFIG_INFINIBAND_EHCA:-''}
-CONFIG_INFINIBAND_EHCA_SCALING=${CONFIG_INFINIBAND_EHCA_SCALING:-''}
-CONFIG_E_IPOIB=${CONFIG_E_IPOIB:-''}
-CONFIG_RDS=${CONFIG_RDS:-''}
-CONFIG_RDS_DUMMY=${CONFIG_RDS_DUMMY:-''}
-CONFIG_RDS_RDMA=${CONFIG_RDS_RDMA:-''}
-CONFIG_RDS_TCP=${CONFIG_RDS_TCP:-''}
-CONFIG_RDS_DEBUG=${CONFIG_RDS_DEBUG:-''}
 CONFIG_INFINIBAND_MADEYE=${CONFIG_INFINIBAND_MADEYE:-''}
-CONFIG_INFINIBAND_QLGC_VNIC=${CONFIG_INFINIBAND_QLGC_VNIC:-''}
-CONFIG_INFINIBAND_CXGB3=${CONFIG_INFINIBAND_CXGB3:-''}
-CONFIG_CHELSIO_T3=${CONFIG_CHELSIO_T3:-''}
-CONFIG_INFINIBAND_CXGB4=${CONFIG_INFINIBAND_CXGB4:-''}
-CONFIG_CHELSIO_T4=${CONFIG_CHELSIO_T4:-''}
-CONFIG_SCSI_CXGB3_ISCSI=${CONFIG_SCSI_CXGB3_ISCSI:-''}
-CONFIG_SCSI_CXGB4_ISCSI=${CONFIG_SCSI_CXGB4_ISCSI:-''}
-CONFIG_NVMF_HOST=${CONFIG_NVMF_HOST:-''}
-CONFIG_NVMF_HOST_DUMMY=${CONFIG_NVMF_HOST_DUMMY:-''}
-CONFIG_NVMF_TARGET=${CONFIG_NVMF_TARGET:-''}
-CONFIG_NVMF_TARGET_DUMMY=${CONFIG_NVMF_TARGET_DUMMY:-''}
-CONFIG_INFINIBAND_NES=${CONFIG_INFINIBAND_NES:-''}
-CONFIG_INFINIBAND_OCRDMA=${CONFIG_INFINIBAND_OCRDMA:-''}
+CONFIG_NVME_CORE=${CONFIG_NVME_CORE:-''}
+CONFIG_BLK_DEV_NVME=${CONFIG_BLK_DEV_NVME:-''}
+CONFIG_NVME_FABRICS=${CONFIG_NVME_FABRICS:-''}
+CONFIG_NVME_RDMA=${CONFIG_NVME_RDMA:-''}
+CONFIG_BLK_DEV_NVME_SCSI=${CONFIG_BLK_DEV_NVME_SCSI:-''}
+CONFIG_NVME_HOST_DUMMY=${CONFIG_NVME_HOST_DUMMY:-''}
+CONFIG_NVME_TARGET=${CONFIG_NVME_TARGET:-''}
+CONFIG_NVME_TARGET_LOOP=${CONFIG_NVME_TARGET_LOOP:-''}
+CONFIG_NVME_TARGET_RDMA=${CONFIG_NVME_TARGET_RDMA:-''}
+CONFIG_NVME_TARGET_DUMMY=${CONFIG_NVME_TARGET_DUMMY:-''}
 
 CONFIG_SUNRPC_XPRT_RDMA=${CONFIG_SUNRPC_XPRT_RDMA:-''}
 CONFIG_SUNRPC_XPRT_RDMA_DUMMY=${CONFIG_SUNRPC_XPRT_RDMA_DUMMY:-''}
-CONFIG_SUNRPC_XPRT_RDMA_CLIENT=${CONFIG_SUNRPC_XPRT_RDMA_CLIENT:-''}
-CONFIG_SUNRPC_XPRT_RDMA_SERVER=${CONFIG_SUNRPC_XPRT_RDMA_SERVER:-''}
 CONFIG_SCSI_SRP_ATTRS=${CONFIG_SCSI_SRP_ATTRS:-''}
 CONFIG_INFINIBAND_IPOIB_DEBUG_DATA=${CONFIG_INFINIBAND_IPOIB_DEBUG_DATA:-''}
 CONFIG_INFINIBAND_SDP_SEND_ZCOPY=${CONFIG_INFINIBAND_SDP_SEND_ZCOPY:-''}
 CONFIG_INFINIBAND_SDP_RECV_ZCOPY=${CONFIG_INFINIBAND_SDP_RECV_ZCOPY:-''}
 CONFIG_INFINIBAND_SDP_DEBUG=${CONFIG_INFINIBAND_SDP_DEBUG:-''}
 CONFIG_INFINIBAND_SDP_DEBUG_DATA=${CONFIG_INFINIBAND_SDP_DEBUG_DATA:-''}
-CONFIG_INFINIBAND_IPATH=${CONFIG_INFINIBAND_IPATH:-''}
-CONFIG_NET_9P_RDMA=${CONFIG_NET_9P_RDMA:-''}
-CONFIG_9P_FS=${CONFIG_9P_FS:-''}
-CONFIG_INFINIBAND_QIB=${CONFIG_INFINIBAND_QIB:-''}
-CONFIG_INFINIBAND_MTHCA_DEBUG=${CONFIG_INFINIBAND_MTHCA_DEBUG:-''}
-CONFIG_INFINIBAND_QLGC_VNIC_STATS=${CONFIG_INFINIBAND_QLGC_VNIC_STATS:-''}
-CONFIG_INFINIBAND_CXGB3_DEBUG=${CONFIG_INFINIBAND_CXGB3_DEBUG:-''}
-CONFIG_INFINIBAND_NES_DEBUG=${CONFIG_INFINIBAND_NES_DEBUG:-''}
-CONFIG_INFINIBAND_AMSO1100=${CONFIG_INFINIBAND_AMSO1100:-''}
 CONFIG_MLX4_EN_DCB=''
 CONFIG_MLX4_IB_DEBUG_FS=''
 CONFIG_INFINIBAND_ON_DEMAND_PAGING=${CONFIG_INFINIBAND_ON_DEMAND_PAGING:-'y'}
@@ -555,21 +465,6 @@ main()
                         --without-ipoib_debug_data-mod)
                             CONFIG_INFINIBAND_IPOIB_DEBUG_DATA=
                         ;;
-                        --with-e_ipoib-mod)
-                            CONFIG_E_IPOIB="m"
-                            add_conf "# Load E_IPoIB" "E_IPOIB_LOAD=no"
-                        ;;
-                        --without-e_ipoib-mod)
-                            CONFIG_E_IPOIB=
-                        ;;
-                       --with-sdp-mod)
-                            CONFIG_INFINIBAND_SDP="m"
-                            CONFIG_INFINIBAND_SDP_DEBUG="y"
-                            add_conf "# Load SDP module" "SDP_LOAD=no"
-                        ;;
-                        --without-sdp-mod)
-                            CONFIG_INFINIBAND_SDP=
-                        ;;
                         --with-sdp-zcopy)
                             CONFIG_INFINIBAND_SDP_SEND_ZCOPY="y"
                             CONFIG_INFINIBAND_SDP_RECV_ZCOPY="y"
@@ -598,6 +493,12 @@ main()
                         --without-srp-mod)
                             CONFIG_INFINIBAND_SRP=
                             CONFIG_SCSI_SRP_ATTRS=
+                        ;;
+                        --with-rxe-mod)
+                            CONFIG_RDMA_RXE="m"
+                        ;;
+                        --without-rxe-mod)
+                            CONFIG_RDMA_RXE=
                         ;;
                         --with-user_mad-mod)
                             CONFIG_INFINIBAND_USER_MAD="m"
@@ -630,20 +531,6 @@ main()
                         --without-addr_trans-mod)
                             CONFIG_INFINIBAND_ADDR_TRANS=
                         ;;
-                        --with-mthca-mod)
-                            CONFIG_INFINIBAND_MTHCA="m"
-                            CONFIG_INFINIBAND_MTHCA_DEBUG="y"
-                            add_conf "# Load MTHCA" "MTHCA_LOAD=no"
-                        ;;
-                        --without-mthca-mod)
-                            CONFIG_INFINIBAND_MTHCA=
-                        ;;
-                        --with-mthca_debug-mod)
-                            CONFIG_INFINIBAND_MTHCA_DEBUG="y"
-                        ;;
-                        --without-mthca_debug-mod)
-                            CONFIG_INFINIBAND_MTHCA_DEBUG=
-                        ;;
                         --with-mlx4-mod)
                             CONFIG_MLX4_CORE="m"
                             CONFIG_MLX4_INFINIBAND="m"
@@ -653,6 +540,9 @@ main()
                         ;;
                         --with-mlx5-mod)
                             CONFIG_MLX5_CORE="m"
+                            CONFIG_MLX5_CORE_EN="y"
+                            CONFIG_MLX5_CORE_EN_DCB="y"
+                            CONFIG_MLX5_INNER_RSS="y"
                             CONFIG_MLX5_INFINIBAND="m"
                             CONFIG_BACKPORT_LRO="m"
                             CONFIG_MLX5_DEBUG="y"
@@ -666,9 +556,15 @@ main()
                         ;;
                         --with-mlx5_core-mod)
                             CONFIG_MLX5_CORE="m"
+                            CONFIG_MLX5_CORE_EN="y"
+                            CONFIG_MLX5_CORE_EN_DCB="y"
+                            CONFIG_MLX5_INNER_RSS="y"
                         ;;
                         --without-mlx5_core-mod)
                             CONFIG_MLX5_CORE=
+                            CONFIG_MLX5_CORE_EN=
+                            CONFIG_MLX5_CORE_EN_DCB=
+                            CONFIG_MLX5_INNER_RSS=
                         ;;
                         --without-mlx4-mod)
                             CONFIG_MLX4_CORE=
@@ -677,6 +573,9 @@ main()
                         ;;
                         --without-mlx5-mod)
                             CONFIG_MLX5_CORE=
+                            CONFIG_MLX5_CORE_EN=
+                            CONFIG_MLX5_CORE_EN_DCB=
+                            CONFIG_MLX5_INNER_RSS=
                             CONFIG_MLX5_INFINIBAND=
                             CONFIG_MLX5_DEBUG=
                         ;;
@@ -686,18 +585,9 @@ main()
                             add_conf "# Load MLX4_EN module" "MLX4_EN_LOAD=yes"
                             CONFIG_MLX4_EN_PERF_STAT=
                         ;;
-                        --with-mlx4_vnic-mod)
-                            CONFIG_MLX4_CORE="m"
-                            CONFIG_MLX4_VNIC="m"
-                            CONFIG_BACKPORT_LRO="m"
-                            add_conf "# Load MLX4_VNIC module" "MLX4_VNIC_LOAD=no"
-                        ;;
                         --without-mlx4_en-mod)
                             CONFIG_MLX4_EN=
                             CONFIG_MLX4_EN_PERF_STAT=
-                        ;;
-                        --without-mlx4_vnic-mod)
-                            CONFIG_MLX4_VNIC=
                         ;;
 			--with-mlx4_en-perf-stat)
 				CONFIG_MLX4_EN_PERF_STAT="y"
@@ -705,12 +595,6 @@ main()
 			--without-mlx4_en-perf-stat)
 				CONFIG_MLX4_EN_PERF_STAT=
 			;;
-                        --with-mlx4_vnic_debug-mod)
-                            CONFIG_MLX4_VNIC_DEBUG="y"
-                        ;;
-                        --without-mlx4_vnic_debug-mod)
-                            CONFIG_MLX4_VNIC_DEBUG=
-                        ;;
                         --with-mlx4_inf-mod)
                             CONFIG_MLX4_CORE="m"
                             CONFIG_MLX4_INFINIBAND="m"
@@ -720,10 +604,16 @@ main()
                         ;;
                         --with-mlx5_inf-mod)
                             CONFIG_MLX5_CORE="m"
+                            CONFIG_MLX5_CORE_EN="y"
+                            CONFIG_MLX5_CORE_EN_DCB="y"
+                            CONFIG_MLX5_INNER_RSS="y"
                             CONFIG_MLX5_INFINIBAND="m"
                         ;;
                         --without-mlx5_inf-mod)
                             CONFIG_MLX5_INFINIBAND=
+                            CONFIG_MLX5_CORE_EN=
+                            CONFIG_MLX5_CORE_EN_DCB=
+                            CONFIG_MLX5_INNER_RSS=
                         ;;
                         --with-mlx4_fc-mod)
                             CONFIG_MLX4_CORE="m"
@@ -746,33 +636,6 @@ main()
                         --without-mlx5_debug-mod)
                             CONFIG_MLX5_DEBUG=
                         ;;
-                        --with-ipath_inf-mod)
-                            CONFIG_INFINIBAND_IPATH="m"
-                            add_conf "# Load IPATH" "IPATH_LOAD=no"
-                        ;;
-                        --without-ipath_inf-mod)
-                            CONFIG_INFINIBAND_IPATH=
-                        ;;
-                        --with-9pnet_rdma-mod)
-                            CONFIG_NET_9P_RDMA="m"
-                        ;;
-                        --without-9pnet_rdma-mod)
-                            CONFIG_NET_9P_RDMA=
-                        ;;
-                        --with-9p-mod)
-                            CONFIG_9P_FS="m"
-                        ;;
-                        --without-9p-mod)
-                            CONFIG_9P_FS=
-                        ;;
-                        --with-qib-mod)
-                            CONFIG_INFINIBAND_QIB="m"
-                            add_conf "# Load QIB" "QIB_LOAD=no"
-                            add_conf "# QIB QME BP VER" "QIB_QME_BPVER=1"
-                        ;;
-                        --without-qib-mod)
-                            CONFIG_INFINIBAND_QIB=
-                        ;;
                         --with-iser-mod)
                             CONFIG_INFINIBAND_ISER="m"
                         ;;
@@ -791,127 +654,41 @@ main()
                         --without-isert-mod)
                             CONFIG_INFINIBAND_ISERT=
                         ;;
-                        --with-ehca-mod)
-                            CONFIG_INFINIBAND_EHCA="m"
-                            CONFIG_INFINIBAND_EHCA_SCALING="y"
-                        ;;
-                        --without-ehca-mod)
-                            CONFIG_INFINIBAND_EHCA=
-                            CONFIG_INFINIBAND_EHCA_SCALING=
-                        ;;
-                        --with-rds-mod)
-                            CONFIG_RDS="m"
-                            CONFIG_RDS_RDMA="m"
-                            CONFIG_RDS_TCP="m"
-                            add_conf "# Load RDS module" "RDS_LOAD=no"
-                        ;;
-                        --without-rds-mod)
-                            CONFIG_RDS=
-                            CONFIG_RDS_RDMA=
-                            CONFIG_RDS_TCP=
-                        ;;
-                        --with-rds_debug-mod)
-                            CONFIG_RDS_DEBUG="y"
-                        ;;
-                        --without-rds_debug-mod)
-                            CONFIG_RDS_DEBUG=
-                        ;;
                         --with-madeye-mod)
                             CONFIG_INFINIBAND_MADEYE=m
                         ;;
                         --without-madeye-mod)
                             CONFIG_INFINIBAND_MADEYE=
                         ;;
-                        --with-qlgc_vnic-mod)
-                            CONFIG_INFINIBAND_QLGC_VNIC="m"
-                            add_conf "# Load QLogic VNIC module" "QLGC_VNIC_LOAD=no"
-                        ;;
-                        --without-qlgc_vnic-mod)
-                            CONFIG_INFINIBAND_QLGC_VNIC=
-                        ;;
-                        --with-qlgc_vnic_stats-mod)
-                            CONFIG_INFINIBAND_QLGC_VNIC_STATS="y"
-                        ;;
-                        --without-qlgc_vnic_stats-mod)
-                            CONFIG_INFINIBAND_QLGC_VNIC_STATS=
-                        ;;
-                        --with-cxgb3-mod)
-                            CONFIG_INFINIBAND_CXGB3="m"
-                            CONFIG_CHELSIO_T3="m"
-                            add_conf "# Load CXGB3 modules" "CXGB3_LOAD=no"
-                        ;;
-                        --without-cxgb3-mod)
-                            CONFIG_INFINIBAND_CXGB3=
-                            CONFIG_CHELSIO_T3=
-                        ;;
-                        --with-cxgb3_debug-mod)
-                            CONFIG_INFINIBAND_CXGB3_DEBUG="y"
-                        ;;
-                        --without-cxgb3_debug-mod)
-                            CONFIG_INFINIBAND_CXGB3_DEBUG=
-                        ;;
-                        --with-cxgb4-mod)
-                            CONFIG_INFINIBAND_CXGB4="m"
-                            CONFIG_CHELSIO_T4="m"
-                            add_conf "# Load CXGB4 modules" "CXGB4_LOAD=no"
-                        ;;
-                        --without-cxgb4-mod)
-                            CONFIG_INFINIBAND_CXGB4=
-                            CONFIG_CHELSIO_T4=
-                        ;;
-                        --with-cxgb3i-mod)
-                            CONFIG_SCSI_CXGB3_ISCSI="m"
-                        ;;
-                        --without-cxgb3i-mod)
-                            CONFIG_SCSI_CXGB3_ISCSI=
-                        ;;
-                        --with-cxgb4i-mod)
-                            CONFIG_SCSI_CXGB4_ISCSI="m"
-                        ;;
-                        --without-cxgb4i-mod)
-                            CONFIG_SCSI_CXGB4_ISCSI=
-                        ;;
                         --with-nvmf_host-mod)
-                            CONFIG_NVMF_HOST="m"
+                            CONFIG_NVME_CORE="m"
+                            CONFIG_BLK_DEV_NVME="m"
+                            CONFIG_NVME_FABRICS="m"
+                            CONFIG_NVME_RDMA="m"
+                            CONFIG_BLK_DEV_NVME_SCSI="y"
                         ;;
                         --without-nvmf_host-mod)
-                            CONFIG_NVMF_HOST=
+                            CONFIG_NVME_CORE=
+                            CONFIG_BLK_DEV_NVME=
+                            CONFIG_NVME_FABRICS=
+                            CONFIG_NVME_RDMA=
+                            CONFIG_BLK_DEV_NVME_SCSI=
                         ;;
                         --with-nvmf_target-mod)
-                            CONFIG_NVMF_TARGET="m"
+                            CONFIG_NVME_TARGET="m"
+                            CONFIG_NVME_TARGET_LOOP="m"
+                            CONFIG_NVME_TARGET_RDMA="m"
                         ;;
                         --without-nvmf_target-mod)
-                            CONFIG_NVMF_TARGET=
-                        ;;
-                        --with-nes-mod)
-                            CONFIG_INFINIBAND_NES="m"
-                            add_conf "# Load NES modules" "NES_LOAD=no"
-                        ;;
-                        --without-nes-mod)
-                            CONFIG_INFINIBAND_NES=
-                        ;;
-                        --with-nes_debug-mod)
-                            CONFIG_INFINIBAND_NES_DEBUG="y"
-                        ;;
-                        --without-nes_debug-mod)
-                            CONFIG_INFINIBAND_NES_DEBUG=
-                        ;;
-                        --with-ocrdma-mod)
-                            CONFIG_INFINIBAND_OCRDMA="m"
-                            add_conf "# Load OCRDMA modules" "OCRDMA_LOAD=no"
-                        ;;
-                        --without-ocrdma-mod)
-                            CONFIG_INFINIBAND_OCRDMA=
+                            CONFIG_NVME_TARGET=
+                            CONFIG_NVME_TARGET_LOOP=
+                            CONFIG_NVME_TARGET_RDMA=
                         ;;
                         --with-nfsrdma-mod)
                             CONFIG_SUNRPC_XPRT_RDMA="m"
-                            CONFIG_SUNRPC_XPRT_RDMA_CLIENT="m"
-                            CONFIG_SUNRPC_XPRT_RDMA_SERVER="m"
                         ;;
                         --without-nfsrdma-mod)
                             CONFIG_SUNRPC_XPRT_RDMA=
-                            CONFIG_SUNRPC_XPRT_RDMA_CLIENT=
-                            CONFIG_SUNRPC_XPRT_RDMA_SERVER=
                         ;;
                         --with-scsi_transport_srp-mod)
                             CONFIG_SCSI_SRP_ATTRS="m"
@@ -920,12 +697,6 @@ main()
                             CONFIG_SCSI_SRP_ATTRS=
                         ;;
                         --with-modprobe|--without-modprobe)
-                        ;;
-                        --with-amso1100-mod)
-                        CONFIG_INFINIBAND_AMSO1100="m"
-                        ;;
-                        --without-amso1100-mod)
-                        CONFIG_INFINIBAND_AMSO1100=
                         ;;
                         --with-odp)
                         CONFIG_INFINIBAND_ON_DEMAND_PAGING="y"
@@ -944,6 +715,9 @@ main()
                         ;;
                         --without-pa-mr)
                         CONFIG_INFINIBAND_PA_MR=
+                        ;;
+                        --with-dummy-core-mods)
+                        CONFIG_INFINIBAND_CORE_DUMMY="m"
                         ;;
 
                         -h | --help)
@@ -1027,13 +801,6 @@ esac
 #
 ################### disable/enable features/modules  ###########################
 #
-# disable unsupported modules on 32bit
-case $ARCH in
-    i?86)
-    CONFIG_INFINIBAND_IPATH=
-    CONFIG_INFINIBAND_QIB=
-esac
-
 if [ "X${CONFIG_MLX4_EN}" == "Xm" ]; then
     check_autofconf CONFIG_DCB
     if [ X${CONFIG_DCB} == "X1" ]; then
@@ -1063,6 +830,14 @@ if [ "X${CONFIG_INFINIBAND_SRP}" == "Xm" ]; then
     fi
 fi
 
+# Configfs requires CONFIGFS_FS to be enabled in the kernel
+if [ "X${CONFIG_INFINIBAND_ADDR_TRANS}" == "Xy" ]; then
+    check_autofconf CONFIGFS_FS
+    if [ X${CONFIGFS_FS} == "X1" ]; then
+        CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS=y
+    fi
+fi
+
 #
 # Dummy modules for ULPs and storage:
 # Used for ofa_kernel RPM build, the actual drivers will be
@@ -1085,31 +860,45 @@ if [ "X$BUILD_DUMMY_MODS" == "X1" ]; then
     CONFIG_INFINIBAND_SRP=
     CONFIG_SCSI_SRP_ATTRS=
 
-    # sdp
-    CONFIG_INFINIBAND_SDP_DUMMY="m"
-    CONFIG_INFINIBAND_SDP=
-    CONFIG_INFINIBAND_SDP_DEBUG=
-
-    # rds
-    CONFIG_RDS_DUMMY="m"
-    CONFIG_RDS=
-    CONFIG_RDS_RDMA=
-    CONFIG_RDS_TCP=
-
     # NFS RDMA
     CONFIG_SUNRPC_XPRT_RDMA_DUMMY="m"
-    CONFIG_SUNRPC_XPRT_RDMA="m"
-    CONFIG_SUNRPC_XPRT_RDMA_CLIENT=
-    CONFIG_SUNRPC_XPRT_RDMA_SERVER=
+    CONFIG_SUNRPC_XPRT_RDMA=
 
    # nvmf host
-   CONFIG_NVMF_HOST_DUMMY="m"
-   CONFIG_NVMF_HOST=
+   CONFIG_NVME_HOST_DUMMY="m"
+   CONFIG_NVME_CORE=
+   CONFIG_BLK_DEV_NVME=
+   CONFIG_NVME_FABRICS=
+   CONFIG_NVME_RDMA=
+   CONFIG_BLK_DEV_NVME_SCSI=
 
    # nvmf target
-   CONFIG_NVMF_TARGET_DUMMY="m"
-   CONFIG_NVMF_TARGET=
+   CONFIG_NVME_TARGET_DUMMY="m"
+   CONFIG_NVME_TARGET=
+   CONFIG_NVME_TARGET_LOOP=
+   CONFIG_NVME_TARGET_RDMA=
+
+    # rxe
+    CONFIG_RDMA_RXE_DUMMY="m"
+    CONFIG_RDMA_RXE=
 fi
+
+# Add dummy modules for ib_sa, ib_mad and ib_addr only if they were part of
+# the target kernel to mask the inbox ones.
+if (grep -wq ib_sa $KSRC/drivers/infiniband/core/Makefile >/dev/null) ||
+   (modinfo -k "$KVERSION" ib_sa &>/dev/null); then
+    CONFIG_INFINIBAND_CORE_DUMMY="m"
+fi
+
+check_autofconf CONFIG_NET_UDP_TUNNEL
+if ! [ "X${CONFIG_NET_UDP_TUNNEL}" == "X1" ]; then
+    if [ "X${CONFIG_RDMA_RXE}" == "Xm" ]; then
+        echo "Error: udp_tunnl not present, soft roce requires udp_tunnel. Exiting...";
+        echo "rebuild kernel with CONFIG_NET_UDP_TUNNEL=m";
+        exit 1;
+    fi
+fi
+
 
 #
 # END of disable/enable features/modules  ###########################
@@ -1176,27 +965,31 @@ CONFIG_COMPAT_KOBJECT_BACKPORT=${CONFIG_COMPAT_KOBJECT_BACKPORT}
 CONFIG_MEMTRACK=${CONFIG_MEMTRACK}
 CONFIG_DEBUG_INFO=${CONFIG_DEBUG_INFO}
 CONFIG_INFINIBAND=${CONFIG_INFINIBAND}
+CONFIG_INFINIBAND_CORE_DUMMY=${CONFIG_INFINIBAND_CORE_DUMMY}
 CONFIG_INFINIBAND_IPOIB=${CONFIG_INFINIBAND_IPOIB}
 CONFIG_INFINIBAND_IPOIB_CM=${CONFIG_INFINIBAND_IPOIB_CM}
 CONFIG_IPOIB_ALL_MULTI=${CONFIG_IPOIB_ALL_MULTI}
 CONFIG_IPOIB_VERSION=${CONFIG_IPOIB_VERSION}
-CONFIG_INFINIBAND_SDP=${CONFIG_INFINIBAND_SDP}
-CONFIG_INFINIBAND_SDP_DUMMY=${CONFIG_INFINIBAND_SDP_DUMMY}
 CONFIG_INFINIBAND_SRP=${CONFIG_INFINIBAND_SRP}
 CONFIG_INFINIBAND_SRP_DUMMY=${CONFIG_INFINIBAND_SRP_DUMMY}
+
+CONFIG_RDMA_RXE=${CONFIG_RDMA_RXE}
+CONFIG_RDMA_RXE_DUMMY=${CONFIG_RDMA_RXE_DUMMY}
 
 CONFIG_INFINIBAND_USER_MAD=${CONFIG_INFINIBAND_USER_MAD}
 CONFIG_INFINIBAND_USER_ACCESS=${CONFIG_INFINIBAND_USER_ACCESS}
 CONFIG_INFINIBAND_ADDR_TRANS=${CONFIG_INFINIBAND_ADDR_TRANS}
+CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS=${CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS}
 CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM}
-CONFIG_INFINIBAND_MTHCA=${CONFIG_INFINIBAND_MTHCA}
 
 CONFIG_MLX4_CORE=${CONFIG_MLX4_CORE}
 CONFIG_MLX5_CORE=${CONFIG_MLX5_CORE}
+CONFIG_MLX5_CORE_EN=${CONFIG_MLX5_CORE_EN}
+CONFIG_MLX5_CORE_EN_DCB=${CONFIG_MLX5_CORE_EN_DCB}
+CONFIG_MLX5_INNER_RSS=${CONFIG_MLX5_INNER_RSS}
 CONFIG_MLX4_EN=${CONFIG_MLX4_EN}
 CONFIG_MLX4_EN_DCB=${CONFIG_MLX4_EN_DCB}
 CONFIG_MLX4_IB_DEBUG_FS=${CONFIG_MLX4_IB_DEBUG_FS}
-CONFIG_MLX4_VNIC=${CONFIG_MLX4_VNIC}
 CONFIG_MLX4_INFINIBAND=${CONFIG_MLX4_INFINIBAND}
 CONFIG_MLX5_INFINIBAND=${CONFIG_MLX5_INFINIBAND}
 CONFIG_MLX4_DEBUG=${CONFIG_MLX4_DEBUG}
@@ -1213,33 +1006,20 @@ CONFIG_INFINIBAND_ISER=${CONFIG_INFINIBAND_ISER}
 CONFIG_INFINIBAND_ISER_DUMMY=${CONFIG_INFINIBAND_ISER_DUMMY}
 CONFIG_SCSI_ISCSI_ATTRS=${CONFIG_SCSI_ISCSI_ATTRS}
 CONFIG_ISCSI_TCP=${CONFIG_ISCSI_TCP}
-CONFIG_INFINIBAND_EHCA=${CONFIG_INFINIBAND_EHCA}
-CONFIG_INFINIBAND_EHCA_SCALING=${CONFIG_INFINIBAND_EHCA_SCALING}
-CONFIG_E_IPOIB=${CONFIG_E_IPOIB}
-CONFIG_RDS=${CONFIG_RDS}
-CONFIG_RDS_DUMMY=${CONFIG_RDS_DUMMY}
-CONFIG_RDS_RDMA=${CONFIG_RDS_RDMA}
-CONFIG_RDS_TCP=${CONFIG_RDS_TCP}
-CONFIG_RDS_DEBUG=${CONFIG_RDS_DEBUG}
 CONFIG_INFINIBAND_MADEYE=${CONFIG_INFINIBAND_MADEYE}
-CONFIG_INFINIBAND_QLGC_VNIC=${CONFIG_INFINIBAND_QLGC_VNIC}
-CONFIG_INFINIBAND_CXGB3=${CONFIG_INFINIBAND_CXGB3}
-CONFIG_CHELSIO_T3=${CONFIG_CHELSIO_T3}
-CONFIG_INFINIBAND_CXGB4=${CONFIG_INFINIBAND_CXGB4}
-CONFIG_CHELSIO_T4=${CONFIG_CHELSIO_T4}
-CONFIG_SCSI_CXGB3_ISCSI=${CONFIG_SCSI_CXGB3_ISCSI}
-CONFIG_SCSI_CXGB4_ISCSI=${CONFIG_SCSI_CXGB4_ISCSI}
-CONFIG_NVMF_HOST=${CONFIG_NVMF_HOST}
-CONFIG_NVMF_HOST_DUMMY=${CONFIG_NVMF_HOST_DUMMY}
-CONFIG_NVMF_TARGET=${CONFIG_NVMF_TARGET}
-CONFIG_NVMF_TARGET_DUMMY=${CONFIG_NVMF_TARGET_DUMMY}
-CONFIG_INFINIBAND_NES=${CONFIG_INFINIBAND_NES}
-CONFIG_INFINIBAND_OCRDMA=${CONFIG_INFINIBAND_OCRDMA}
+CONFIG_NVME_CORE=${CONFIG_NVME_CORE}
+CONFIG_BLK_DEV_NVME=${CONFIG_BLK_DEV_NVME}
+CONFIG_NVME_FABRICS=${CONFIG_NVME_FABRICS}
+CONFIG_NVME_RDMA=${CONFIG_NVME_RDMA}
+CONFIG_BLK_DEV_NVME_SCSI=${CONFIG_BLK_DEV_NVME_SCSI}
+CONFIG_NVME_HOST_DUMMY=${CONFIG_NVME_HOST_DUMMY}
+CONFIG_NVME_TARGET=${CONFIG_NVME_TARGET}
+CONFIG_NVME_TARGET_LOOP=${CONFIG_NVME_TARGET_LOOP}
+CONFIG_NVME_TARGET_RDMA=${CONFIG_NVME_TARGET_RDMA}
+CONFIG_NVME_TARGET_DUMMY=${CONFIG_NVME_TARGET_DUMMY}
 
 CONFIG_SUNRPC_XPRT_RDMA=${CONFIG_SUNRPC_XPRT_RDMA}
 CONFIG_SUNRPC_XPRT_RDMA_DUMMY=${CONFIG_SUNRPC_XPRT_RDMA_DUMMY}
-CONFIG_SUNRPC_XPRT_RDMA_CLIENT=${CONFIG_SUNRPC_XPRT_RDMA_CLIENT}
-CONFIG_SUNRPC_XPRT_RDMA_SERVER=${CONFIG_SUNRPC_XPRT_RDMA_SERVER}
 
 CONFIG_SCSI_SRP_ATTRS=${CONFIG_SCSI_SRP_ATTRS}
 
@@ -1248,15 +1028,6 @@ CONFIG_INFINIBAND_SDP_SEND_ZCOPY=${CONFIG_INFINIBAND_SDP_SEND_ZCOPY}
 CONFIG_INFINIBAND_SDP_RECV_ZCOPY=${CONFIG_INFINIBAND_SDP_RECV_ZCOPY}
 CONFIG_INFINIBAND_SDP_DEBUG=${CONFIG_INFINIBAND_SDP_DEBUG}
 CONFIG_INFINIBAND_SDP_DEBUG_DATA=${CONFIG_INFINIBAND_SDP_DEBUG_DATA}
-CONFIG_INFINIBAND_IPATH=${CONFIG_INFINIBAND_IPATH}
-CONFIG_NET_9P_RDMA=${CONFIG_NET_9P_RDMA}
-CONFIG_9P_FS=${CONFIG_9P_FS}
-CONFIG_INFINIBAND_QIB=${CONFIG_INFINIBAND_QIB}
-CONFIG_INFINIBAND_MTHCA_DEBUG=${CONFIG_INFINIBAND_MTHCA_DEBUG}
-CONFIG_INFINIBAND_QLGC_VNIC_STATS=${CONFIG_INFINIBAND_QLGC_VNIC_STATS}
-CONFIG_INFINIBAND_CXGB3_DEBUG=${CONFIG_INFINIBAND_CXGB3_DEBUG}
-CONFIG_INFINIBAND_NES_DEBUG=${CONFIG_INFINIBAND_NES_DEBUG}
-CONFIG_INFINIBAND_AMSO1100=${CONFIG_INFINIBAND_AMSO1100}
 CONFIG_MLX4_EN_DCB=${CONFIG_MLX4_EN_DCB}
 CONFIG_MLX4_IB_DEBUG_FS=${CONFIG_MLX4_IB_DEBUG_FS}
 CONFIG_INFINIBAND_ON_DEMAND_PAGING=${CONFIG_INFINIBAND_ON_DEMAND_PAGING}
@@ -1283,6 +1054,11 @@ if [ "X${CONFIG_INFINIBAND}" == "Xm" ]; then
 else
         DEFINE_INFINIBAND="#undef CONFIG_INFINIBAND"
 fi
+if [ "X${CONFIG_INFINIBAND_CORE_DUMMY}" == "Xm" ]; then
+        DEFINE_INFINIBAND_CORE_DUMMY="#undef CONFIG_INFINIBAND_CORE_DUMMY\n#define CONFIG_INFINIBAND_CORE_DUMMY 1"
+else
+        DEFINE_INFINIBAND_CORE_DUMMY="#undef CONFIG_INFINIBAND_CORE_DUMMY"
+fi
 if [ "X${CONFIG_INFINIBAND_IPOIB}" == "Xm" ]; then
         DEFINE_INFINIBAND_IPOIB="#undef CONFIG_INFINIBAND_IPOIB\n#define CONFIG_INFINIBAND_IPOIB 1"
 else
@@ -1298,16 +1074,6 @@ if [ "X${CONFIG_IPOIB_ALL_MULTI}" == "Xy" ]; then
 else
         DEFINE_IPOIB_ALL_MULTI="#undef CONFIG_IPOIB_ALL_MULTI"
 fi
-if [ "X${CONFIG_INFINIBAND_SDP}" == "Xm" ]; then
-        DEFINE_INFINIBAND_SDP="#undef CONFIG_INFINIBAND_SDP\n#define CONFIG_INFINIBAND_SDP 1"
-else
-        DEFINE_INFINIBAND_SDP="#undef CONFIG_INFINIBAND_SDP"
-fi
-if [ "X${CONFIG_INFINIBAND_SDP_DUMMY}" == "Xm" ]; then
-        DEFINE_INFINIBAND_SDP_DUMMY="#undef CONFIG_INFINIBAND_SDP_DUMMY\n#define CONFIG_INFINIBAND_SDP_DUMMY 1"
-else
-        DEFINE_INFINIBAND_SDP_DUMMY="#undef CONFIG_INFINIBAND_SDP_DUMMY"
-fi
 if [ "X${CONFIG_INFINIBAND_SRP}" == "Xm" ]; then
         DEFINE_INFINIBAND_SRP="#undef CONFIG_INFINIBAND_SRP\n#define CONFIG_INFINIBAND_SRP 1"
 else
@@ -1317,6 +1083,16 @@ if [ "X${CONFIG_INFINIBAND_SRP_DUMMY}" == "Xm" ]; then
         DEFINE_INFINIBAND_SRP_DUMMY="#undef CONFIG_INFINIBAND_SRP_DUMMY\n#define CONFIG_INFINIBAND_SRP_DUMMY 1"
 else
         DEFINE_INFINIBAND_SRP_DUMMY="#undef CONFIG_INFINIBAND_SRP_DUMMY"
+fi
+if [ "X${CONFIG_RDMA_RXE}" == "Xm" ]; then
+        CONFIG_RDMA_RXE="#undef CONFIG_RDMA_RXE\n#define CONFIG_RDMA_RXE 1"
+else
+        CONFIG_RDMA_RXE="#undef CONFIG_RDMA_RXE"
+fi
+if [ "X${CONFIG_RDMA_RXE_DUMMY}" == "Xm" ]; then
+        CONFIG_RDMA_RXE_DUMMY="#undef CONFIG_RDMA_RXE_DUMMY\n#define CONFIG_RDMA_RXE_DUMMY 1"
+else
+        CONFIG_RDMA_RXE_DUMMY="#undef CONFIG_RDMA_RXE_DUMMY"
 fi
 if [ "X${CONFIG_INFINIBAND_USER_MAD}" == "Xm" ]; then
         DEFINE_INFINIBAND_USER_MAD="#undef CONFIG_INFINIBAND_USER_MAD\n#define CONFIG_INFINIBAND_USER_MAD 1"
@@ -1333,15 +1109,15 @@ if [ "X${CONFIG_INFINIBAND_ADDR_TRANS}" == "Xy" ]; then
 else
         DEFINE_INFINIBAND_ADDR_TRANS="#undef CONFIG_INFINIBAND_ADDR_TRANS"
 fi
+if [ "X${CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS}" == "Xy" ]; then
+        DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS="#undef CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS\n#define CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS 1"
+else
+        DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS="#undef CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS"
+fi
 if [ "X${CONFIG_INFINIBAND_USER_MEM}" == "Xy" ]; then
         DEFINE_INFINIBAND_USER_MEM="#undef CONFIG_INFINIBAND_USER_MEM\n#define CONFIG_INFINIBAND_USER_MEM 1"
 else
         DEFINE_INFINIBAND_USER_MEM="#undef CONFIG_INFINIBAND_USER_MEM"
-fi
-if [ "X${CONFIG_INFINIBAND_MTHCA}" == "Xm" ]; then
-        DEFINE_INFINIBAND_MTHCA="#undef CONFIG_INFINIBAND_MTHCA\n#define CONFIG_INFINIBAND_MTHCA 1"
-else
-        DEFINE_INFINIBAND_MTHCA="#undef CONFIG_INFINIBAND_MTHCA"
 fi
 if [ "X${CONFIG_MLX4_CORE}" == "Xm" ]; then
         DEFINE_MLX4_CORE="#undef CONFIG_MLX4_CORE\n#define CONFIG_MLX4_CORE 1"
@@ -1353,6 +1129,21 @@ if [ "X${CONFIG_MLX5_CORE}" == "Xm" ]; then
 else
         DEFINE_MLX5_CORE="#undef CONFIG_MLX5_CORE"
 fi
+if [ "X${CONFIG_MLX5_CORE_EN}" == "Xy" ]; then
+        DEFINE_MLX5_CORE_EN="#undef CONFIG_MLX5_CORE_EN\n#define CONFIG_MLX5_CORE_EN 1"
+else
+        DEFINE_MLX5_CORE_EN="#undef CONFIG_MLX5_CORE_EN"
+fi
+if [ "X${CONFIG_MLX5_CORE_EN_DCB}" == "Xy" ]; then
+        DEFINE_MLX5_CORE_EN_DCB="#undef CONFIG_MLX5_CORE_EN_DCB\n#define CONFIG_MLX5_CORE_EN_DCB 1"
+else
+        DEFINE_MLX5_CORE_EN_DCB="#undef CONFIG_MLX5_CORE_EN_DCB"
+fi
+if [ "X${CONFIG_MLX5_INNER_RSS}" == "Xy" ]; then
+        DEFINE_MLX5_INNER_RSS="#undef CONFIG_MLX5_INNER_RSS\n#define CONFIG_MLX5_INNER_RSS 1"
+else
+        DEFINE_MLX5_INNER_RSS="#undef CONFIG_MLX5_INNER_RSS"
+fi
 if [ "X${CONFIG_MLX4_EN}" == "Xm" ]; then
         DEFINE_MLX4_EN="#undef CONFIG_MLX4_EN\n#define CONFIG_MLX4_EN 1"
 else
@@ -1362,16 +1153,6 @@ if [ "X${CONFIG_MLX4_IB_DEBUG_FS}" == "Xy" ]; then
         DEFINE_MLX4_IB_DEBUG_FS="#undef CONFIG_MLX4_IB_DEBUG_FS\n#define CONFIG_MLX4_IB_DEBUG_FS 1"
 else
         DEFINE_MLX4_IB_DEBUG_FS="#undef CONFIG_MLX4_IB_DEBUG_FS"
-fi
-if [ "X${CONFIG_MLX4_VNIC}" == "Xm" ]; then
-        DEFINE_MLX4_VNIC="#define CONFIG_MLX4_VNIC 1"
-else
-        DEFINE_MLX4_VNIC="#undef CONFIG_MLX4_VNIC"
-fi
-if [ "X${CONFIG_MLX4_VNIC_DEBUG}" == "Xy" ]; then
-        DEFINE_MLX4_VNIC_DEBUG="#undef CONFIG_MLX4_VNIC_DEBUG\n#define CONFIG_MLX4_VNIC_DEBUG 1"
-else
-        DEFINE_MLX4_VNIC_DEBUG="#undef CONFIG_MLX4_VNIC_DEBUG"
 fi
 if [ "X${CONFIG_MLX4_INFINIBAND}" == "Xm" ]; then
         DEFINE_MLX4_INFINIBAND="#undef CONFIG_MLX4_INFINIBAND\n#define CONFIG_MLX4_INFINIBAND 1"
@@ -1433,40 +1214,6 @@ if [ "X${CONFIG_INFINIBAND_ISERT_DUMMY}" == "Xm" ]; then
 else
         DEFINE_INFINIBAND_ISERT_DUMMY="#undef CONFIG_INFINIBAND_ISERT_DUMMY"
 fi
-if [ "X${CONFIG_INFINIBAND_EHCA}" == "Xm" ]; then
-        DEFINE_INFINIBAND_EHCA="#undef CONFIG_INFINIBAND_EHCA\n#define CONFIG_INFINIBAND_EHCA 1"
-else
-        DEFINE_INFINIBAND_EHCA="#undef CONFIG_INFINIBAND_EHCA"
-fi
-if [ "X${CONFIG_INFINIBAND_EHCA_SCALING}" == "Xy" ]; then
-        DEFINE_INFINIBAND_EHCA_SCALING="#undef CONFIG_INFINIBAND_EHCA_SCALING\n#define CONFIG_INFINIBAND_EHCA_SCALING 1"
-else
-        DEFINE_INFINIBAND_EHCA_SCALING="#undef CONFIG_INFINIBAND_EHCA_SCALING"
-fi
-if [ "X${CONFIG_E_IPOIB}" == "Xm" ]; then
-        DEFINE_E_IPOIB="#undef CONFIG_E_IPOIB\n#define CONFIG_E_IPOIB 1"
-else
-        DEFINE_E_IPOIB="#undef CONFIG_E_IPOIB"
-fi
-if [ "X${CONFIG_RDS}" == "Xm" ]; then
-        DEFINE_RDS="#undef CONFIG_RDS\n#define CONFIG_RDS 1"
-        DEFINE_RDS_RDMA="#undef CONFIG_RDS_RDMA\n#define CONFIG_RDS_RDMA 1"
-        DEFINE_RDS_TCP="#undef CONFIG_RDS_TCP\n#define CONFIG_RDS_TCP 1"
-else
-        DEFINE_RDS="#undef CONFIG_RDS"
-        DEFINE_RDS_RDMA="#undef CONFIG_RDS_RDMA"
-        DEFINE_RDS_TCP="#undef CONFIG_RDS_TCP"
-fi
-if [ "X${CONFIG_RDS_DUMMY}" == "Xm" ]; then
-        DEFINE_RDS_DUMMY="#undef CONFIG_RDS_DUMMY\n#define CONFIG_RDS_DUMMY 1"
-else
-        DEFINE_RDS_DUMMY="#undef CONFIG_RDS_DUMMY"
-fi
-if [ "X${CONFIG_RDS_DEBUG}" == "Xy" ]; then
-        DEFINE_RDS_DEBUG="#undef CONFIG_RDS_DEBUG\n#define CONFIG_RDS_DEBUG 1"
-else
-        DEFINE_RDS_DEBUG="#undef CONFIG_RDS_DEBUG"
-fi
 if [ "X${CONFIG_INFINIBAND_MADEYE}" == "Xm" ]; then
         DEFINE_INFINIBAND_MADEYE="#undef CONFIG_INFINIBAND_MADEYE\n#define CONFIG_INFINIBAND_MADEYE 1"
 else
@@ -1497,115 +1244,55 @@ if [ "X${CONFIG_INFINIBAND_SDP_DEBUG_DATA}" == "Xy" ]; then
 else
         DEFINE_INFINIBAND_SDP_DEBUG_DATA="#undef CONFIG_INFINIBAND_SDP_DEBUG_DATA"
 fi
-if [ "X${CONFIG_INFINIBAND_IPATH}" == "Xm" ]; then
-        DEFINE_INFINIBAND_IPATH="#undef CONFIG_INFINIBAND_IPATH\n#define CONFIG_INFINIBAND_IPATH 1"
+if [ "X${CONFIG_NVME_CORE}" == "Xm" ]; then
+        DEFINE_CONFIG_NVME_CORE="#undef CONFIG_NVME_CORE\n#define CONFIG_NVME_CORE 1"
 else
-        DEFINE_INFINIBAND_IPATH="#undef CONFIG_INFINIBAND_IPATH"
+        DEFINE_CONFIG_NVME_CORE="#undef CONFIG_NVME_CORE"
 fi
-if [ "X${CONFIG_NET_9P_RDMA}" == "Xm" ]; then
-        DEFINE_INFINIBAND_9PNET_RDMA="#undef CONFIG_NET_9P_RDMA\n#define CONFIG_NET_9P_RDMA 1"
+if [ "X${CONFIG_BLK_DEV_NVME}" == "Xm" ]; then
+        DEFINE_CONFIG_BLK_DEV_NVME="#undef CONFIG_BLK_DEV_NVME\n#define CONFIG_BLK_DEV_NVME 1"
 else
-        DEFINE_INFINIBAND_9PNET_RDMA="#undef CONFIG_NET_9P_RDMA"
+        DEFINE_CONFIG_BLK_DEV_NVME="#undef CONFIG_BLK_DEV_NVME"
 fi
-if [ "X${CONFIG_9P_FS}" == "Xm" ]; then
-        DEFINE_INFINIBAND_9P="#undef CONFIG_9P_FS\n#define CONFIG_9P_FS 1"
+if [ "X${CONFIG_NVME_FABRICS}" == "Xm" ]; then
+        DEFINE_CONFIG_NVME_FABRICS="#undef CONFIG_NVME_FABRICS\n#define CONFIG_NVME_FABRICS 1"
 else
-        DEFINE_INFINIBAND_9P="#undef CONFIG_9P_FS"
+        DEFINE_CONFIG_NVME_FABRICS="#undef CONFIG_NVME_FABRICS"
 fi
-if [ "X${CONFIG_INFINIBAND_QIB}" == "Xm" ]; then
-        DEFINE_INFINIBAND_QIB="#undef CONFIG_INFINIBAND_QIB\n#define CONFIG_INFINIBAND_QIB 1"
+if [ "X${CONFIG_NVME_RDMA}" == "Xm" ]; then
+        DEFINE_CONFIG_NVME_RDMA="#undef CONFIG_NVME_RDMA\n#define CONFIG_NVME_RDMA 1"
 else
-        DEFINE_INFINIBAND_QIB="#undef CONFIG_INFINIBAND_QIB"
+        DEFINE_CONFIG_NVME_RDMA="#undef CONFIG_NVME_RDMA"
 fi
-if [ "X${CONFIG_INFINIBAND_MTHCA_DEBUG}" == "Xy" ]; then
-        DEFINE_INFINIBAND_MTHCA_DEBUG="#undef CONFIG_INFINIBAND_MTHCA_DEBUG\n#define CONFIG_INFINIBAND_MTHCA_DEBUG 1"
+if [ "X${CONFIG_BLK_DEV_NVME_SCSI}" == "Xy" ]; then
+        DEFINE_CONFIG_BLK_DEV_NVME_SCSI="#undef CONFIG_BLK_DEV_NVME_SCSI\n#define CONFIG_BLK_DEV_NVME_SCSI 1"
 else
-        DEFINE_INFINIBAND_MTHCA_DEBUG="#undef CONFIG_INFINIBAND_MTHCA_DEBUG"
+        DEFINE_CONFIG_BLK_DEV_NVME_SCSI="#undef CONFIG_BLK_DEV_NVME_SCSI"
 fi
-if [ "X${CONFIG_INFINIBAND_QLGC_VNIC}" == "Xm" ]; then
-        DEFINE_INFINIBAND_QLGC_VNIC="#undef CONFIG_INFINIBAND_QLGC_VNIC\n#define CONFIG_INFINIBAND_QLGC_VNIC 1"
+if [ "X${CONFIG_NVME_HOST_DUMMY}" == "Xm" ]; then
+        DEFINE_NVMF_HOST_DUMMY="#undef CONFIG_NVME_HOST_DUMMY\n#define CONFIG_NVME_HOST_DUMMY 1"
 else
-        DEFINE_INFINIBAND_QLGC_VNIC="#undef CONFIG_INFINIBAND_QLGC_VNIC"
+        DEFINE_NVMF_HOST_DUMMY="#undef CONFIG_NVME_HOST_DUMMY"
 fi
-if [ "X${CONFIG_INFINIBAND_QLGC_VNIC_STATS}" == "Xy" ]; then
-        DEFINE_INFINIBAND_QLGC_VNIC_STATS="#undef CONFIG_INFINIBAND_QLGC_VNIC_STATS\n#define CONFIG_INFINIBAND_QLGC_VNIC_STATS 1"
+if [ "X${CONFIG_NVME_TARGET}" == "Xm" ]; then
+        DEFINE_NVMF_TARGET="#undef CONFIG_NVME_TARGET\n#define CONFIG_NVME_TARGET 1"
 else
-        DEFINE_INFINIBAND_QLGC_VNIC_STATS="#undef CONFIG_INFINIBAND_QLGC_VNIC_STATS"
+        DEFINE_NVMF_TARGET="#undef CONFIG_NVME_TARGET"
 fi
-if [ "X${CONFIG_INFINIBAND_CXGB3}" == "Xm" ]; then
-        DEFINE_INFINIBAND_CXGB3="#undef CONFIG_INFINIBAND_CXGB3\n#define CONFIG_INFINIBAND_CXGB3 1"
+if [ "X${CONFIG_NVME_TARGET_LOOP}" == "Xm" ]; then
+        DEFINE_NVMF_TARGET_LOOP="#undef CONFIG_NVME_TARGET_LOOP\n#define CONFIG_NVME_TARGET_LOOP 1"
 else
-        DEFINE_INFINIBAND_CXGB3="#undef CONFIG_INFINIBAND_CXGB3"
+        DEFINE_NVMF_TARGET_LOOP="#undef CONFIG_NVME_TARGET_LOOP"
 fi
-if [ "X${CONFIG_INFINIBAND_CXGB3_DEBUG}" == "Xy" ]; then
-        DEFINE_INFINIBAND_CXGB3_DEBUG="#undef CONFIG_INFINIBAND_CXGB3_DEBUG\n#define CONFIG_INFINIBAND_CXGB3_DEBUG 1"
+if [ "X${CONFIG_NVME_TARGET_RDMA}" == "Xm" ]; then
+        DEFINE_NVMF_TARGET_RDMA="#undef CONFIG_NVME_TARGET_RDMA\n#define CONFIG_NVME_TARGET_RDMA 1"
 else
-        DEFINE_INFINIBAND_CXGB3_DEBUG="#undef CONFIG_INFINIBAND_CXGB3_DEBUG"
+        DEFINE_NVMF_TARGET_RDMA="#undef CONFIG_NVME_TARGET_RDMA"
 fi
-if [ "X${CONFIG_CHELSIO_T3}" == "Xm" ]; then
-        DEFINE_CHELSIO_T3="#undef CONFIG_CHELSIO_T3\n#define CONFIG_CHELSIO_T3 1"
+if [ "X${CONFIG_NVME_TARGET_DUMMY}" == "Xm" ]; then
+        DEFINE_NVMF_TARGET="#undef CONFIG_NVME_TARGET_DUMMY\n#define CONFIG_NVME_TARGET_DUMMY 1"
 else
-        DEFINE_CHELSIO_T3="#undef CONFIG_CHELSIO_T3"
-fi
-if [ "X${CONFIG_INFINIBAND_CXGB4}" == "Xm" ]; then
-        DEFINE_INFINIBAND_CXGB4="#undef CONFIG_INFINIBAND_CXGB4\n#define CONFIG_INFINIBAND_CXGB4 1"
-else
-        DEFINE_INFINIBAND_CXGB4="#undef CONFIG_INFINIBAND_CXGB4"
-fi
-if [ "X${CONFIG_CHELSIO_T4}" == "Xm" ]; then
-        DEFINE_CHELSIO_T4="#undef CONFIG_CHELSIO_T4\n#define CONFIG_CHELSIO_T4 1"
-else
-        DEFINE_CHELSIO_T4="#undef CONFIG_CHELSIO_T4"
-fi
-if [ "X${CONFIG_SCSI_CXGB3_ISCSI}" == "Xm" ]; then
-        DEFINE_SCSI_CXGB3_ISCSI="#undef CONFIG_SCSI_CXGB3_ISCSI\n#define CONFIG_SCSI_CXGB3_ISCSI 1"
-else
-        DEFINE_SCSI_CXGB3_ISCSI="#undef CONFIG_SCSI_CXGB3_ISCSI"
-fi
-if [ "X${CONFIG_SCSI_CXGB4_ISCSI}" == "Xm" ]; then
-        DEFINE_SCSI_CXGB4_ISCSI="#undef CONFIG_SCSI_CXGB4_ISCSI\n#define CONFIG_SCSI_CXGB4_ISCSI 1"
-else
-        DEFINE_SCSI_CXGB4_ISCSI="#undef CONFIG_SCSI_CXGB4_ISCSI"
-fi
-if [ "X${CONFIG_NVMF_HOST}" == "Xm" ]; then
-        DEFINE_NVMF_HOST="#undef CONFIG_NVMF_HOST\n#define CONFIG_NVMF_HOST 1"
-else
-        DEFINE_NVMF_HOST="#undef CONFIG_NVMF_HOST"
-fi
-if [ "X${CONFIG_NVMF_HOST_DUMMY}" == "Xm" ]; then
-        DEFINE_NVMF_HOST_DUMMY="#undef CONFIG_NVMF_HOST_DUMMY\n#define CONFIG_NVMF_HOST_DUMMY 1"
-else
-        DEFINE_NVMF_HOST_DUMMY="#undef CONFIG_NVMF_HOST_DUMMY"
-fi
-if [ "X${CONFIG_NVMF_TARGET}" == "Xm" ]; then
-        DEFINE_NVMF_TARGET="#undef CONFIG_NVMF_TARGET\n#define CONFIG_NVMF_TARGET 1"
-else
-        DEFINE_NVMF_TARGET="#undef CONFIG_NVMF_TARGET"
-fi
-if [ "X${CONFIG_NVMF_TARGET_DUMMY}" == "Xm" ]; then
-        DEFINE_NVMF_TARGET="#undef CONFIG_NVMF_TARGET_DUMMY\n#define CONFIG_NVMF_TARGET_DUMMY 1"
-else
-        DEFINE_NVMF_TARGET_DUMMY="#undef CONFIG_NVMF_TARGET_DUMMY"
-fi
-if [ "X${CONFIG_INFINIBAND_NES}" == "Xm" ]; then
-        DEFINE_INFINIBAND_NES="#undef CONFIG_INFINIBAND_NES\n#define CONFIG_INFINIBAND_NES 1"
-else
-        DEFINE_INFINIBAND_NES="#undef CONFIG_INFINIBAND_NES"
-fi
-if [ "X${CONFIG_INFINIBAND_OCRDMA}" == "Xm" ]; then
-        DEFINE_INFINIBAND_OCRDMA="#undef CONFIG_INFINIBAND_OCRDMA\n#define CONFIG_INFINIBAND_OCRDMA 1"
-else
-        DEFINE_INFINIBAND_OCRDMA="#undef CONFIG_INFINIBAND_OCRDMA"
-fi
-if [ "X${CONFIG_INFINIBAND_NES_DEBUG}" == "Xy" ]; then
-        DEFINE_INFINIBAND_NES_DEBUG="#undef CONFIG_INFINIBAND_NES_DEBUG\n#define CONFIG_INFINIBAND_NES_DEBUG 1"
-else
-        DEFINE_INFINIBAND_NES_DEBUG="#undef CONFIG_INFINIBAND_NES_DEBUG"
-fi
-if [ "X${CONFIG_INFINIBAND_AMSO1100}" == "Xm" ]; then
-        DEFINE_INFINIBAND_AMSO1100="#undef CONFIG_INFINIBAND_AMSO1100\n#define CONFIG_INFINIBAND_AMSO1100 1"
-else
-        DEFINE_INFINIBAND_AMSO1100="#undef CONFIG_INFINIBAND_AMSO1100"
+        DEFINE_NVMF_TARGET_DUMMY="#undef CONFIG_NVME_TARGET_DUMMY"
 fi
 if [ "X${CONFIG_MLX4_EN_DCB}" == "Xy" ]; then
         DEFINE_MLX4_EN_DCB="#undef CONFIG_MLX4_EN_DCB\n#define CONFIG_MLX4_EN_DCB 1"
@@ -1630,17 +1317,7 @@ fi
 if [ "X${CONFIG_SUNRPC_XPRT_RDMA_DUMMY}" == "Xm" ]; then
         DEFINE_SUNRPC_XPRT_RDMA_DUMMY="#undef CONFIG_SUNRPC_XPRT_RDMA_DUMMY\n#define CONFIG_SUNRPC_XPRT_RDMA_DUMMY 1"
 else
-        DEFINE_SUNRPC_XPRT_RDMA="/* CONFIG_SUNRPC_XPRT_RDMA is not set */"
-fi
-if [ "X${CONFIG_SUNRPC_XPRT_RDMA_CLIENT}" == "Xm" ]; then
-        DEFINE_SUNRPC_XPRT_RDMA_CLIENT="#undef CONFIG_SUNRPC_XPRT_RDMA_CLIENT\n#define CONFIG_SUNRPC_XPRT_RDMA_CLIENT 1"
-else
-        DEFINE_SUNRPC_XPRT_RDMA_CLIENT="/* CONFIG_SUNRPC_XPRT_RDMA_CLIENT is not set */"
-fi
-if [ "X${CONFIG_SUNRPC_XPRT_RDMA_SERVER}" == "Xm" ]; then
-        DEFINE_SUNRPC_XPRT_RDMA_SERVER="#undef CONFIG_SUNRPC_XPRT_RDMA_SERVER\n#define CONFIG_SUNRPC_XPRT_RDMA_SERVER 1"
-else
-        DEFINE_SUNRPC_XPRT_RDMA_SERVER="/* CONFIG_SUNRPC_XPRT_RDMA_SERVER is not set */"
+        DEFINE_SUNRPC_XPRT_RDMA_DUMMY="/* CONFIG_SUNRPC_XPRT_RDMA_DUMMY is not set */"
 fi
 if [ "X${CONFIG_SCSI_SRP_ATTRS}" == "Xm" ]; then
         DEFINE_SCSI_SRP_ATTRS="#undef CONFIG_SCSI_SRP_ATTRS\n#define CONFIG_SCSI_SRP_ATTRS 1"
@@ -1683,26 +1360,21 @@ cat > ${AUTOCONF_H} << EOFAUTOCONF
 #ifndef __OFED_BUILD__
 #include_next <$AUTOCONF_PREFIX/autoconf.h>
 $(echo -e "${DEFINE_INFINIBAND}" | grep -v undef)
+$(echo -e "${DEFINE_INFINIBAND_CORE_DUMMY}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_IPOIB}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_IPOIB_CM}" | grep -v undef)
 $(echo -e "${DEFINE_IPOIB_ALL_MULTI}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_SDP}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_SDP_DUMMY}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_SRP}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_SRP_DUMMY}" | grep -v undef)
+
+$(echo -e "${DEFINE_CONFIG_RDMA_RXE}" | grep -v undef)
+$(echo -e "${DEFINE_CONFIG_RDMA_RXE_DUMMY}" | grep -v undef)
 
 $(echo -e "${DEFINE_INFINIBAND_USER_MAD}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_USER_ACCESS}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS}" | grep -v undef)
+$(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_USER_MEM}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_MTHCA}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_QLGC_VNIC}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_CXGB3}" | grep -v undef)
-$(echo -e "${DEFINE_CHELSIO_T3}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_CXGB4}" | grep -v undef)
-$(echo -e "${DEFINE_CHELSIO_T4}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_NES}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_OCRDMA}" | grep -v undef)
 
 $(echo -e "${DEFINE_SUNRPC_XPRT_RDMA}" | grep -v undef)
 $(echo -e "${DEFINE_SUNRPC_XPRT_RDMA_DUMMY}" | grep -v undef)
@@ -1716,19 +1388,12 @@ $(echo -e "${DEFINE_INFINIBAND_ISER}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ISER_DUMMY}" | grep -v undef)
 $(echo -e "${DEFINE_SCSI_ISCSI_ATTRS}" | grep -v undef)
 $(echo -e "${DEFINE_ISCSI_TCP}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_EHCA}" | grep -v undef)
-$(echo -e "${DEFINE_E_IPOIB}" | grep -v undef)
-$(echo -e "${DEFINE_RDS}" | grep -v undef)
-$(echo -e "${DEFINE_RDS_DUMMY}" | grep -v undef)
-$(echo -e "${DEFINE_RDS_RDMA}" | grep -v undef)
-$(echo -e "${DEFINE_RDS_TCP}" | grep -v undef)
-$(echo -e "${DEFINE_RDS_DEBUG}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_QLGC_VNIC_STATS}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_CXGB3_DEBUG}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_NES_DEBUG}" | grep -v undef)
 
 $(echo -e "${DEFINE_MLX4_CORE}" | grep -v undef)
 $(echo -e "${DEFINE_MLX5_CORE}" | grep -v undef)
+$(echo -e "${DEFINE_MLX5_CORE_EN}" | grep -v undef)
+$(echo -e "${DEFINE_MLX5_CORE_EN_DCB}" | grep -v undef)
+$(echo -e "${DEFINE_MLX5_INNER_RSS}" | grep -v undef)
 $(echo -e "${DEFINE_MLX4_EN}" | grep -v undef)
 $(echo -e "${DEFINE_MLX4_IB_DEBUG_FS}" | grep -v undef)
 $(echo -e "${DEFINE_MLX4_INFINIBAND}" | grep -v undef)
@@ -1743,13 +1408,7 @@ $(echo -e "${DEFINE_INFINIBAND_SDP_SEND_ZCOPY}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_SDP_RECV_ZCOPY}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_SDP_DEBUG}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_SDP_DEBUG_DATA}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_IPATH}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_9PNET_RDMA}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_9P}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_QIB}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_MTHCA_DEBUG}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_MADEYE}" | grep -v undef)
-$(echo -e "${DEFINE_INFINIBAND_AMSO1100}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ON_DEMAND_PAGING}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ON_WQE_FORMAT}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_PA_MR}" | grep -v undef)
@@ -1759,29 +1418,32 @@ $(echo -e "${DEFINE_INFINIBAND_PA_MR}" | grep -v undef)
 #undef CONFIG_MEMTRACK
 #undef CONFIG_DEBUG_INFO
 #undef CONFIG_INFINIBAND
+#undef CONFIG_INFINIBAND_CORE_DUMMY
 #undef CONFIG_INFINIBAND_IPOIB
 #undef CONFIG_INFINIBAND_IPOIB_CM
 #undef CONFIG_IPOIB_ALL_MULTI
-#undef CONFIG_INFINIBAND_SDP
-#undef CONFIG_INFINIBAND_SDP_DUMMY
 #undef CONFIG_INFINIBAND_SRP
 #undef CONFIG_INFINIBAND_SRP_DUMMY
+
+#undef CONFIG_CONFIG_RDMA_RXE
+#undef CONFIG_CONFIG_RDMA_RXE_DUMMY
 
 #undef CONFIG_INFINIBAND_USER_MAD
 #undef CONFIG_INFINIBAND_USER_ACCESS
 #undef CONFIG_INFINIBAND_ADDR_TRANS
+#undef CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS
 #undef CONFIG_INFINIBAND_USER_MEM
-#undef CONFIG_INFINIBAND_MTHCA
 
 #undef CONFIG_MLX4_CORE
 #undef CONFIG_MLX5_CORE
+#undef CONFIG_MLX5_CORE_EN
+#undef CONFIG_MLX5_CORE_EN_DCB
+#undef CONFIG_MLX5_INNER_RSS
 #undef CONFIG_MLX4_DEBUG
 #undef CONFIG_MLX5_DEBUG
 #undef CONFIG_MLX4_EN
 #undef CONFIG_MLX4_EN_DCB
 #undef CONFIG_MLX4_IB_DEBUG_FS
-#undef CONFIG_MLX4_VNIC
-#undef CONFIG_MLX4_VNIC_DEBUG
 #undef CONFIG_MLX4_INFINIBAND
 #undef CONFIG_MLX5_INFINIBAND
 #undef CONFIG_BACKPORT_LRO
@@ -1793,37 +1455,21 @@ $(echo -e "${DEFINE_INFINIBAND_PA_MR}" | grep -v undef)
 #undef CONFIG_INFINIBAND_ISER_DUMMY
 #undef CONFIG_INFINIBAND_ISERT
 #undef CONFIG_INFINIBAND_ISERT_DUMMY
-#undef CONFIG_INFINIBAND_EHCA
-#undef CONFIG_INFINIBAND_EHCA_SCALING
-#undef CONFIG_E_IPOIB
-#undef CONFIG_RDS
-#undef CONFIG_RDS_DUMMY
-#undef CONFIG_RDS_RDMA
-#undef CONFIG_RDS_TCP
-#undef CONFIG_RDS_DEBUG
 #undef CONFIG_INFINIBAND_MADEYE
-#undef CONFIG_INFINIBAND_QLGC_VNIC
-#undef CONFIG_INFINIBAND_QLGC_VNIC_STATS
-#undef CONFIG_INFINIBAND_CXGB3
-#undef CONFIG_INFINIBAND_CXGB3_DEBUG
-#undef CONFIG_CHELSIO_T3
-#undef CONFIG_INFINIBAND_CXGB4
-#undef CONFIG_CHELSIO_T4
-#undef CONFIG_SCSI_CXGB3_ISCSI
-#undef CONFIG_SCSI_CXGB4_ISCSI
-#undef CONFIG_NVMF_HOST
-#undef CONFIG_NVMF_HOST_DUMMY
-#undef CONFIG_NVMF_TARGET
-#undef CONFIG_NVMF_TARGET_DUMMY
-#undef CONFIG_INFINIBAND_NES
-#undef CONFIG_INFINIBAND_NES_DEBUG
-#undef CONFIG_INFINIBAND_OCRDMA
+#undef CONFIG_NVME_CORE
+#undef CONFIG_BLK_DEV_NVME
+#undef CONFIG_NVME_FABRICS
+#undef CONFIG_NVME_RDMA
+#undef BLK_DEV_NVME_SCSI
+#undef CONFIG_NVME_HOST_DUMMY
+#undef CONFIG_NVME_TARGET
+#undef CONFIG_NVME_TARGET_LOOP
+#undef CONFIG_NVME_TARGET_RDMA
+#undef CONFIG_NVME_TARGET_DUMMY
 #undef CONFIG_MLX4_EN_PERF_STAT
 
 #undef CONFIG_SUNRPC_XPRT_RDMA
 #undef CONFIG_SUNRPC_XPRT_RDMA_DUMMY
-#undef CONFIG_SUNRPC_XPRT_RDMA_CLIENT
-#undef CONFIG_SUNRPC_XPRT_RDMA_SERVER
 
 #undef CONFIG_SCSI_SRP_ATTRS
 
@@ -1832,37 +1478,26 @@ $(echo -e "${DEFINE_INFINIBAND_PA_MR}" | grep -v undef)
 #undef CONFIG_INFINIBAND_SDP_RECV_ZCOPY
 #undef CONFIG_INFINIBAND_SDP_DEBUG
 #undef CONFIG_INFINIBAND_SDP_DEBUG_DATA
-#undef CONFIG_INFINIBAND_IPATH
-#undef CONFIG_NET_9P_RDMA
-#undef CONFIG_9P_FS
-#undef CONFIG_INFINIBAND_QIB
-#undef CONFIG_INFINIBAND_MTHCA_DEBUG
-#undef CONFIG_INFINIBAND_AMSO1100
 #undef CONFIG_MLX4_EN_DCB
 #undef CONFIG_MLX4_EN_PERF_STAT
 #undef CONFIG_MLX4_IB_DEBUG_FS
 
 $(echo -e "${DEFINE_INFINIBAND}")
+$(echo -e "${DEFINE_INFINIBAND_CORE_DUMMY}")
 $(echo -e "${DEFINE_INFINIBAND_IPOIB}")
 $(echo -e "${DEFINE_INFINIBAND_IPOIB_CM}")
 $(echo -e "${DEFINE_IPOIB_ALL_MULTI}")
-$(echo -e "${DEFINE_INFINIBAND_SDP}")
-$(echo -e "${DEFINE_INFINIBAND_SDP_DUMMY}")
 $(echo -e "${DEFINE_INFINIBAND_SRP}")
 $(echo -e "${DEFINE_INFINIBAND_SRP_DUMMY}")
+
+$(echo -e "${DEFINE_CONFIG_RDMA_RXE}")
+$(echo -e "${DEFINE_CONFIG_RDMA_RXE_DUMMY}")
 
 $(echo -e "${DEFINE_INFINIBAND_USER_MAD}")
 $(echo -e "${DEFINE_INFINIBAND_USER_ACCESS}")
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS}")
+$(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS}")
 $(echo -e "${DEFINE_INFINIBAND_USER_MEM}")
-$(echo -e "${DEFINE_INFINIBAND_MTHCA}")
-$(echo -e "${DEFINE_INFINIBAND_QLGC_VNIC}")
-$(echo -e "${DEFINE_INFINIBAND_CXGB3}")
-$(echo -e "${DEFINE_CHELSIO_T3}")
-$(echo -e "${DEFINE_INFINIBAND_CXGB4}")
-$(echo -e "${DEFINE_CHELSIO_T4}")
-$(echo -e "${DEFINE_INFINIBAND_NES}")
-$(echo -e "${DEFINE_INFINIBAND_OCRDMA}")
 
 $(echo -e "${DEFINE_SUNRPC_XPRT_RDMA}")
 $(echo -e "${DEFINE_SUNRPC_XPRT_RDMA_DUMMY}")
@@ -1876,19 +1511,12 @@ $(echo -e "${DEFINE_INFINIBAND_ISER}")
 $(echo -e "${DEFINE_INFINIBAND_ISER_DUMMY}")
 $(echo -e "${DEFINE_SCSI_ISCSI_ATTRS}")
 $(echo -e "${DEFINE_ISCSI_TCP}")
-$(echo -e "${DEFINE_INFINIBAND_EHCA}")
-$(echo -e "${DEFINE_E_IPOIB}")
-$(echo -e "${DEFINE_RDS}")
-$(echo -e "${DEFINE_RDS_DUMMY}")
-$(echo -e "${DEFINE_RDS_RDMA}")
-$(echo -e "${DEFINE_RDS_TCP}")
-$(echo -e "${DEFINE_RDS_DEBUG}")
-$(echo -e "${DEFINE_INFINIBAND_QLGC_VNIC_STATS}")
-$(echo -e "${DEFINE_INFINIBAND_CXGB3_DEBUG}")
-$(echo -e "${DEFINE_INFINIBAND_NES_DEBUG}")
 
 $(echo -e "${DEFINE_MLX4_CORE}")
 $(echo -e "${DEFINE_MLX5_CORE}")
+$(echo -e "${DEFINE_MLX5_CORE_EN}")
+$(echo -e "${DEFINE_MLX5_CORE_EN_DCB}")
+$(echo -e "${DEFINE_MLX5_INNER_RSS}")
 $(echo -e "${DEFINE_MLX4_EN}")
 $(echo -e "${DEFINE_MLX4_IB_DEBUG_FS}")
 $(echo -e "${DEFINE_MLX4_INFINIBAND}")
@@ -1896,8 +1524,6 @@ $(echo -e "${DEFINE_MLX5_INFINIBAND}")
 $(echo -e "${DEFINE_MLX4_ETHERNET}")
 $(echo -e "${DEFINE_MLX4_DEBUG}")
 $(echo -e "${DEFINE_MLX5_DEBUG}")
-$(echo -e "${DEFINE_MLX4_VNIC}")
-$(echo -e "${DEFINE_MLX4_VNIC_DEBUG}")
 $(echo -e "${DEFINE_MLX4_EN_PERF_STAT}")
 
 $(echo -e "${DEFINE_MLX4_FC}")
@@ -1907,13 +1533,7 @@ $(echo -e "${DEFINE_INFINIBAND_SDP_SEND_ZCOPY}")
 $(echo -e "${DEFINE_INFINIBAND_SDP_RECV_ZCOPY}")
 $(echo -e "${DEFINE_INFINIBAND_SDP_DEBUG}")
 $(echo -e "${DEFINE_INFINIBAND_SDP_DEBUG_DATA}")
-$(echo -e "${DEFINE_INFINIBAND_IPATH}")
-$(echo -e "${DEFINE_INFINIBAND_9PNET_RDMA}")
-$(echo -e "${DEFINE_INFINIBAND_9P}")
-$(echo -e "${DEFINE_INFINIBAND_QIB}")
-$(echo -e "${DEFINE_INFINIBAND_MTHCA_DEBUG}")
 $(echo -e "${DEFINE_INFINIBAND_MADEYE}")
-$(echo -e "${DEFINE_INFINIBAND_AMSO1100}")
 $(echo -e "${DEFINE_MLX4_EN_DCB}")
 $(echo -e "${DEFINE_IPOIB_VERSION}")
 $(echo -e "${DEFINE_COMPAT_OLD_VERSION}")

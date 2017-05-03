@@ -130,14 +130,14 @@ void mlx4_en_update_loopback_state(struct net_device *dev,
 	    priv->rss_map.indir_qp.qpn) {
 		int i;
 		int err = 0;
+		int loopback = !!(features & NETIF_F_LOOPBACK);
 
 		for (i = 0; i < priv->rx_ring_num; i++) {
 			int ret;
 
-			ret = mlx4_en_change_mcast_loopback(priv,
-							    &priv->rss_map.qps[i],
-							    !!(features &
-							       NETIF_F_LOOPBACK));
+			ret = mlx4_en_change_mcast_lb(priv,
+						      &priv->rss_map.qps[i],
+						      loopback);
 			if (!err)
 				err = ret;
 		}
@@ -386,6 +386,7 @@ static void mlx4_en_verify_params(void)
 static int __init mlx4_en_init(void)
 {
 	mlx4_en_verify_params();
+	mlx4_en_init_ptys2ethtool_map();
 
 	return mlx4_register_interface(&mlx4_en_interface);
 }

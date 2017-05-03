@@ -42,6 +42,7 @@
 #include <rdma/ib_umem_odp.h>
 
 #include "uverbs.h"
+#include "umem_odp_exp.h"
 
 static void ib_umem_notifier_start_account(struct ib_umem *item)
 {
@@ -237,7 +238,7 @@ static void ib_umem_notifier_invalidate_range_end(struct mmu_notifier *mn,
 	ib_ucontext_notifier_end_account(context);
 }
 
-static struct mmu_notifier_ops ib_umem_notifiers = {
+static const struct mmu_notifier_ops ib_umem_notifiers = {
 	.release                    = ib_umem_notifier_release,
 	.invalidate_page            = ib_umem_notifier_invalidate_page,
 	.invalidate_range_start     = ib_umem_notifier_invalidate_range_start,
@@ -299,7 +300,8 @@ int ib_umem_odp_get(struct ib_ucontext *context, struct ib_umem *umem)
 	if (likely(ib_umem_start(umem) != ib_umem_end(umem)))
 		rbt_ib_umem_insert(&umem->odp_data->interval_tree,
 				   &context->umem_tree);
-	if (likely(!atomic_read(&context->notifier_count)))
+	if (likely(!atomic_read(&context->notifier_count)) ||
+	    context->odp_mrs_count == 1)
 		umem->odp_data->mn_counters_active = true;
 	else
 		list_add(&umem->odp_data->no_private_counters,
@@ -527,14 +529,14 @@ out:
  * @current_seq: the MMU notifiers sequance value for synchronization with
  *               invalidations. the sequance number is read from
  *               umem->odp_data->notifiers_seq before calling this function
- * @flags: IB_ODP_DMA_MAP_FOR_PREEFTCH is used to indicate that the function
+ * @odp_flags: IB_ODP_DMA_MAP_FOR_PREEFTCH is used to indicate that the function
  *	   was called from the prefetch verb. IB_ODP_DMA_MAP_FOR_PAGEFAULT is
  *	   used to indicate that the function was called from a pagefault
  *	   handler.
  */
 int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 user_virt, u64 bcnt,
 			      u64 access_mask, unsigned long current_seq,
-			      enum ib_odp_dma_map_flags flags)
+			      enum ib_odp_dma_map_flags odp_flags)
 {
 	struct task_struct *owning_process  = NULL;
 	struct mm_struct   *owning_mm       = NULL;
@@ -542,6 +544,7 @@ int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 user_virt, u64 bcnt,
 	u64 off;
 	int j, k, ret = 0, start_idx, npages = 0;
 	u64 base_virt_addr;
+	unsigned int flags = 0;
 
 	if (access_mask == 0)
 		return -EINVAL;
@@ -571,6 +574,9 @@ int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 user_virt, u64 bcnt,
 		goto out_put_task;
 	}
 
+	if (access_mask & ODP_WRITE_ALLOWED_BIT)
+		flags |= FOLL_WRITE;
+
 	start_idx = (user_virt - ib_umem_start(umem)) >> PAGE_SHIFT;
 	k = start_idx;
 
@@ -587,10 +593,9 @@ int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 user_virt, u64 bcnt,
 		 * complex (and doesn't gain us much performance in most use
 		 * cases).
 		 */
-		npages = get_user_pages(owning_process, owning_mm, user_virt,
-					gup_num_pages,
-					access_mask & ODP_WRITE_ALLOWED_BIT, 0,
-					local_page_list, NULL);
+		npages = get_user_pages_remote(owning_process, owning_mm,
+				user_virt, gup_num_pages,
+				flags, local_page_list, NULL);
 		up_read(&owning_mm->mmap_sem);
 
 		if (npages < 0)
@@ -602,7 +607,7 @@ int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 user_virt, u64 bcnt,
 		for (j = 0; j < npages; ++j) {
 			ret = ib_umem_odp_map_dma_single_page(
 				umem, k, base_virt_addr, local_page_list[j],
-				access_mask, current_seq, flags);
+				access_mask, current_seq, odp_flags);
 			if (ret < 0)
 				break;
 			k++;
@@ -683,137 +688,3 @@ void ib_umem_odp_unmap_dma_pages(struct ib_umem *umem, u64 virt,
 	mutex_unlock(&umem->odp_data->umem_mutex);
 }
 EXPORT_SYMBOL(ib_umem_odp_unmap_dma_pages);
-
-static ssize_t show_num_page_fault_pages(struct device *device,
-					 struct device_attribute *attr,
-					 char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_page_fault_pages));
-}
-static DEVICE_ATTR(num_page_fault_pages, S_IRUGO,
-		   show_num_page_fault_pages, NULL);
-
-static ssize_t show_num_invalidation_pages(struct device *device,
-					   struct device_attribute *attr,
-					   char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_invalidation_pages));
-}
-static DEVICE_ATTR(num_invalidation_pages, S_IRUGO,
-		   show_num_invalidation_pages, NULL);
-
-static ssize_t show_num_invalidations(struct device *device,
-				      struct device_attribute *attr,
-				      char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_invalidations));
-}
-static DEVICE_ATTR(num_invalidations, S_IRUGO, show_num_invalidations, NULL);
-
-static ssize_t show_invalidations_faults_contentions(struct device *device,
-						     struct device_attribute *attr,
-						     char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.invalidations_faults_contentions));
-}
-static DEVICE_ATTR(invalidations_faults_contentions, S_IRUGO,
-		   show_invalidations_faults_contentions, NULL);
-
-static ssize_t show_num_page_faults(struct device *device,
-				    struct device_attribute *attr,
-				    char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_page_faults));
-}
-static DEVICE_ATTR(num_page_faults, S_IRUGO, show_num_page_faults, NULL);
-
-static ssize_t show_num_prefetches_handled(struct device *device,
-					   struct device_attribute *attr,
-					   char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_prefetches_handled));
-}
-static DEVICE_ATTR(num_prefetches_handled, S_IRUGO,
-		   show_num_prefetches_handled, NULL);
-
-static ssize_t show_num_prefetch_pages(struct device *device,
-				       struct device_attribute *attr,
-				       char *buf)
-{
-	struct ib_uverbs_device *dev = dev_get_drvdata(device);
-
-	if (!dev)
-		return -ENODEV;
-
-	return sprintf(buf, "%d\n",
-		       atomic_read(&dev->ib_dev->odp_statistics.num_prefetch_pages));
-}
-static DEVICE_ATTR(num_prefetch_pages, S_IRUGO,
-		   show_num_prefetch_pages, NULL);
-
-int ib_umem_odp_add_statistic_nodes(struct device *dev)
-{
-	int ret;
-
-	ret = device_create_file(dev, &dev_attr_num_page_fault_pages);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev, &dev_attr_num_invalidation_pages);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev, &dev_attr_num_invalidations);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev,
-				 &dev_attr_invalidations_faults_contentions);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev, &dev_attr_num_page_faults);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev, &dev_attr_num_prefetches_handled);
-	if (ret)
-		return ret;
-	ret = device_create_file(dev, &dev_attr_num_prefetch_pages);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-EXPORT_SYMBOL(ib_umem_odp_add_statistic_nodes);

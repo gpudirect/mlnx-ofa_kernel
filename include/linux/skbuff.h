@@ -6,6 +6,13 @@
 
 #include_next <linux/skbuff.h>
 
+#ifndef HAVE_DEV_ALLOC_PAGES
+static inline struct page *dev_alloc_pages(unsigned int order)
+{
+	gfp_t gfp_mask = GFP_ATOMIC | __GFP_NOWARN | __GFP_COLD | __GFP_COMP | __GFP_MEMALLOC;
+	return alloc_pages_node(NUMA_NO_NODE, gfp_mask, order);
+}
+#endif
 #ifndef HAVE_SKB_PULL_INLINE
 static inline unsigned char *skb_pull_inline(struct sk_buff *skb, unsigned int len)
 {

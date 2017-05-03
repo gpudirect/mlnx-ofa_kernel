@@ -60,9 +60,12 @@ mlx_compat-$(CONFIG_COMPAT_KERNEL_4_1) += compat-4.1.o
 
 mlx_compat-$(CONFIG_COMPAT_CORDIC) += cordic.o
 mlx_compat-$(CONFIG_COMPAT_CRC8) += crc8.o
+mlx_compat-y += string.o
+mlx_compat-y += output_core.o
 
 ifndef CONFIG_64BIT
 ifndef CONFIG_GENERIC_ATOMIC64
   mlx_compat-y += compat_atomic.o
 endif
+
 endif

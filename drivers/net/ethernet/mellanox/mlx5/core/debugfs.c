@@ -33,6 +33,7 @@
 #include <linux/module.h>
 #include <linux/debugfs.h>
 #include <linux/mlx5/qp.h>
+#include <linux/mlx5/qp_exp.h>
 #include <linux/mlx5/cq.h>
 #include <linux/mlx5/driver.h>
 #include "mlx5_core.h"
@@ -179,32 +180,6 @@ void mlx5_eq_debugfs_cleanup(struct mlx5_core_dev *dev)
 	debugfs_remove_recursive(dev->priv.eq_debugfs);
 }
 
-static ssize_t average_read(struct file *filp, char __user *buf, size_t count,
-			    loff_t *pos)
-{
-	struct mlx5_cmd_stats *stats;
-	u64 field = 0;
-	int ret;
-	char tbuf[22];
-
-	if (*pos)
-		return 0;
-
-	stats = filp->private_data;
-	spin_lock_irq(&stats->lock);
-	if (stats->n)
-		field = div64_u64(stats->sum, stats->n);
-	spin_unlock_irq(&stats->lock);
-	ret = snprintf(tbuf, sizeof(tbuf), "%llu\n", field);
-	if (ret > 0) {
-		if (copy_to_user(buf, tbuf, ret))
-			return -EFAULT;
-	}
-
-	*pos += ret;
-	return ret;
-}
-
 int mlx5_vxlan_debugfs_init(struct mlx5_core_dev *dev)
 {
 	if (!mlx5_debugfs_root)
@@ -247,6 +222,33 @@ void mlx5_vxlan_debugfs_remove(struct mlx5_core_dev *dev,
 
 	debugfs_remove(vxlan->dbg);
 }
+
+static ssize_t average_read(struct file *filp, char __user *buf, size_t count,
+			    loff_t *pos)
+{
+	struct mlx5_cmd_stats *stats;
+	u64 field = 0;
+	int ret;
+	char tbuf[22];
+
+	if (*pos)
+		return 0;
+
+	stats = filp->private_data;
+	spin_lock_irq(&stats->lock);
+	if (stats->n)
+		field = div64_u64(stats->sum, stats->n);
+	spin_unlock_irq(&stats->lock);
+	ret = snprintf(tbuf, sizeof(tbuf), "%llu\n", field);
+	if (ret > 0) {
+		if (copy_to_user(buf, tbuf, ret))
+			return -EFAULT;
+	}
+
+	*pos += ret;
+	return ret;
+}
+
 
 static ssize_t average_write(struct file *filp, const char __user *buf,
 			     size_t count, loff_t *pos)
@@ -357,24 +359,28 @@ void mlx5_cq_debugfs_cleanup(struct mlx5_core_dev *dev)
 static u64 qp_read_field(struct mlx5_core_dev *dev, struct mlx5_core_qp *qp,
 			 int index, int *is_str)
 {
-	struct mlx5_query_qp_mbox_out *out;
+	int outlen = MLX5_ST_SZ_BYTES(query_qp_out);
 	struct mlx5_qp_context *ctx;
 	u64 param = 0;
+	u32 *out;
 	int err;
 	int no_sq;
 
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
+	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return param;
 
-	err = mlx5_core_qp_query(dev, qp, out, sizeof(*out));
+	err = mlx5_core_qp_query(dev, qp, out, outlen);
 	if (err) {
-		mlx5_core_warn(dev, "failed to query qp\n");
+		mlx5_core_warn(dev, "failed to query qp err=%d\n", err);
 		goto out;
 	}
 
 	*is_str = 0;
-	ctx = &out->ctx;
+
+	/* FIXME: use MLX5_GET rather than mlx5_qp_context manual struct */
+	ctx = (struct mlx5_qp_context *)MLX5_ADDR_OF(query_qp_out, out, qpc);
+
 	switch (index) {
 	case QP_PID:
 		param = qp->pid;
@@ -436,41 +442,42 @@ out:
 }
 
 static u64 dct_read_field(struct mlx5_core_dev *dev, struct mlx5_core_dct *dct,
-			 int index, int *is_str)
+			  int index, int *is_str)
 {
-	struct mlx5_query_dct_mbox_out *out;
-	struct mlx5_dct_context *ctx;
+	u32 *out;
+	int outlen =  MLX5_ST_SZ_BYTES(query_dct_out);
+	void *dctc;
 	u64 param = 0;
 	int err;
 
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
+	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return param;
 
-	err = mlx5_core_dct_query(dev, dct, out);
+	err = mlx5_core_dct_query(dev, dct, out, outlen);
 	if (err) {
 		mlx5_core_warn(dev, "failed to query dct\n");
 		goto out;
 	}
 
-	ctx = &out->ctx;
+	dctc = MLX5_ADDR_OF(query_dct_out, out, dct_context_entry);
 	*is_str = 0;
 	switch (index) {
 	case DCT_PID:
 		param = dct->pid;
 		break;
 	case DCT_STATE:
-		param = (u64)mlx5_dct_state_str(ctx->state);
+		param = (u64)mlx5_dct_state_str(MLX5_GET(dctc, dctc, state));
 		*is_str = 1;
 		break;
 	case DCT_MTU:
-		param = ctx->mtu;
+		param = MLX5_GET(dctc, dctc, mtu);
 		break;
 	case DCT_KEY_VIOL:
-		param = be32_to_cpu(ctx->access_violations);
+		param = MLX5_GET(dctc, dctc, dc_access_key_violation_count);
 		break;
 	case DCT_CQN:
-		param = be32_to_cpu(ctx->cqn) & 0xffffff;
+		param = MLX5_GET(dctc, dctc, cqn);
 		break;
 	}
 
@@ -482,32 +489,32 @@ out:
 static u64 eq_read_field(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
 			 int index)
 {
-	struct mlx5_query_eq_mbox_out *out;
-	struct mlx5_eq_context *ctx;
+	int outlen = MLX5_ST_SZ_BYTES(query_eq_out);
 	u64 param = 0;
+	void *ctx;
+	u32 *out;
 	int err;
 
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
+	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return param;
 
-	ctx = &out->ctx;
-
-	err = mlx5_core_eq_query(dev, eq, out, sizeof(*out));
+	err = mlx5_core_eq_query(dev, eq, out, outlen);
 	if (err) {
 		mlx5_core_warn(dev, "failed to query eq\n");
 		goto out;
 	}
+	ctx = MLX5_ADDR_OF(query_eq_out, out, eq_context_entry);
 
 	switch (index) {
 	case EQ_NUM_EQES:
-		param = 1 << ((be32_to_cpu(ctx->log_sz_usr_page) >> 24) & 0x1f);
+		param = 1 << MLX5_GET(eqc, ctx, log_eq_size);
 		break;
 	case EQ_INTR:
-		param = ctx->intr;
+		param = MLX5_GET(eqc, ctx, intr);
 		break;
 	case EQ_LOG_PG_SZ:
-		param = (ctx->log_page_size & 0x1f) + 12;
+		param = MLX5_GET(eqc, ctx, log_page_size) + 12;
 		break;
 	}
 
@@ -519,37 +526,37 @@ out:
 static u64 cq_read_field(struct mlx5_core_dev *dev, struct mlx5_core_cq *cq,
 			 int index)
 {
-	struct mlx5_query_cq_mbox_out *out;
-	struct mlx5_cq_context *ctx;
+	int outlen = MLX5_ST_SZ_BYTES(query_cq_out);
 	u64 param = 0;
+	void *ctx;
+	u32 *out;
 	int err;
 
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
+	out = mlx5_vzalloc(outlen);
 	if (!out)
 		return param;
 
-	ctx = &out->ctx;
-
-	err = mlx5_core_query_cq(dev, cq, out);
+	err = mlx5_core_query_cq(dev, cq, out, outlen);
 	if (err) {
 		mlx5_core_warn(dev, "failed to query cq\n");
 		goto out;
 	}
+	ctx = MLX5_ADDR_OF(query_cq_out, out, cq_context);
 
 	switch (index) {
 	case CQ_PID:
 		param = cq->pid;
 		break;
 	case CQ_NUM_CQES:
-		param = 1 << ((be32_to_cpu(ctx->log_sz_usr_page) >> 24) & 0x1f);
+		param = 1 << MLX5_GET(cqc, ctx, log_cq_size);
 		break;
 	case CQ_LOG_PG_SZ:
-		param = (ctx->log_pg_sz & 0x1f) + 12;
+		param = MLX5_GET(cqc, ctx, log_page_size);
 		break;
 	}
 
 out:
-	kfree(out);
+	kvfree(out);
 	return param;
 }
 

@@ -34,7 +34,6 @@
 
 /* Adaptive moderation profiles */
 #define MLX5E_AM_DEFAULT_RX_CQ_MODERATION_PKTS_FROM_EQE 256
-#define MLX5E_AM_MAX_RX_CQ_MODERATION_PKTS_WITH_LRO 16
 #define MLX5E_RX_AM_DEF_PROFILE_CQE 1
 #define MLX5E_RX_AM_DEF_PROFILE_EQE 1
 #define MLX5E_PARAMS_AM_NUM_PROFILES 5
@@ -110,7 +109,6 @@ static bool mlx5e_am_on_top(struct mlx5e_rx_am *am)
 	switch (am->tune_state) {
 	case MLX5E_AM_PARKING_ON_TOP:
 	case MLX5E_AM_PARKING_TIRED:
-		WARN_ONCE(true, "mlx5e_am_on_top: PARKING\n");
 		return true;
 	case MLX5E_AM_GOING_RIGHT:
 		return (am->steps_left > 1) && (am->steps_right == 1);
@@ -121,13 +119,9 @@ static bool mlx5e_am_on_top(struct mlx5e_rx_am *am)
 
 static void mlx5e_am_turn(struct mlx5e_rx_am *am)
 {
-	struct mlx5e_rq *rq = container_of(am, struct mlx5e_rq, am);
-	struct mlx5_core_dev *mdev = rq->channel->priv->mdev;
-
 	switch (am->tune_state) {
 	case MLX5E_AM_PARKING_ON_TOP:
 	case MLX5E_AM_PARKING_TIRED:
-		mlx5_core_dbg(mdev, "mlx5e_am_turn: PARKING\n");
 		break;
 	case MLX5E_AM_GOING_RIGHT:
 		am->tune_state = MLX5E_AM_GOING_LEFT;
@@ -142,16 +136,12 @@ static void mlx5e_am_turn(struct mlx5e_rx_am *am)
 
 static int mlx5e_am_step(struct mlx5e_rx_am *am)
 {
-	struct mlx5e_rq *rq = container_of(am, struct mlx5e_rq, am);
-	struct mlx5_core_dev *mdev = rq->channel->priv->mdev;
-
 	if (am->tired == (MLX5E_PARAMS_AM_NUM_PROFILES * 2))
 		return MLX5E_AM_TOO_TIRED;
 
 	switch (am->tune_state) {
 	case MLX5E_AM_PARKING_ON_TOP:
 	case MLX5E_AM_PARKING_TIRED:
-		mlx5_core_dbg(mdev, "mlx5e_am_step: PARKING\n");
 		break;
 	case MLX5E_AM_GOING_RIGHT:
 		if (am->profile_ix == (MLX5E_PARAMS_AM_NUM_PROFILES - 1))
@@ -281,8 +271,7 @@ static void mlx5e_am_sample(struct mlx5e_rq *rq,
 
 #define MLX5E_AM_NEVENTS 64
 
-static void mlx5e_am_calc_stats(struct mlx5_core_dev *mdev,
-				struct mlx5e_rx_am_sample *start,
+static void mlx5e_am_calc_stats(struct mlx5e_rx_am_sample *start,
 				struct mlx5e_rx_am_sample *end,
 				struct mlx5e_rx_am_stats *curr_stats)
 {
@@ -290,10 +279,8 @@ static void mlx5e_am_calc_stats(struct mlx5_core_dev *mdev,
 	u32 delta_us = ktime_us_delta(end->time, start->time);
 	unsigned int npkts = end->pkt_ctr - start->pkt_ctr;
 
-	if (!delta_us) {
-		mlx5_core_dbg(mdev, "mlx5e_am_calc_stats: delta_us=0\n");
+	if (!delta_us)
 		return;
-	}
 
 	curr_stats->ppms =            (npkts * USEC_PER_MSEC) / delta_us;
 	curr_stats->epms = (MLX5E_AM_NEVENTS * USEC_PER_MSEC) / delta_us;
@@ -304,26 +291,16 @@ void mlx5e_rx_am_work(struct work_struct *work)
 	struct mlx5e_rx_am *am = container_of(work, struct mlx5e_rx_am,
 					      work);
 	struct mlx5e_rq *rq = container_of(am, struct mlx5e_rq, am);
-	struct mlx5e_channel *c = container_of(rq, struct mlx5e_channel, rq);
-	struct mlx5_core_dev *mdev = c->priv->mdev;
 	struct mlx5e_cq_moder cur_profile = profile[am->mode][am->profile_ix];
-	u16 pkts;
 
-	if (c->priv->params.lro_en)
-		pkts = min(cur_profile.pkts,
-			   (u16)MLX5E_AM_MAX_RX_CQ_MODERATION_PKTS_WITH_LRO);
-	else
-		pkts = cur_profile.pkts;
-
-	mlx5_core_modify_cq_moderation(mdev, &rq->cq.mcq,
-				       cur_profile.usec, pkts);
+	mlx5_core_modify_cq_moderation(rq->priv->mdev, &rq->cq.mcq,
+				       cur_profile.usec, cur_profile.pkts);
 
 	am->state = MLX5E_AM_START_MEASURE;
 }
 
 void mlx5e_rx_am(struct mlx5e_rq *rq)
 {
-	struct mlx5_core_dev *mdev = rq->channel->priv->mdev;
 	struct mlx5e_rx_am *am = &rq->am;
 	struct mlx5e_rx_am_sample end_sample;
 	struct mlx5e_rx_am_stats curr_stats;
@@ -335,8 +312,8 @@ void mlx5e_rx_am(struct mlx5e_rq *rq)
 		if (nevents < MLX5E_AM_NEVENTS)
 			break;
 		mlx5e_am_sample(rq, &end_sample);
-		mlx5e_am_calc_stats(mdev, &am->start_sample,
-				    &end_sample, &curr_stats);
+		mlx5e_am_calc_stats(&am->start_sample, &end_sample,
+				    &curr_stats);
 		if (mlx5e_am_decision(&curr_stats, am)) {
 			am->state = MLX5E_AM_APPLY_NEW_PROFILE;
 			schedule_work(&am->work);

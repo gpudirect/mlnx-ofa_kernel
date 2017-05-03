@@ -39,46 +39,34 @@
 
 int mlx5_cmd_alloc_uar(struct mlx5_core_dev *dev, u32 *uarn)
 {
-	u32 in[MLX5_ST_SZ_DW(alloc_uar_in)];
-	u32 out[MLX5_ST_SZ_DW(alloc_uar_out)];
+	u32 out[MLX5_ST_SZ_DW(alloc_uar_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(alloc_uar_in)]   = {0};
 	int err;
 
-	memset(in, 0, sizeof(in));
-
 	MLX5_SET(alloc_uar_in, in, opcode, MLX5_CMD_OP_ALLOC_UAR);
-
-	memset(out, 0, sizeof(out));
-	err = mlx5_cmd_exec_check_status(dev, in, sizeof(in), out, sizeof(out));
-	if (err)
-		return err;
-
-	*uarn = MLX5_GET(alloc_uar_out, out, uar);
-
-	return 0;
+	err = mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	if (!err)
+		*uarn = MLX5_GET(alloc_uar_out, out, uar);
+	return err;
 }
 EXPORT_SYMBOL(mlx5_cmd_alloc_uar);
 
 int mlx5_cmd_free_uar(struct mlx5_core_dev *dev, u32 uarn)
 {
-	u32 in[MLX5_ST_SZ_DW(dealloc_uar_in)];
-	u32 out[MLX5_ST_SZ_DW(dealloc_uar_out)];
-
-	memset(in, 0, sizeof(in));
+	u32 out[MLX5_ST_SZ_DW(dealloc_uar_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(dealloc_uar_in)]   = {0};
 
 	MLX5_SET(dealloc_uar_in, in, opcode, MLX5_CMD_OP_DEALLOC_UAR);
 	MLX5_SET(dealloc_uar_in, in, uar, uarn);
-
-	memset(out, 0, sizeof(out));
-	return mlx5_cmd_exec_check_status(dev, in,  sizeof(in),
-					       out, sizeof(out));
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 EXPORT_SYMBOL(mlx5_cmd_free_uar);
 
 static int need_uuar_lock(int uuarn)
 {
-	int tot_uuars = NUM_DRIVER_UARS * MLX5_BF_REGS_PER_PAGE;
+	int tot_uuars = MLX5_NUM_DRIVER_UARS * MLX5_BF_REGS_PER_PAGE;
 
-	if (uuarn == 0 || tot_uuars - NUM_LOW_LAT_UUARS)
+	if (uuarn == 0 || tot_uuars - MLX5_NUM_LOW_LAT_UUARS)
 		return 0;
 
 	return 1;
@@ -86,14 +74,14 @@ static int need_uuar_lock(int uuarn)
 
 int mlx5_alloc_uuars(struct mlx5_core_dev *dev, struct mlx5_uuar_info *uuari)
 {
-	int tot_uuars = NUM_DRIVER_UARS * MLX5_BF_REGS_PER_PAGE;
+	int tot_uuars = MLX5_NUM_DRIVER_UARS * MLX5_BF_REGS_PER_PAGE;
 	struct mlx5_bf *bf;
 	phys_addr_t addr;
 	int err;
 	int i;
 
-	uuari->num_uars = NUM_DRIVER_UARS;
-	uuari->num_low_latency_uuars = NUM_LOW_LAT_UUARS;
+	uuari->num_uars = MLX5_NUM_DRIVER_UARS;
+	uuari->num_low_latency_uuars = MLX5_NUM_LOW_LAT_UUARS;
 
 	mutex_init(&uuari->lock);
 	uuari->uars = kcalloc(uuari->num_uars, sizeof(*uuari->uars), GFP_KERNEL);
@@ -188,7 +176,8 @@ int mlx5_free_uuars(struct mlx5_core_dev *dev, struct mlx5_uuar_info *uuari)
 	return 0;
 }
 
-int mlx5_alloc_map_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar)
+int mlx5_alloc_map_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar,
+		       bool map_wc)
 {
 	phys_addr_t pfn;
 	phys_addr_t uar_bar_start;
@@ -202,20 +191,26 @@ int mlx5_alloc_map_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar)
 
 	uar_bar_start = pci_resource_start(mdev->pdev, 0);
 	pfn           = (uar_bar_start >> PAGE_SHIFT) + uar->index;
-	uar->map      = ioremap(pfn << PAGE_SHIFT, PAGE_SIZE);
-	if (!uar->map) {
-		mlx5_core_warn(mdev, "ioremap() failed, %d\n", err);
-		err = -ENOMEM;
-		goto err_free_uar;
-	}
 
-	if (mdev->priv.bf_mapping)
-		uar->bf_map = io_mapping_map_wc(mdev->priv.bf_mapping,
-						uar->index << PAGE_SHIFT);
+	if (map_wc) {
+		uar->bf_map = ioremap_wc(pfn << PAGE_SHIFT, PAGE_SIZE);
+		if (!uar->bf_map) {
+			mlx5_core_warn(mdev, "ioremap_wc() failed\n");
+			uar->map = ioremap(pfn << PAGE_SHIFT, PAGE_SIZE);
+			if (!uar->map)
+				goto err_free_uar;
+		}
+	} else {
+		uar->map = ioremap(pfn << PAGE_SHIFT, PAGE_SIZE);
+		if (!uar->map)
+			goto err_free_uar;
+	}
 
 	return 0;
 
 err_free_uar:
+	mlx5_core_warn(mdev, "ioremap() failed\n");
+	err = -ENOMEM;
 	mlx5_cmd_free_uar(mdev, uar->index);
 
 	return err;
@@ -224,8 +219,10 @@ EXPORT_SYMBOL(mlx5_alloc_map_uar);
 
 void mlx5_unmap_free_uar(struct mlx5_core_dev *mdev, struct mlx5_uar *uar)
 {
-	io_mapping_unmap(uar->bf_map);
-	iounmap(uar->map);
+	if (uar->map)
+		iounmap(uar->map);
+	else
+		iounmap(uar->bf_map);
 	mlx5_cmd_free_uar(mdev, uar->index);
 }
 EXPORT_SYMBOL(mlx5_unmap_free_uar);

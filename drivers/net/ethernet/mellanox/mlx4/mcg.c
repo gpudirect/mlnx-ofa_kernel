@@ -618,8 +618,8 @@ static int remove_promisc_qp(struct mlx4_dev *dev, u8 port,
 				err = mlx4_READ_ENTRY(dev,
 						      entry->index,
 						      mailbox);
-					if (err)
-						goto out_mailbox;
+				if (err)
+					goto out_mailbox;
 				members_count =
 					be32_to_cpu(mgm->members_count) &
 					0xffffff;
@@ -657,8 +657,8 @@ static int remove_promisc_qp(struct mlx4_dev *dev, u8 port,
 				err = mlx4_WRITE_ENTRY(dev,
 						       entry->index,
 						       mailbox);
-					if (err)
-						goto out_mailbox;
+				if (err)
+					goto out_mailbox;
 			}
 		}
 	}
@@ -857,7 +857,6 @@ static int parse_trans_rule(struct mlx4_dev *dev, struct mlx4_spec_list *spec,
 	rule_hw->id = cpu_to_be16(__sw_id_hw[spec->id]);
 	rule_hw->size = mlx4_hw_rule_sz(dev, spec->id) >> 2;
 
-
 	switch (spec->id) {
 	case MLX4_NET_TRANS_RULE_ID_ETH:
 		memcpy(rule_hw->eth.dst_mac, spec->eth.dst_mac, ETH_ALEN);
@@ -876,7 +875,9 @@ static int parse_trans_rule(struct mlx4_dev *dev, struct mlx4_spec_list *spec,
 
 	case MLX4_NET_TRANS_RULE_ID_IB:
 		rule_hw->ib.l3_qpn = spec->ib.l3_qpn |
-				     cpu_to_be32((spec->ib.roce_type == MLX4_FLOW_SPEC_IB_ROCE_TYPE_IPV4 ? 0x80 : 0) << 24);
+			cpu_to_be32((spec->ib.roce_type ==
+					MLX4_FLOW_SPEC_IB_ROCE_TYPE_IPV4 ?
+						0x80 : 0) << 24);
 		rule_hw->ib.qpn_mask = spec->ib.qpn_msk;
 		memcpy(&rule_hw->ib.dst_gid, &spec->ib.dst_gid, 16);
 		memcpy(&rule_hw->ib.dst_gid_msk, &spec->ib.dst_gid_msk, 16);
@@ -1120,7 +1121,7 @@ int mlx4_qp_attach_common(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 	struct mlx4_cmd_mailbox *mailbox;
 	struct mlx4_mgm *mgm;
 	u32 members_count;
-	int index, prev;
+	int index = -1, prev;
 	int link = 0;
 	int i;
 	int err;
@@ -1197,13 +1198,14 @@ int mlx4_qp_attach_common(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 		goto out;
 
 out:
-	if (prot == MLX4_PROT_ETH) {
+	if (prot == MLX4_PROT_ETH && index != -1) {
 		/* manage the steering entry for promisc mode */
 		if (new_entry)
-			new_steering_entry(dev, port, steer, index, qp->qpn);
+			err = new_steering_entry(dev, port, steer,
+						 index, qp->qpn);
 		else
-			existing_steering_entry(dev, port, steer,
-						index, qp->qpn);
+			err = existing_steering_entry(dev, port, steer,
+						      index, qp->qpn);
 	}
 	if (err && link && index != -1) {
 		if (index < dev->caps.num_mgms)
@@ -1424,9 +1426,6 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 			  u8 port, int block_mcast_loopback,
 			  enum mlx4_protocol prot, u64 *reg_id)
 {
-	enum mlx4_steer_type steer;
-	steer = (is_valid_ether_addr(&gid[10])) ? MLX4_UC_STEER : MLX4_MC_STEER;
-
 	switch (dev->caps.steering_mode) {
 	case MLX4_STEERING_MODE_A0:
 		if (prot == MLX4_PROT_ETH)
@@ -1434,7 +1433,7 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 
 	case MLX4_STEERING_MODE_B0:
 		if (prot == MLX4_PROT_ETH)
-			gid[7] |= (steer << 1);
+			gid[7] |= (MLX4_MC_STEER << 1);
 
 		if (mlx4_is_mfunc(dev))
 			return mlx4_QP_ATTACH(dev, qp, gid, 1,
@@ -1456,9 +1455,6 @@ EXPORT_SYMBOL_GPL(mlx4_multicast_attach);
 int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 			  enum mlx4_protocol prot, u64 reg_id)
 {
-	enum mlx4_steer_type steer;
-	steer = (is_valid_ether_addr(&gid[10])) ? MLX4_UC_STEER : MLX4_MC_STEER;
-
 	switch (dev->caps.steering_mode) {
 	case MLX4_STEERING_MODE_A0:
 		if (prot == MLX4_PROT_ETH)
@@ -1466,7 +1462,7 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 
 	case MLX4_STEERING_MODE_B0:
 		if (prot == MLX4_PROT_ETH)
-			gid[7] |= (steer << 1);
+			gid[7] |= (MLX4_MC_STEER << 1);
 
 		if (mlx4_is_mfunc(dev))
 			return mlx4_QP_ATTACH(dev, qp, gid, 0, 0, prot);
@@ -1486,7 +1482,12 @@ EXPORT_SYMBOL_GPL(mlx4_multicast_detach);
 int mlx4_flow_steer_promisc_add(struct mlx4_dev *dev, u8 port,
 				u32 qpn, enum mlx4_net_trans_promisc_mode mode)
 {
-	struct mlx4_net_trans_rule rule;
+	struct mlx4_net_trans_rule rule = {
+		.queue_mode = MLX4_NET_TRANS_Q_FIFO,
+		.exclusive = 0,
+		.allow_loopback = 1,
+	};
+
 	u64 *regid_p;
 
 	switch (mode) {

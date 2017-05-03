@@ -31,13 +31,15 @@
 
 %global WITH_SYSTEMD %(if ( test -d "%{_unitdir}" > /dev/null); then echo -n '1'; else echo -n '0'; fi)
 
-%{!?configure_options: %global configure_options %{nil}}
+%{!?configure_options: %global configure_options --with-core-mod --with-user_mad-mod --with-user_access-mod --with-addr_trans-mod --with-mlx4-mod --with-mlx4_en-mod --with-mlx5-mod}
 
 %global MEMTRACK %(if ( echo %{configure_options} | grep "with-memtrack" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 %global MADEYE %(if ( echo %{configure_options} | grep "with-madeye-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 
 %global WINDRIVER %(if (grep -qiE "Wind River" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 
 %{!?KVERSION: %global KVERSION %(uname -r)}
 %global kernel_version %{KVERSION}
@@ -48,19 +50,11 @@
 # Select packages to build
 
 # Kernel module packages to be included into kernel-ib
-%ifnarch i386 i686
-%global build_qib %(if ( echo %{configure_options} | grep "with-qib-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
-%else
-%global build_qib 0
-%endif
 %global build_ipoib %(if ( echo %{configure_options} | grep "with-ipoib-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
-%global build_eipoib %(if ( echo %{configure_options} | grep "with-e_ipoib-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
-%global build_sdp %(if ( echo %{configure_options} | grep "with-sdp-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 %global build_oiscsi %(if ( echo %{configure_options} | grep "with-iscsi-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 %global build_mlx4 %(if ( echo %{configure_options} | grep "with-mlx4-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 %global build_mlx5 %(if ( echo %{configure_options} | grep "with-mlx5-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 %global build_mlx4_en %(if ( echo %{configure_options} | grep "with-mlx4_en-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
-%global build_mlx4_vnic %(if ( echo %{configure_options} | grep "with-mlx4_vnic-mod" > /dev/null ); then echo -n '1'; else echo -n '0'; fi)
 
 %{!?LIB_MOD_DIR: %global LIB_MOD_DIR /lib/modules/%{KVERSION}/updates}
 
@@ -69,8 +63,8 @@
 %{!?KERNEL_SOURCES: %global KERNEL_SOURCES /lib/modules/%{KVERSION}/source}
 
 %{!?_name: %global _name mlnx-ofa_kernel}
-%{!?_version: %global _version 3.4}
-%{!?_release: %global _release OFED.3.4.1.0.0.1.g2ed8a21}
+%{!?_version: %global _version 4.0}
+%{!?_release: %global _release OFED.4.0.2.0.0.1.g595cb61}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 %global utils_pname %{_name}
@@ -81,7 +75,7 @@ Summary: Infiniband HCA Driver
 Name: %{_name}
 Version: %{_version}
 Release: %{_release}%{?_dist}
-License: GPLv2 or BSD
+License: GPLv2
 Url: http://www.mellanox.com/
 Group: System Environment/Base
 Source: %{_name}-%{_version}.tgz
@@ -89,6 +83,8 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/OFED}
 Vendor: Mellanox Technologies
 Obsoletes: kernel-ib
 Obsoletes: compat-rdma
+Obsoletes: rdma
+Provides: rdma
 Obsoletes: mlnx-en
 Obsoletes: mlnx_en
 Obsoletes: mlnx-en-utils
@@ -112,7 +108,7 @@ BuildRequires: %kernel_module_package_buildreqs
 %description 
 InfiniBand "verbs", Access Layer  and ULPs.
 Utilities rpm.
-The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-3.4-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-4.0-2.0.0.tgz
 
 
 # build KMP rpms?
@@ -123,7 +119,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-o
 %defattr(644,root,root,755)
 /lib/modules/%2-%1
 %if "%{_vendor}" == "redhat"
-%{_sysconfdir}/depmod.d/%{_name}.conf
+%{_sysconfdir}/depmod.d/zz01-%{_name}.conf
 %endif
 EOF)
 %(echo "Requires: %{utils_pname}" > %{_builddir}/preamble)
@@ -143,6 +139,8 @@ Requires: module-init-tools
 Requires: lsof
 Obsoletes: kernel-ib
 Obsoletes: compat-rdma
+Obsoletes: rdma
+Provides: rdma
 Obsoletes: mlnx-en
 Obsoletes: mlnx_en
 Obsoletes: mlnx-en-utils
@@ -160,7 +158,7 @@ Group: System Environment/Libraries
 %description -n %{non_kmp_pname}
 Core, HW and ULPs kernel modules
 Non-KMP format kernel modules rpm.
-The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-3.4-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-4.0-2.0.0.tgz
 %endif #end if "%{KMP}" == "1"
 
 %package -n %{devel_pname}
@@ -171,6 +169,8 @@ Obsoletes: kernel-ib-devel
 Obsoletes: compat-rdma-devel
 Obsoletes: kernel-ib
 Obsoletes: compat-rdma
+Obsoletes: rdma
+Provides: rdma
 Obsoletes: mlnx-en
 Obsoletes: mlnx_en
 Obsoletes: mlnx-en-utils
@@ -188,7 +188,7 @@ Summary: Infiniband Driver and ULPs kernel modules sources
 Group: System Environment/Libraries
 %description -n %{devel_pname}
 Core, HW and ULPs kernel modules sources
-The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-3.4-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-ofa_kernel-4.0-2.0.0.tgz
 
 #
 # setup module sign scripts if paths to the keys are given
@@ -202,7 +202,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/ofed/mlnx-o
 %if "%{WITH_MOD_SIGN}" == "1"
 # call module sign script
 %global __modsign_install_post \
-    %{_builddir}/$NAME-$VERSION/source/ofed_scripts/tools/sign-modules %{buildroot}/lib/modules/ || exit 1 \
+    %{_builddir}/$NAME-$VERSION/source/ofed_scripts/tools/sign-modules %{buildroot}/lib/modules/ %{kernel_source default} || exit 1 \
 %{nil}
 
 %global __debug_package 1
@@ -315,18 +315,18 @@ if [[ "$(ls %{buildroot}/%{_bindir}/tc_wrap.py* 2>/dev/null)" != "" ]]; then
 fi
 
 # Set the module(s) to be executable, so that they will be stripped when packaged.
-find %{buildroot} -type f -name \*.ko -exec %{__chmod} u+x \{\} \;
+find %{buildroot} \( -type f -name '*.ko' -o -name '*ko.gz' \) -exec %{__chmod} u+x \{\} \;
 
 %if "%{_vendor}" == "redhat"
 %if "%{KMP}" == "1"
 %{__install} -d %{buildroot}%{_sysconfdir}/depmod.d/
-for module in `find %{buildroot}/ -name '*.ko'`
+for module in `find %{buildroot}/ -name '*.ko' -o -name '*.ko.gz'`
 do
 ko_name=${module##*/}
-mod_name=${ko_name/.ko/}
+mod_name=${ko_name/.ko*/}
 mod_path=${module/*%{_name}}
 mod_path=${mod_path/\/${ko_name}}
-echo "override ${mod_name} * weak-updates/%{_name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{_name}.conf
+echo "override ${mod_name} * weak-updates/%{_name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/zz01-%{_name}.conf
 done
 %endif
 %endif
@@ -369,17 +369,17 @@ install -d %{buildroot}%{_unitdir}
 install -d %{buildroot}/etc/systemd/system
 install -m 0644 %{_builddir}/$NAME-$VERSION/source/ofed_scripts/openibd.service %{buildroot}%{_unitdir}
 install -m 0644 %{_builddir}/$NAME-$VERSION/source/ofed_scripts/mlnx_interface_mgr\@.service %{buildroot}/etc/systemd/system
-echo 'DRIVERS=="*mlx*", SUBSYSTEM=="net", ACTION=="add",RUN+="/usr/bin/systemctl --no-block start mlnx_interface_mgr@%k.service"' >> %{buildroot}/etc/udev/rules.d/90-ib.rules
+echo 'DRIVERS=="*mlx*", SUBSYSTEM=="net", ACTION=="add",RUN+="/usr/bin/systemctl --no-block start mlnx_interface_mgr@$env{INTERFACE}.service"' >> %{buildroot}/etc/udev/rules.d/90-ib.rules
 %else
 # no systemd support
 echo 'DRIVERS=="*mlx*", SUBSYSTEM=="net", ACTION=="add", RUN+="/bin/mlnx_interface_mgr.sh $env{INTERFACE} <&- >/dev/null 2>&1 &"' >> %{buildroot}/etc/udev/rules.d/90-ib.rules
 %endif
 
 install -d %{buildroot}/bin
-%if "%{WINDRIVER}" == "0"
+%if "%{WINDRIVER}" == "0" && "%{BLUENIX}" == "0"
 install -m 0755 %{_builddir}/$NAME-$VERSION/source/ofed_scripts/mlnx_interface_mgr.sh %{buildroot}/bin/
 %else
-# Wind River is rpm based, however, interfaces management is done in Debian style
+# Wind River and Mellanox Bluenix are rpm based, however, interfaces management is done in Debian style
 install -d %{buildroot}/usr/sbin
 install -m 0755 %{_builddir}/$NAME-$VERSION/source/ofed_scripts/mlnx_interface_mgr_deb.sh %{buildroot}/bin/mlnx_interface_mgr.sh
 install -m 0755 %{_builddir}/$NAME-$VERSION/source/ofed_scripts/net-interfaces %{buildroot}/usr/sbin
@@ -444,6 +444,14 @@ case $(uname -m) in
 esac
 %endif
 
+%if "%{XENSERVER65}" == "1"
+	# mlx4_core fails to load on xenserver 6.5 with the following error:
+	# mlx4_core 0000:01:00.0: Failed to map MCG context memory, aborting
+	# mlx4_core: probe of 0000:01:00.0 failed with error -12
+	# This happens only when DMFS is used (module parameter log_num_mgm_entry < 0).
+	echo "options mlx4_core log_num_mgm_entry_size=10" >> %{buildroot}/etc/modprobe.d/mlnx.conf
+%endif
+
 %clean
 rm -rf %{buildroot}
 
@@ -491,7 +499,7 @@ if [ -f /etc/SuSE-release ]; then
         /usr/bin/systemctl enable openibd >/dev/null  2>&1 || true
 fi
 
-%if "%{WINDRIVER}" == "1"
+%if "%{WINDRIVER}" == "1" || "%{BLUENIX}" == "1"
 /usr/sbin/update-rc.d openibd defaults || true
 %endif
 
@@ -510,7 +518,6 @@ test -s /var/run/openibd.bootid || echo manual > /var/run/openibd.bootid || true
 if [ -e /etc/modprobe.conf.dist ]; then
 	sed -i -r -e 's/^(\s*install ib_core.*)/#MLX# \1/' /etc/modprobe.conf.dist
 	sed -i -r -e 's/^(\s*alias ib.*)/#MLX# \1/' /etc/modprobe.conf.dist
-	sed -i -r -e 's/^(\s*alias net-pf-26 ib_sdp.*)/#MLX# \1/' /etc/modprobe.conf.dist
 fi
 
 %if %{build_ipoib}
@@ -568,7 +575,7 @@ if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
                         true
                 fi
           fi
-%if "%{WINDRIVER}" == "1"
+%if "%{WINDRIVER}" == "1" || "%{BLUENIX}" == "1"
 /usr/sbin/update-rc.d -f openibd remove || true
 %endif
 
@@ -614,37 +621,25 @@ fi
 /usr/sbin/show_gids
 /usr/sbin/compat_gid_gen
 /usr/sbin/cma_roce_mode
+/usr/sbin/cma_roce_tos
 %dir %{_defaultdocdir}/ib2ib
 %{_defaultdocdir}/ib2ib/*
 %config(noreplace) /etc/modprobe.d/mlnx.conf
 %{_sbindir}/*
 /etc/udev/rules.d/90-ib.rules
 /bin/mlnx_interface_mgr.sh
-%if "%{WINDRIVER}" == "1"
+%if "%{WINDRIVER}" == "1" || "%{BLUENIX}" == "1"
 /usr/sbin/net-interfaces
 %endif
-%if %{build_qib}
-%config(noreplace) /etc/infiniband/truescale.cmds
-%endif
 %if %{build_ipoib}
-/etc/modprobe.d/ib_ipoib.conf
-%if %{build_eipoib}
-/sbin/ipoibd
-/sbin/eipoib_daemon
+%config(noreplace) /etc/modprobe.d/ib_ipoib.conf
 %endif
-%endif
-/etc/modprobe.d/ib_sdp.conf
 %if %{build_mlx4} || %{build_mlx5}
 %{_bindir}/ibdev2netdev
 %endif
 %if %{build_mlx4_en}
 /sbin/connectx_port_config
 %config(noreplace) /etc/infiniband/connectx.conf
-%endif
-%if %{build_mlx4_vnic}
-/etc/init.d/mlx4_vnic_confd
-/sbin/mlx4_vnic_info
-/sbin/mlx4_vnicd
 %endif
 
 %if "%{KMP}" != "1"

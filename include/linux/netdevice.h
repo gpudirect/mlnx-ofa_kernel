@@ -62,6 +62,16 @@ static inline void netdev_rss_key_fill(void *addr, size_t len)
 }
 #endif
 
+#ifndef HAVE_NETIF_TRANS_UPDATE
+static inline void netif_trans_update(struct net_device *dev)
+{
+	struct netdev_queue *txq = netdev_get_tx_queue(dev, 0);
+
+	if (txq->trans_start != jiffies)
+		txq->trans_start = jiffies;
+}
+#endif
+
 #ifndef NAPI_POLL_WEIGHT
 /* Default NAPI poll() weight
  * Device drivers are strongly advised to not use bigger value
@@ -91,6 +101,43 @@ static inline void netdev_rss_key_fill(void *addr, size_t len)
 #undef alloc_netdev
 #define alloc_netdev(sizeof_priv, name, name_assign_type, setup) \
 	alloc_netdev_mqs(sizeof_priv, name, setup, 1, 1)
+#endif
+
+#ifndef HAVE_NETIF_IS_BOND_MASTER
+#define netif_is_bond_master LINUX_BACKPORT(netif_is_bond_master)
+static inline bool netif_is_bond_master(struct net_device *dev)
+{
+	return dev->flags & IFF_MASTER && dev->priv_flags & IFF_BONDING;
+}
+#endif
+
+#ifndef HAVE_SELECT_QUEUE_FALLBACK_T
+#define fallback(dev, skb) __netdev_pick_tx(dev, skb)
+#endif
+
+#ifndef HAVE_NAPI_SCHEDULE_IRQOFF
+#define napi_schedule_irqoff(napi) napi_schedule(napi)
+#endif
+
+#ifndef HAVE_DEV_UC_DEL
+#define dev_uc_del(netdev, mac) dev_unicast_delete(netdev, mac)
+#endif
+#ifndef HAVE_DEV_MC_DEL
+#define dev_mc_del(netdev, mac) dev_mc_delete(netdev, mac, netdev->addr_len, true)
+#endif
+
+#ifdef HAVE_REGISTER_NETDEVICE_NOTIFIER_RH
+#define register_netdevice_notifier register_netdevice_notifier_rh
+#define unregister_netdevice_notifier unregister_netdevice_notifier_rh
+#endif
+
+#ifndef HAVE_NETDEV_NOTIFIER_INFO_TO_DEV
+#define netdev_notifier_info_to_dev LINUX_BACKPORT(netdev_notifier_info_to_dev)
+static inline struct net_device *
+netdev_notifier_info_to_dev(void *ptr)
+{
+	return (struct net_device *)ptr;
+}
 #endif
 
 #endif	/* _COMPAT_LINUX_NETDEVICE_H */

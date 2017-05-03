@@ -40,7 +40,7 @@ fi
 rm -f $MOD_SYMVERS
 rm -f $SYMS
 
-for mod in $(find ${MODULES_DIR} -name '*.ko') ; do
+for mod in $(find ${MODULES_DIR} -name '*.ko' -o -name '*.ko.gz') ; do
            nm -o $mod |grep __crc >> $SYMS
            n_mods=$((n_mods+1))
 done
@@ -54,7 +54,7 @@ while [ $n -le $n_syms ] ; do
 
     line1=$(echo $line|cut -f1 -d:)
     line2=$(echo $line|cut -f2 -d:)
-    file=$(echo $line1| sed -e 's@./@@' -e 's@.ko@@' -e "s@$PWD/@@")
+    file=$(echo $line1| sed -e 's@./@@' -e 's@.ko.gz@@' -e 's@.ko@@' -e "s@$PWD/@@")
     crc=$(echo $line2|cut -f1 -d" ")
     sym=$(echo $line2|cut -f3 -d" ")
     echo -e  "0x$crc\t$sym\t$file" >> $MOD_SYMVERS

@@ -80,9 +80,7 @@ struct mlx4_dev_cap {
 	int max_eqs;
 	int num_sys_eqs;
 	int reserved_mtts;
-	int max_mrw_sz;
 	int reserved_mrws;
-	int max_mtt_seg;
 	int max_requester_per_qp;
 	int max_responder_per_qp;
 	int max_rdma_global;
@@ -121,18 +119,18 @@ struct mlx4_dev_cap {
 	int cmpt_entry_sz;
 	int mtt_entry_sz;
 	int resize_srq;
+	u8 cq_overrun;
 	u32 bmme_flags;
 	u32 reserved_lkey;
 	u64 max_icm_sz;
 	int max_gso_sz;
 	int max_rss_tbl_sz;
-	u32 max_basic_counters;
-	u32 sync_qp;
-	u32 max_extended_counters;
-	u32 mad_demux;
-	u8 cq_overrun;
+	u32 max_counters;
+	u32 max_counters_basic;
+	u32 max_counters_ext;
 	u32 dmfs_high_rate_qpn_base;
 	u32 dmfs_high_rate_qpn_range;
+	struct mlx4_rate_limit_caps rl_caps;
 	struct mlx4_port_cap port_cap[MLX4_MAX_PORTS + 1];
 };
 
@@ -158,7 +156,6 @@ struct mlx4_func_cap {
 	u8	flags0;
 	u8	flags1;
 	u64	phys_port_id;
-	u8	def_counter_index;
 	u32	extra_flags;
 	u8	fvl;
 };

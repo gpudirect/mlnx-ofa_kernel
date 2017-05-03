@@ -37,8 +37,8 @@
 
 #define DRV_NAME	"ib_srp"
 #define PFX		DRV_NAME ": "
-#define DRV_VERSION	"3.4-1.0.0"
-#define DRV_RELDATE	"25 Sep 2016"
+#define DRV_VERSION	"4.0-2.0.0"
+#define DRV_RELDATE	"28 Mar 2017"
 
 MODULE_AUTHOR("Alaa Hleihel");
 MODULE_DESCRIPTION("ib_srp dummy kernel module");

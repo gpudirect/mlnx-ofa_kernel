@@ -221,7 +221,7 @@ dist:
 
 clean:
 	rm -f *.o
-	rm -f *.ko
+	rm -f *.ko *.ko.gz
 	rm -f *.mod.c
 	rm -f Module*.symvers modules*.order
 

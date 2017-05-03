@@ -34,60 +34,38 @@
 #include <linux/module.h>
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
-#include <rdma/ib_mad.h>
 #include "mlx5_core.h"
 
-static int can_do_mad_ifc(struct mlx5_core_dev *dev, u8 port_num, u8 *data)
-{
-	struct mlx5_hca_vport_context *rep;
-	bool has_smi;
-	int err;
-
-	if (data[1] != IB_MGMT_CLASS_SUBN_LID_ROUTED &&
-	    data[1] != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
-		return 1;
-	if (MLX5_CAP_GEN(dev, ib_virt) && !mlx5_core_is_pf(dev))
-		return 0;
-	rep = kzalloc(sizeof(*rep), GFP_KERNEL);
-	if (!rep)
-		return 0;
-	err = mlx5_core_query_hca_vport_context(dev, 0, port_num, 0, rep);
-	has_smi = rep->has_smi;
-	kfree(rep);
-	if (err || !has_smi)
-		return 0;
-	return 1;
-}
-
-int mlx5_core_mad_ifc(struct mlx5_core_dev *dev, void *inb, void *outb,
+int mlx5_core_mad_ifc(struct mlx5_core_dev *dev, const void *inb, void *outb,
 		      u16 opmod, u8 port)
 {
-	struct mlx5_mad_ifc_mbox_in *in = NULL;
-	struct mlx5_mad_ifc_mbox_out *out = NULL;
-	int err;
+	int outlen = MLX5_ST_SZ_BYTES(mad_ifc_out);
+	int inlen = MLX5_ST_SZ_BYTES(mad_ifc_in);
+	int err = -ENOMEM;
+	void *data;
+	void *resp;
+	u32 *out;
+	u32 *in;
 
-	in = kzalloc(sizeof(*in), GFP_KERNEL);
-	if (!in)
-		return -ENOMEM;
-
-	out = kzalloc(sizeof(*out), GFP_KERNEL);
-	if (!out) {
-		err = -ENOMEM;
+	in = kzalloc(inlen, GFP_KERNEL);
+	out = kzalloc(outlen, GFP_KERNEL);
+	if (!in || !out)
 		goto out;
-	}
 
-	in->hdr.opcode = cpu_to_be16(MLX5_CMD_OP_MAD_IFC);
-	in->hdr.opmod = cpu_to_be16(opmod);
-	in->port = port;
+	MLX5_SET(mad_ifc_in, in, opcode, MLX5_CMD_OP_MAD_IFC);
+	MLX5_SET(mad_ifc_in, in, op_mod, opmod);
+	MLX5_SET(mad_ifc_in, in, port, port);
 
-	memcpy(in->data, inb, sizeof(in->data));
-	if (!can_do_mad_ifc(dev, port, in->data))
-		return -EPERM;
+	data = MLX5_ADDR_OF(mad_ifc_in, in, mad);
+	memcpy(data, inb, MLX5_FLD_SZ_BYTES(mad_ifc_in, mad));
 
-	err = mlx5_cmd_exec_check_status(dev, (void *)in, sizeof(*in),
-					 (void *)out, sizeof(*out));
-	if (!err)
-		memcpy(outb, out->data, sizeof(out->data));
+	err = mlx5_cmd_exec(dev, in, inlen, out, outlen);
+	if (err)
+		goto out;
+
+	resp = MLX5_ADDR_OF(mad_ifc_out, out, response_mad_packet);
+	memcpy(outb, resp,
+	       MLX5_FLD_SZ_BYTES(mad_ifc_out, response_mad_packet));
 
 out:
 	kfree(out);

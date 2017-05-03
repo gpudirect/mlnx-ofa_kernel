@@ -37,417 +37,38 @@
 #include <linux/sched.h>
 #include <linux/export.h>
 #include <linux/hugetlb.h>
-#include <linux/dma-attrs.h>
 #include <linux/slab.h>
 #include <rdma/ib_umem_odp.h>
 
 #include "uverbs.h"
 
-
-
-static void umem_vma_open(struct vm_area_struct *area)
-{
-	/* Implementation is to prevent high level from merging some
-	VMAs in case of unmap/mmap on part of memory area.
-	Rlimit is handled as well.
-	*/
-	unsigned long total_size;
-	unsigned long ntotal_pages;
-
-	total_size = area->vm_end - area->vm_start;
-	ntotal_pages = PAGE_ALIGN(total_size) >> PAGE_SHIFT;
-	/* no locking is needed:
-	umem_vma_open is called from vm_open which is always called
-	with mm->mmap_sem held for writing.
-	*/
-	if (current->mm)
-		current->mm->pinned_vm += ntotal_pages;
-	return;
-}
-
-static void umem_vma_close(struct vm_area_struct *area)
-{
-	/* Implementation is to prevent high level from merging some
-	VMAs in case of unmap/mmap on part of memory area.
-	Rlimit is handled as well.
-	*/
-	unsigned long total_size;
-	unsigned long ntotal_pages;
-
-	total_size = area->vm_end - area->vm_start;
-	ntotal_pages = PAGE_ALIGN(total_size) >> PAGE_SHIFT;
-	/* no locking is needed:
-	umem_vma_close is called from close which is always called
-	with mm->mmap_sem held for writing.
-	*/
-	if (current->mm)
-		current->mm->pinned_vm -= ntotal_pages;
-	return;
-
-}
-
-static const struct vm_operations_struct umem_vm_ops = {
-	.open = umem_vma_open,
-	.close = umem_vma_close
-};
-
-int ib_umem_map_to_vma(struct ib_umem *umem,
-				struct vm_area_struct *vma)
-{
-
-	int ret;
-	unsigned long ntotal_pages;
-	unsigned long total_size;
-	struct page *page;
-	unsigned long vma_entry_number = 0;
-	int i;
-	unsigned long locked;
-	unsigned long lock_limit;
-	struct scatterlist *sg;
-
-	/* Total size expects to be already page aligned - verifying anyway */
-	total_size = vma->vm_end - vma->vm_start;
-	/* umem length expexts to be equal to the given vma*/
-	if (umem->length != total_size)
-		return -EINVAL;
-
-	ntotal_pages = PAGE_ALIGN(total_size) >> PAGE_SHIFT;
-	/* ib_umem_map_to_vma is called as part of mmap
-	with mm->mmap_sem held for writing.
-	No need to lock.
-	*/
-	locked = ntotal_pages + current->mm->pinned_vm;
-	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-
-	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK))
-		return -ENOMEM;
-
-	for_each_sg(umem->sg_head.sgl, sg, umem->npages, i) {
-		/* We reached end of vma - going out from loop */
-		if (vma_entry_number >= ntotal_pages)
-			goto end;
-		page = sg_page(sg);
-		if (PageLRU(page) || PageAnon(page)) {
-			/* Above cases are not supported
-			    as of page fault issues for that VMA.
-			*/
-			ret = -ENOSYS;
-			goto err_vm_insert;
-		}
-		ret = vm_insert_page(vma, vma->vm_start +
-			(vma_entry_number << PAGE_SHIFT), page);
-		if (ret < 0)
-			goto err_vm_insert;
-
-		vma_entry_number++;
-	}
-
-end:
-	/* We expect to have enough pages   */
-	if (vma_entry_number >= ntotal_pages) {
-		current->mm->pinned_vm = locked;
-		vma->vm_ops =  &umem_vm_ops;
-		return 0;
-	}
-	/* Not expected but if we reached here
-	    not enough pages were available to be mapped into vma.
-	*/
-	ret = -EINVAL;
-	WARN(1, KERN_WARNING
-		"ib_umem_map_to_vma: number of pages mismatched(%lu,%lu)\n",
-				vma_entry_number, ntotal_pages);
-
-err_vm_insert:
-
-	zap_vma_ptes(vma, vma->vm_start, total_size);
-	return ret;
-
-}
-EXPORT_SYMBOL(ib_umem_map_to_vma);
-
-static void ib_cmem_release(struct kref *ref)
-{
-
-	struct ib_cmem *cmem;
-	struct ib_cmem_block *cmem_block, *tmp;
-	unsigned long ntotal_pages;
-
-	cmem = container_of(ref, struct ib_cmem, refcount);
-
-	list_for_each_entry_safe(cmem_block, tmp, &cmem->ib_cmem_block, list) {
-		__free_pages(cmem_block->page, cmem->block_order);
-		list_del(&cmem_block->list);
-		kfree(cmem_block);
-	}
-	/* no locking is needed:
-	ib_cmem_release is called from vm_close which is always called
-	with mm->mmap_sem held for writing.
-	The only exception is when the process shutting down but in that case
-	counter not relevant any more.*/
-	if (current->mm) {
-		ntotal_pages = PAGE_ALIGN(cmem->length) >> PAGE_SHIFT;
-		current->mm->pinned_vm -= ntotal_pages;
-	}
-	kfree(cmem);
-
-}
-
-/**
- * ib_cmem_release_contiguous_pages - release memory allocated by
- *                                              ib_cmem_alloc_contiguous_pages.
- * @cmem: cmem struct to release
- */
-void ib_cmem_release_contiguous_pages(struct ib_cmem *cmem)
-{
-	kref_put(&cmem->refcount, ib_cmem_release);
-}
-EXPORT_SYMBOL(ib_cmem_release_contiguous_pages);
-
-static void cmem_vma_open(struct vm_area_struct *area)
-{
-	struct ib_cmem *ib_cmem;
-	ib_cmem = (struct ib_cmem *)(area->vm_private_data);
-
-	/* vm_open and vm_close are always called with mm->mmap_sem held for
-	writing. The only exception is when the process is shutting down, at
-	which point vm_close is called with no locks held, but since it is
-	after the VMAs have been detached, it is impossible that vm_open will
-	be called. Therefore, there is no need to synchronize the kref_get and
-	kref_put calls.*/
-	kref_get(&ib_cmem->refcount);
-}
-
-static void cmem_vma_close(struct vm_area_struct *area)
-{
-	struct ib_cmem *cmem;
-	cmem = (struct ib_cmem *)(area->vm_private_data);
-
-	ib_cmem_release_contiguous_pages(cmem);
-
-}
-
-
-static const struct vm_operations_struct cmem_contig_pages_vm_ops = {
-	.open = cmem_vma_open,
-	.close = cmem_vma_close
-};
-
-/**
- * ib_cmem_map_contiguous_pages_to_vma - map contiguous pages into VMA
- * @ib_cmem: cmem structure returned by ib_cmem_alloc_contiguous_pages
- * @vma: VMA to inject pages into.
- */
-int ib_cmem_map_contiguous_pages_to_vma(struct ib_cmem *ib_cmem,
-						struct vm_area_struct *vma)
-{
-
-	int ret;
-	unsigned long page_entry;
-	unsigned long ntotal_pages;
-	unsigned long ncontig_pages;
-	unsigned long total_size;
-	struct page *page;
-	unsigned long vma_entry_number = 0;
-	struct ib_cmem_block *ib_cmem_block = NULL;
-
-	total_size = vma->vm_end - vma->vm_start;
-	if (ib_cmem->length != total_size)
-		return -EINVAL;
-
-	if (total_size != PAGE_ALIGN(total_size)) {
-		WARN(1,
-		"ib_cmem_map: total size %lu not aligned to page size\n",
-		total_size);
-		return -EINVAL;
-	}
-
-	ntotal_pages = total_size >> PAGE_SHIFT;
-	ncontig_pages = 1 << ib_cmem->block_order;
-
-	list_for_each_entry(ib_cmem_block, &(ib_cmem->ib_cmem_block), list) {
-		page = ib_cmem_block->page;
-		for (page_entry = 0; page_entry < ncontig_pages; page_entry++) {
-			/* We reached end of vma - going out from both loops */
-			if (vma_entry_number >= ntotal_pages)
-				goto end;
-
-			ret = vm_insert_page(vma, vma->vm_start +
-				(vma_entry_number << PAGE_SHIFT), page);
-			if (ret < 0)
-				goto err_vm_insert;
-
-			vma_entry_number++;
-			page++;
-		}
-	}
-
-end:
-
-	/* We expect to have enough pages   */
-	if (vma_entry_number >= ntotal_pages) {
-		vma->vm_ops =  &cmem_contig_pages_vm_ops;
-		vma->vm_private_data = ib_cmem;
-		return 0;
-	}
-	/* Not expected but if we reached here
-	    not enough contiguous pages were registered
-	*/
-	ret = -EINVAL;
-
-err_vm_insert:
-
-	zap_vma_ptes(vma, vma->vm_start, total_size);
-	return ret;
-
-}
-EXPORT_SYMBOL(ib_cmem_map_contiguous_pages_to_vma);
-
-
-
-/**
- * ib_cmem_alloc_contiguous_pages - allocate contiguous pages
- * @context: userspace context to allocate memory for
- * @total_size: total required size for that allocation.
- * @page_size_order: order of one contiguous page.
- * @numa_nude: From which numa node to allocate memory
- *             when numa_nude < 0 use default numa_nude.
- */
-struct ib_cmem *ib_cmem_alloc_contiguous_pages(struct ib_ucontext *context,
-				unsigned long total_size,
-				unsigned long page_size_order,
-				int numa_node)
-{
-	struct ib_cmem *cmem;
-	unsigned long ntotal_pages;
-	unsigned long ncontiguous_pages;
-	unsigned long ncontiguous_groups;
-	struct page *page;
-	int i;
-	int ncontiguous_pages_order;
-	struct ib_cmem_block *ib_cmem_block;
-	unsigned long locked;
-	unsigned long lock_limit;
-
-	if (page_size_order < PAGE_SHIFT || page_size_order > 31)
-		return ERR_PTR(-EINVAL);
-
-	cmem = kzalloc(sizeof *cmem, GFP_KERNEL);
-	if (!cmem)
-		return ERR_PTR(-ENOMEM);
-
-	kref_init(&cmem->refcount);
-	cmem->context   = context;
-	INIT_LIST_HEAD(&cmem->ib_cmem_block);
-
-	/* Total size is expected to be already page aligned -
-	    verifying anyway.
-	*/
-	ntotal_pages = PAGE_ALIGN(total_size) >> PAGE_SHIFT;
-	/* ib_cmem_alloc_contiguous_pages is called as part of mmap
-	with mm->mmap_sem held for writing.
-	No need to lock
-	 */
-	locked     = ntotal_pages + current->mm->pinned_vm;
-	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-
-	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK))
-		goto err_alloc;
-
-	/* How many contiguous pages do we need in 1 block */
-	ncontiguous_pages = (1 << page_size_order) >> PAGE_SHIFT;
-	ncontiguous_pages_order = ilog2(ncontiguous_pages);
-	ncontiguous_groups = (ntotal_pages >> ncontiguous_pages_order)  +
-		(!!(ntotal_pages & (ncontiguous_pages - 1)));
-
-	/* Checking MAX_ORDER to prevent WARN via calling alloc_pages below */
-	if (ncontiguous_pages_order >= MAX_ORDER)
-		goto err_alloc;
-	/* we set block_order before starting allocation to prevent
-	   a leak in a failure flow in ib_cmem_release.
-	   cmem->length has at that step value 0 from kzalloc as expected */
-	cmem->block_order = ncontiguous_pages_order;
-	for (i = 0; i < ncontiguous_groups; i++) {
-		/* Allocating the managed entry */
-		ib_cmem_block = kmalloc(sizeof(struct ib_cmem_block),
-				GFP_KERNEL);
-		if (!ib_cmem_block)
-			goto err_alloc;
-
-		if (numa_node < 0)
-			page =  alloc_pages(GFP_HIGHUSER | __GFP_ZERO |
-					    __GFP_COMP | __GFP_NOWARN,
-					    ncontiguous_pages_order);
-		else
-			page =  alloc_pages_node(numa_node,
-						 GFP_HIGHUSER | __GFP_ZERO |
-						 __GFP_COMP | __GFP_NOWARN,
-						 ncontiguous_pages_order);
-
-		if (!page) {
-			kfree(ib_cmem_block);
-			/* We should deallocate previous succeeded allocatations
-			     if exists.
-			*/
-			goto err_alloc;
-		}
-
-		ib_cmem_block->page = page;
-		list_add_tail(&ib_cmem_block->list, &cmem->ib_cmem_block);
-	}
-
-	cmem->length = total_size;
-
-	current->mm->pinned_vm = locked;
-	return cmem;
-
-err_alloc:
-	ib_cmem_release_contiguous_pages(cmem);
-	return ERR_PTR(-ENOMEM);
-
-}
-EXPORT_SYMBOL(ib_cmem_alloc_contiguous_pages);
-
 static struct ib_umem *peer_umem_get(struct ib_peer_memory_client *ib_peer_mem,
-				       struct ib_umem *umem, unsigned long addr,
-				       int dmasync, int invalidation_supported)
+				     struct ib_umem *umem, unsigned long addr,
+				     int dmasync, unsigned long peer_mem_flags)
 {
 	int ret;
 	const struct peer_memory_client *peer_mem = ib_peer_mem->peer_mem;
 	struct invalidation_ctx *invalidation_ctx = NULL;
 
 	umem->ib_peer_mem = ib_peer_mem;
-	if (invalidation_supported) {
-		invalidation_ctx = kzalloc(sizeof(*invalidation_ctx), GFP_KERNEL);
-		if (!invalidation_ctx) {
-			ret = -ENOMEM;
-			goto end;
-		}
-		umem->invalidation_ctx = invalidation_ctx;
-		invalidation_ctx->umem = umem;
-		mutex_lock(&ib_peer_mem->lock);
-		ret = ib_peer_insert_context(ib_peer_mem, invalidation_ctx,
-			&invalidation_ctx->context_ticket);
-		/* unlock before calling get pages to prevent a dead-lock from the callback */
-		mutex_unlock(&ib_peer_mem->lock);
+	if (peer_mem_flags & IB_PEER_MEM_INVAL_SUPP) {
+		ret = ib_peer_create_invalidation_ctx(ib_peer_mem, umem, &invalidation_ctx);
 		if (ret)
 			goto end;
 	}
 
-	ret = peer_mem->get_pages(addr, umem->length, umem->writable, 1,
-				&umem->sg_head, 
-				umem->peer_mem_client_context,
-				invalidation_ctx ?
-				(void *)invalidation_ctx->context_ticket : NULL);
-
-	if (invalidation_ctx) {
-		/* taking the lock back, checking that wasn't invalidated at that time */
-		mutex_lock(&ib_peer_mem->lock);
-		if (invalidation_ctx->peer_invalidated) {
-			printk(KERN_ERR "peer_umem_get: pages were invalidated by peer\n");
-			ret = -EINVAL;
-		}
-	}
-
+	/*
+	 * We always request write permissions to the pages, to force breaking of any CoW
+	 * during the registration of the MR. For read-only MRs we use the "force" flag to
+	 * indicate that CoW breaking is required but the registration should not fail if
+	 * referencing read-only areas.
+	 */
+	ret = peer_mem->get_pages(addr, umem->length,
+				  1, !umem->writable,
+				  &umem->sg_head,
+				  umem->peer_mem_client_context,
+				  invalidation_ctx ?
+				  invalidation_ctx->context_ticket : 0);
 	if (ret)
 		goto out;
 
@@ -456,91 +77,49 @@ static struct ib_umem *peer_umem_get(struct ib_peer_memory_client *ib_peer_mem,
 	if (umem->page_size <= 0)
 		goto put_pages;
 
-	umem->address = addr;
 	ret = peer_mem->dma_map(&umem->sg_head,
-					umem->peer_mem_client_context,
-					umem->context->device->dma_device,
-					dmasync,
-					&umem->nmap);
+				umem->peer_mem_client_context,
+				umem->context->device->dma_device,
+				dmasync,
+				&umem->nmap);
 	if (ret)
 		goto put_pages;
 
-	ib_peer_mem->stats.num_reg_pages +=
-			umem->nmap * (umem->page_size >> PAGE_SHIFT);
-	ib_peer_mem->stats.num_alloc_mrs += 1;
+	atomic64_add(umem->nmap, &ib_peer_mem->stats.num_reg_pages);
+	atomic64_add(umem->nmap * umem->page_size, &ib_peer_mem->stats.num_reg_bytes);
+	atomic64_inc(&ib_peer_mem->stats.num_alloc_mrs);
 	return umem;
 
 put_pages:
-
-	peer_mem->put_pages(&umem->sg_head,
-			    umem->peer_mem_client_context);
+	peer_mem->put_pages(&umem->sg_head, umem->peer_mem_client_context);
 out:
-	if (invalidation_ctx) {
-		ib_peer_remove_context(ib_peer_mem, invalidation_ctx->context_ticket);
-		mutex_unlock(&umem->ib_peer_mem->lock);
-	}
-
-end:
 	if (invalidation_ctx)
-		kfree(invalidation_ctx);
-
-	ib_put_peer_client(ib_peer_mem, umem->peer_mem_client_context,
-				umem->peer_mem_srcu_key);
+		ib_peer_destroy_invalidation_ctx(ib_peer_mem, invalidation_ctx);
+end:
+	ib_put_peer_client(ib_peer_mem, umem->peer_mem_client_context);
 	kfree(umem);
 	return ERR_PTR(ret);
 }
+
 static void peer_umem_release(struct ib_umem *umem)
 {
 	struct ib_peer_memory_client *ib_peer_mem = umem->ib_peer_mem;
 	const struct peer_memory_client *peer_mem = ib_peer_mem->peer_mem;
 	struct invalidation_ctx *invalidation_ctx = umem->invalidation_ctx;
 
-	if (invalidation_ctx) {
-
-		int peer_callback;
-		int inflight_invalidation;
-		/* If we are not under peer callback we must take the lock before removing
-		  * core ticket from the tree and releasing its umem.
-		  * It will let any inflight callbacks to be ended safely.
-		  * If we are under peer callback or under error flow of reg_mr so that context
-		  * wasn't activated yet lock was already taken.
-		*/
-		if (invalidation_ctx->func && !invalidation_ctx->peer_callback)
-			mutex_lock(&ib_peer_mem->lock);
-		ib_peer_remove_context(ib_peer_mem, invalidation_ctx->context_ticket);
-		/* make sure to check inflight flag after took the lock and remove from tree.
-		  * in addition, from that point using local variables for peer_callback and
-		  * inflight_invalidation as after the complete invalidation_ctx can't be accessed
-		  * any more as it may be freed by the callback.
-		*/
-		peer_callback = invalidation_ctx->peer_callback;
-		inflight_invalidation = invalidation_ctx->inflight_invalidation;
-		if (inflight_invalidation)
-			complete(&invalidation_ctx->comp);
-		/* On peer callback lock is handled externally */
-		if (!peer_callback)
-			/* unlocking before put_pages */
-			mutex_unlock(&ib_peer_mem->lock);
-		/* in case under callback context or callback is pending let it free the invalidation context */
-		if (!peer_callback && !inflight_invalidation)
-			kfree(invalidation_ctx);
-	}
+	if (invalidation_ctx)
+		ib_peer_destroy_invalidation_ctx(ib_peer_mem, invalidation_ctx);
 
 	peer_mem->dma_unmap(&umem->sg_head,
-					umem->peer_mem_client_context,
-					umem->context->device->dma_device);
+			    umem->peer_mem_client_context,
+			    umem->context->device->dma_device);
 	peer_mem->put_pages(&umem->sg_head,
-					  umem->peer_mem_client_context);
-
-	ib_peer_mem->stats.num_dereg_pages +=
-			umem->nmap * (umem->page_size >> PAGE_SHIFT);
-	ib_peer_mem->stats.num_dealloc_mrs += 1;
-	ib_put_peer_client(ib_peer_mem, umem->peer_mem_client_context,
-				umem->peer_mem_srcu_key);
+			    umem->peer_mem_client_context);
+	atomic64_add(umem->nmap, &ib_peer_mem->stats.num_dereg_pages);
+	atomic64_add(umem->nmap * umem->page_size, &ib_peer_mem->stats.num_dereg_bytes);
+	atomic64_inc(&ib_peer_mem->stats.num_dealloc_mrs);
+	ib_put_peer_client(ib_peer_mem, umem->peer_mem_client_context);
 	kfree(umem);
-
-	return;
-
 }
 
 static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty)
@@ -551,8 +130,8 @@ static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int d
 
 	if (umem->nmap > 0)
 		ib_dma_unmap_sg(dev, umem->sg_head.sgl,
-				    umem->nmap,
-				    DMA_BIDIRECTIONAL);
+				umem->nmap,
+				DMA_BIDIRECTIONAL);
 
 	for_each_sg(umem->sg_head.sgl, sg, umem->npages, i) {
 
@@ -567,21 +146,27 @@ static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int d
 
 }
 
-void ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
-					       umem_invalidate_func_t func,
-					       void *cookie)
+int ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
+					   umem_invalidate_func_t func,
+					   void *cookie)
 {
 	struct invalidation_ctx *invalidation_ctx = umem->invalidation_ctx;
+	int ret = 0;
 
+	mutex_lock(&umem->ib_peer_mem->lock);
+	if (invalidation_ctx->peer_invalidated) {
+		pr_err("ib_umem_activate_invalidation_notifier: pages were invalidated by peer\n");
+		ret = -EINVAL;
+		goto end;
+	}
 	invalidation_ctx->func = func;
 	invalidation_ctx->cookie = cookie;
-
 	/* from that point any pending invalidations can be called */
+end:
 	mutex_unlock(&umem->ib_peer_mem->lock);
-	return;
+	return ret;
 }
 EXPORT_SYMBOL(ib_umem_activate_invalidation_notifier);
-
 /**
  * ib_umem_get - Pin and DMA map userspace memory.
  *
@@ -593,10 +178,11 @@ EXPORT_SYMBOL(ib_umem_activate_invalidation_notifier);
  * @size: length of region to pin
  * @access: IB_ACCESS_xxx flags for memory being pinned
  * @dmasync: flush in-flight DMA when the memory region is written
+ * @peer_mem_flags: IB_PEER_MEM_xxx flags for memory being used
  */
-struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access, int dmasync,
-			    int invalidation_supported)
+struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
+			       size_t size, int access, int dmasync,
+			       unsigned long peer_mem_flags)
 {
 	struct ib_umem *umem;
 	struct page **page_list;
@@ -607,26 +193,33 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 	unsigned long npages;
 	int ret;
 	int i;
-	DEFINE_DMA_ATTRS(attrs);
+	unsigned long dma_attrs = 0;
 	struct scatterlist *sg, *sg_list_start;
 	int need_release = 0;
+	unsigned int gup_flags = FOLL_WRITE;
 
 	if (dmasync)
-		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
+		dma_attrs |= DMA_ATTR_WRITE_BARRIER;
 
-	if (!size)
+	if (!size) {
+		pr_err("%s: illegal size=%zu\n", __func__, size);
 		return ERR_PTR(-EINVAL);
+	}
 
 	/*
 	 * If the combination of the addr and size requested for this memory
 	 * region causes an integer overflow, return error.
 	 */
 	if (((addr + size) < addr) ||
-	    PAGE_ALIGN(addr + size) < (addr + size))
+	    PAGE_ALIGN(addr + size) < (addr + size)) {
+		pr_err("%s: integer overflow, size=%zu\n", __func__, size);
 		return ERR_PTR(-EINVAL);
+	}
 
-	if (!can_do_mlock())
+	if (!can_do_mlock()) {
+		pr_err("%s: no mlock permission\n", __func__);
 		return ERR_PTR(-EPERM);
+	}
 
 	umem = kzalloc(sizeof *umem, GFP_KERNEL);
 	if (!umem)
@@ -648,18 +241,14 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 		(IB_ACCESS_LOCAL_WRITE   | IB_ACCESS_REMOTE_WRITE |
 		 IB_ACCESS_REMOTE_ATOMIC | IB_ACCESS_MW_BIND));
 
-	umem->odp_data = NULL;
-
-	if (invalidation_supported || context->peer_mem_private_data) {
-
+	if (peer_mem_flags & IB_PEER_MEM_ALLOW) {
 		struct ib_peer_memory_client *peer_mem_client;
 
-		peer_mem_client =  ib_get_peer_client(context, addr, size,
-					&umem->peer_mem_client_context,
-					&umem->peer_mem_srcu_key);
+		peer_mem_client =  ib_get_peer_client(context, addr, size, peer_mem_flags,
+					&umem->peer_mem_client_context);
 		if (peer_mem_client)
 			return peer_umem_get(peer_mem_client, umem, addr,
-					dmasync, invalidation_supported);
+					dmasync, peer_mem_flags);
 	}
 
 	if (access & IB_ACCESS_ON_DEMAND) {
@@ -670,6 +259,8 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 		}
 		return umem;
 	}
+
+	umem->odp_data = NULL;
 
 	/* We assume the memory is from hugetlb until proved otherwise */
 	umem->hugetlb   = 1;
@@ -696,6 +287,8 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 
 	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
+		pr_err("%s: requested to lock(%lu) while limit is(%lu)\n",
+		       __func__, locked, lock_limit);
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -703,25 +296,38 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 	cur_base = addr & PAGE_MASK;
 
 	if (npages == 0 || npages > UINT_MAX) {
+		pr_err("%s: npages(%lu) isn't in the range 1..%u\n", __func__,
+		       npages, UINT_MAX);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	ret = sg_alloc_table(&umem->sg_head, npages, GFP_KERNEL);
-	if (ret)
+	if (ret) {
+		pr_err("%s: failed to allocate sg table, npages=%lu\n",
+		       __func__, npages);
 		goto out;
+	}
+
+	if (!umem->writable)
+		gup_flags |= FOLL_FORCE;
 
 	need_release = 1;
 	sg_list_start = umem->sg_head.sgl;
 
 	while (npages) {
-		ret = get_user_pages(current, current->mm, cur_base,
+		ret = get_user_pages(cur_base,
 				     min_t(unsigned long, npages,
 					   PAGE_SIZE / sizeof (struct page *)),
-				     1, !umem->writable, page_list, vma_list);
+				     gup_flags, page_list, vma_list);
 
-		if (ret < 0)
+		if (ret < 0) {
+			pr_err("%s: failed to get user pages, nr_pages=%lu, flags=%u\n", __func__,
+			       min_t(unsigned long, npages,
+				     PAGE_SIZE / sizeof(struct page *)),
+			       gup_flags);
 			goto out;
+		}
 
 		umem->npages += ret;
 		cur_base += ret * PAGE_SIZE;
@@ -742,9 +348,11 @@ struct ib_umem *ib_umem_get_ex(struct ib_ucontext *context, unsigned long addr,
 				  umem->sg_head.sgl,
 				  umem->npages,
 				  DMA_BIDIRECTIONAL,
-				  &attrs);
+				  dma_attrs);
 
 	if (umem->nmap <= 0) {
+		pr_err("%s: failed to map scatterlist, npages=%d\n", __func__,
+		       umem->npages);
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -766,13 +374,6 @@ out:
 	free_page((unsigned long) page_list);
 
 	return ret < 0 ? ERR_PTR(ret) : umem;
-}
-EXPORT_SYMBOL(ib_umem_get_ex);
-struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access, int dmasync)
-{
-	return ib_umem_get_ex(context, addr,
-			    size, access, dmasync, 0);
 }
 EXPORT_SYMBOL(ib_umem_get);
 
@@ -797,7 +398,6 @@ void ib_umem_release(struct ib_umem *umem)
 	struct mm_struct *mm;
 	struct task_struct *task;
 	unsigned long diff;
-
 	if (umem->ib_peer_mem) {
 		peer_umem_release(umem);
 		return;

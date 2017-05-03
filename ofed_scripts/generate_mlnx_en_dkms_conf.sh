@@ -58,7 +58,7 @@ i=0
 
 for module in $modules
 do
-	name=`echo ${module##*/} | sed -e "s/.ko//"`
+	name=`echo ${module##*/} | sed -e "s/.ko.gz//" -e "s/.ko//"`
 	echo BUILT_MODULE_NAME[$i]=$name
 	echo BUILT_MODULE_LOCATION[$i]=${module%*/*}
 	echo DEST_MODULE_NAME[$i]=$name

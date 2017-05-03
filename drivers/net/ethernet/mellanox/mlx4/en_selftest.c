@@ -66,7 +66,7 @@ static int mlx4_en_test_loopback_xmit(struct mlx4_en_priv *priv)
 	ethh = (struct ethhdr *)skb_put(skb, sizeof(struct ethhdr));
 	packet	= (unsigned char *)skb_put(skb, packet_size);
 	memcpy(ethh->h_dest, priv->dev->dev_addr, ETH_ALEN);
-	memset(ethh->h_source, 0, ETH_ALEN);
+	eth_zero_addr(ethh->h_source);
 	ethh->h_proto = htons(ETH_P_ARP);
 	skb_set_mac_header(skb, 0);
 	for (i = 0; i < packet_size; ++i)	/* fill our packet */
@@ -129,6 +129,11 @@ static int mlx4_en_test_interrupts(struct mlx4_en_priv *priv)
 	if (!(mdev->dev->flags & MLX4_FLAG_MSI_X) || mlx4_is_slave(mdev->dev))
 		return err;
 
+	/* Test completion interrupts only if port is up */
+	mutex_lock(&mdev->state_lock);
+	if (!priv->port_up)
+		goto out;
+
 	/* A loop over all completion vectors of current port,
 	 * for each vector check whether it works by mapping command
 	 * completions to that vector and performing a NOP command
@@ -139,6 +144,8 @@ static int mlx4_en_test_interrupts(struct mlx4_en_priv *priv)
 			break;
 	}
 
+out:
+	mutex_unlock(&mdev->state_lock);
 	return err;
 }
 

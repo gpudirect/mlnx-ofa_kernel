@@ -37,7 +37,7 @@
 #define DRV_NAME	"nvmet-rdma"
 #define PFX		DRV_NAME ": "
 #define DRV_VERSION	"2.0.0"
-#define DRV_RELDATE	"August 21, 2016"
+#define DRV_RELDATE	"November 14, 2016"
 
 MODULE_AUTHOR("Alaa Hleihel");
 MODULE_DESCRIPTION("nvmet-rdma dummy kernel module");

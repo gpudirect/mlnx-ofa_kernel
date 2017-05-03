@@ -73,7 +73,6 @@ struct congestion_control_inmod {
 	char port;
 } __packed;
 
-
 enum congestion_control_r_roce_ecn_rp_modify_enable {
 	CONG_CTRL_RROCE_RP_MODIFY_ENABLE_DCE_TCP_RTT = 12,
 	CONG_CTRL_RROCE_RP_MODIFY_ENABLE_DCE_TCP_G,
@@ -101,7 +100,6 @@ enum congestion_control_r_roce_ecn_rp_modify_enable {
 	CONG_CTRL_RROCE_RP_MODIFY_ENABLE_FAST_RISE = 61,
 	CONG_CTRL_RROCE_RP_MODIFY_ENABLE_CNP_RECEIVE_ENABLE = 63,
 };
-
 
 enum congestion_control_r_roce_ecn_np_modify_enable {
 	CONG_CTRL_RROCE_NP_MODIFY_ENABLE_CNP_DSCP = 26,
@@ -175,7 +173,6 @@ struct congestion_control_mb_prio_r_roce_ecn_rp_params {
 	__be32 reserved4[42];
 } __packed;
 
-
 struct congestion_control_mb_prio_r_roce_ecn_np_params {
 	__be64 modify_enable;
 	__be32 reserved1;
@@ -186,7 +183,6 @@ struct congestion_control_mb_prio_r_roce_ecn_np_params {
 	__be32 num_congestion_cycle_to_keep;
 	__be32 reserved2[56];
 } __packed;
-
 
 struct congestion_control_r_roce_rp_prio_statistics {
 	__be64 rppp_rp_centiseconds;
@@ -202,7 +198,6 @@ struct congestion_control_r_roce_rp_prio_statistics {
 	__be32 max_total_limiters_rate;
 	__be32 reserved2[4];
 } __packed;
-
 
 struct congestion_control_r_roce_rp_statistics {
 	struct congestion_control_r_roce_rp_prio_statistics
@@ -236,7 +231,6 @@ struct congestion_control_mb_r_roce_ecn_np_gen_params {
 	__be32 min_lossy_buffer_for_ecn_catches;
 	__be32 reserved2[8];
 } __packed;
-
 
 struct congestion_control_statistics {
 	struct {

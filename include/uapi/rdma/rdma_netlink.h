@@ -5,9 +5,10 @@
 
 enum {
 	RDMA_NL_RDMA_CM = 1,
-	RDMA_NL_NES,
-	RDMA_NL_C4IW,
+	RDMA_NL_IWCM,
+	RDMA_NL_RSVD,
 	RDMA_NL_LS,	/* RDMA Local Services */
+	RDMA_NL_I40IW,
 	RDMA_NL_NUM_CLIENTS
 };
 
@@ -134,7 +135,7 @@ enum {
  * Local service operations:
  *   RESOLVE - The client requests the local service to resolve a path.
  *   SET_TIMEOUT - The local service requests the client to set the timeout.
- *   IP_RESOLVE - The client requests the local servie to resolve an ip to gid.
+ *   IP_RESOLVE - The client requests the local service to resolve an IP to GID.
  */
 enum {
 	RDMA_NL_LS_OP_RESOLVE = 0,

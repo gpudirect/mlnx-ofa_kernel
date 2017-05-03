@@ -35,17 +35,37 @@
 #include <linux/in.h>
 #include <linux/cache.h>
 
-static int fs_debugfs_add_fte(struct fs_base *base);
-static int fs_debugfs_add_fg(struct fs_base *base);
-static int fs_debugfs_add_ft(struct fs_base *base);
-static int fs_debugfs_add_prio(struct fs_base *base);
-static int fs_debugfs_add_ns(struct fs_base *base);
-static int fs_debugfs_add_dst(struct fs_base *base);
+static int fs_debugfs_add_fte(struct fs_node *node);
+static int fs_debugfs_add_fg(struct fs_node *node);
+static int fs_debugfs_add_ft(struct fs_node *node);
+static int fs_debugfs_add_prio(struct fs_node *node);
+static int fs_debugfs_add_ns(struct fs_node *node);
+static int fs_debugfs_add_dst(struct fs_node *node);
+
+void fs_debugfs_cleanup(struct mlx5_core_dev *dev)
+{
+	if (IS_ERR_OR_NULL(dev->priv.steering->debugfs))
+		return;
+	debugfs_remove(dev->priv.steering->debugfs);
+}
+
+int fs_debugfs_init(struct mlx5_core_dev *dev)
+{
+	struct mlx5_flow_steering *steering = dev->priv.steering;
+
+	if (IS_ERR_OR_NULL(dev->priv.dbg_root))
+		return -ENODEV;
+
+	steering->debugfs = debugfs_create_dir("steering", dev->priv.dbg_root);
+	if (PTR_ERR(steering->debugfs) == -ENODEV)
+		return -ENODEV;
+	return 0;
+}
 
 static int fs_open(struct inode *inode, struct file *filp)
 {
 	int ret;
-	struct fs_base *base;
+	struct fs_node *node;
 
 	ret = simple_open(inode, filp);
 	if (ret)
@@ -54,8 +74,7 @@ static int fs_open(struct inode *inode, struct file *filp)
 	if (!filp->private_data)
 		return -ENOENT;
 
-	base = filp->private_data;
-	kref_get(&base->refcount);
+	node = filp->private_data;
 
 	return ret;
 }
@@ -63,7 +82,7 @@ static int fs_open(struct inode *inode, struct file *filp)
 static int fs_match_open(struct inode *inode, struct file *filp)
 {
 	int ret;
-	struct fs_base *base;
+	struct fs_node *node;
 	struct fs_debugfs_match_header_ctx *ctx;
 
 	ret = simple_open(inode, filp);
@@ -74,27 +93,25 @@ static int fs_match_open(struct inode *inode, struct file *filp)
 		return -ENOENT;
 
 	ctx = filp->private_data;
-	base = ctx->base;
-	kref_get(&base->refcount);
+	node = ctx->node;
 
 	return ret;
 }
 
-void fs_debugfs_remove(struct fs_base *base)
+void fs_debugfs_remove(struct fs_node *node)
 {
-	debugfs_remove_recursive(base->debugfs.dir);
-	base->debugfs.dir = NULL;
+	debugfs_remove_recursive(node->debugfs.dir);
+	node->debugfs.dir = NULL;
 }
 
 static int _fs_release(void *ptr)
 {
-	struct fs_base *base;
+	struct fs_node *node;
 
 	if (!ptr)
 		return 0;
 
-	base = ptr;
-	kref_put(&base->refcount, _fs_remove_node);
+	node = ptr;
 
 	return 0;
 }
@@ -106,15 +123,14 @@ static int fs_release(struct inode *inode, struct file *filp)
 
 static int fs_match_release(struct inode *inode, struct file *filp)
 {
-	struct fs_base *base;
+	struct fs_node *node;
 	struct fs_debugfs_match_header_ctx *ctx;
 
 	if (!filp->private_data)
 		return 0;
 
 	ctx = filp->private_data;
-	base = ctx->base;
-	kref_put(&base->refcount, _fs_remove_node);
+	node = ctx->node;
 
 	return 0;
 }
@@ -122,9 +138,9 @@ static int fs_match_release(struct inode *inode, struct file *filp)
 static ssize_t type_read(struct file *filp, char __user *buf, size_t count,
 			 loff_t *pos)
 {
-	struct fs_base *base = filp->private_data;
+	struct fs_node *node = filp->private_data;
 
-	switch (base->type) {
+	switch (node->type) {
 	case FS_TYPE_FLOW_ENTRY:
 		return simple_read_from_buffer(buf, count, pos, "flow entry\n",
 					       sizeof("flow entry\n") - 1);
@@ -155,86 +171,77 @@ static const struct file_operations fops_type_read = {
 	.release = fs_release,
 };
 
-static int add_obj_debugfs(struct fs_base *base)
+static int add_obj_debugfs(struct fs_node *node)
 {
 	int err = 0;
 
-	mutex_lock(&base->lock);
-	switch (base->type) {
+	switch (node->type) {
 	case FS_TYPE_FLOW_TABLE:
-		err = fs_debugfs_add_ft(base);
+		err = fs_debugfs_add_ft(node);
 		break;
 	case FS_TYPE_FLOW_GROUP:
-		err = fs_debugfs_add_fg(base);
+		err = fs_debugfs_add_fg(node);
 		break;
 	case FS_TYPE_PRIO:
-		err = fs_debugfs_add_prio(base);
+		err = fs_debugfs_add_prio(node);
 		break;
 	case FS_TYPE_FLOW_ENTRY:
-		err = fs_debugfs_add_fte(base);
+		err = fs_debugfs_add_fte(node);
 		break;
 	case FS_TYPE_NAMESPACE:
-		err = fs_debugfs_add_ns(base);
+		err = fs_debugfs_add_ns(node);
 		break;
 	case FS_TYPE_FLOW_DEST:
-		err = fs_debugfs_add_dst(base);
+		err = fs_debugfs_add_dst(node);
 		break;
 	}
 
 	if (err)
-		fs_debugfs_remove(base);
-	mutex_unlock(&base->lock);
+		fs_debugfs_remove(node);
 
 	return err;
 }
 
-static struct dentry *get_debugfs_parent(struct fs_base *base)
+static struct dentry *get_debugfs_parent(struct fs_node *node)
 {
-	if (!base->parent)
-		return ((struct mlx5_flow_root_namespace *)base)->dev->priv.dbg_root;
+	if (!node->parent)
+		return ((struct mlx5_flow_root_namespace *)node)->dev->priv.steering->debugfs;
 
-	switch (base->type) {
+	switch (node->type) {
 	case FS_TYPE_NAMESPACE: {
 		struct fs_prio *prio;
 
-		fs_get_parent(prio, container_of(base,
-						 struct mlx5_flow_namespace,
-						 base));
+		fs_get_obj(prio, node->parent);
 		return prio->debugfs.ns;
 	}
 	case FS_TYPE_FLOW_TABLE: {
 		struct fs_prio *prio;
 
-		fs_get_parent(prio, container_of(base, struct mlx5_flow_table,
-						 base));
+		fs_get_obj(prio, node->parent);
 		return prio->debugfs.fts;
 	}
 	case FS_TYPE_FLOW_GROUP: {
 		struct mlx5_flow_table *ft;
 
-		fs_get_parent(ft, container_of(base, struct mlx5_flow_group,
-					       base));
+		fs_get_obj(ft, node->parent);
 		return ft->debugfs.fgs;
 	}
 	case FS_TYPE_FLOW_ENTRY: {
 		struct mlx5_flow_group *fg;
 
-		fs_get_parent(fg, container_of(base, struct fs_fte,
-					       base));
+		fs_get_obj(fg, node->parent);
 		return fg->debugfs.ftes;
 	}
 	case FS_TYPE_FLOW_DEST: {
 		struct fs_fte *fte;
 
-		fs_get_parent(fte, container_of(base, struct mlx5_flow_rule,
-						base));
+		fs_get_obj(fte, node->parent);
 		return fte->debugfs.dests;
 	}
 	case FS_TYPE_PRIO: {
 		struct mlx5_flow_namespace *ns;
 
-		fs_get_parent(ns, container_of(base, struct fs_prio,
-					       base));
+		fs_get_obj(ns, node->parent);
 		return ns->debugfs.prios;
 	}
 	}
@@ -247,13 +254,12 @@ static struct dentry *get_debugfs_parent(struct fs_base *base)
 static int __fops ## _open(struct inode *inode, struct file *filp)	\
 {									\
 	int ret;							\
-	struct fs_base *base;						\
+	struct fs_node *node;						\
 									\
 	ret = simple_attr_open(inode, filp, __get, NULL, __fmt);	\
 	if (ret)							\
 		return ret;						\
-	base = inode->i_private;					\
-	kref_get(&base->refcount);					\
+	node = inode->i_private;					\
 	return ret;							\
 }									\
 static int __fops ## _release(struct inode *inode, struct file *file)	\
@@ -272,11 +278,11 @@ static const struct file_operations __fops = {				\
 }
 
 /*Read user refcount attribute*/
-static int fs_debugfs_read_users_refcount(void *attr, u64 *data)
+static int fs_debugfs_read_refcount(void *attr, u64 *data)
 {
-	struct fs_base *base = attr;
+	struct fs_node *node = attr;
 
-	*data = atomic_read(&base->users_refcount);
+	*data = atomic_read(&node->refcount);
 	return 0;
 }
 
@@ -314,19 +320,19 @@ static int fs_debugfs_read_ft_max_fte(void *attr, u64 *data)
 	return 0;
 }
 
-static int fs_debugfs_read_ft_autogroup_max_types(void *attr, u64 *data)
+static int fs_debugfs_read_ft_autogroup_required_groups(void *attr, u64 *data)
 {
 	struct mlx5_flow_table *ft = attr;
 
-	*data = ft->autogroup.max_types;
+	*data = ft->autogroup.required_groups;
 	return 0;
 }
 
-static int fs_debugfs_read_ft_autogroup_num_types(void *attr, u64 *data)
+static int fs_debugfs_read_ft_autogroup_num_groups(void *attr, u64 *data)
 {
 	struct mlx5_flow_table *ft = attr;
 
-	*data = ft->autogroup.num_types;
+	*data = ft->autogroup.num_groups;
 	return 0;
 }
 
@@ -405,19 +411,19 @@ static int fs_debugfs_read_dst_tir(void *attr, u64 *data)
 	return 0;
 }
 
-/*Define base attributes*/
-FS_DEFINE_SIMPLE_ATTRIBUTE(fs_base_users_refcount,
-			   fs_debugfs_read_users_refcount, "%u\n");
+/*Define node attributes*/
+FS_DEFINE_SIMPLE_ATTRIBUTE(fs_node_refcount,
+			   fs_debugfs_read_refcount, "%u\n");
 /*Define priority attributes*/
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_prio, fs_debugfs_read_priority, "%u\n");
 /*Define flow table attributes*/
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_level, fs_debugfs_read_ft_level, "%u\n");
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_id, fs_debugfs_read_ft_id, "0x%x\n");
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_max_fte, fs_debugfs_read_ft_max_fte, "%u\n");
-FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_autogroup_max_types,
-			   fs_debugfs_read_ft_autogroup_max_types, "%u\n");
-FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_autogroup_num_types,
-			   fs_debugfs_read_ft_autogroup_num_types, "%u\n");
+FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_autogroup_required_groups,
+			   fs_debugfs_read_ft_autogroup_required_groups, "%u\n");
+FS_DEFINE_SIMPLE_ATTRIBUTE(fs_ft_autogroup_num_groups,
+			   fs_debugfs_read_ft_autogroup_num_groups, "%u\n");
 /*Define flow group attributes*/
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_fg_max_ftes, fs_debugfs_read_fg_max_ftes,
 			   "%u\n");
@@ -439,123 +445,114 @@ FS_DEFINE_SIMPLE_ATTRIBUTE(fs_fte_dests_size, fs_debugfs_read_fte_dests_size,
 /*Define destination attributes*/
 FS_DEFINE_SIMPLE_ATTRIBUTE(fs_dst_tir, fs_debugfs_read_dst_tir, "0x%x\n");
 
-
-void update_debugfs_dir_name(struct fs_base *base, const char *name)
-{
-	struct dentry *parent;
-
-	parent = get_debugfs_parent(base);
-	debugfs_rename(parent, base->debugfs.dir, parent, name);
-}
-
 /* Add objects to debugfs.
  * This function is called after the child was added and
  * the parent can't be freed.
  */
-static int fs_debugfs_add_base(struct fs_base *base)
+static int fs_debugfs_add_node(struct fs_node *node)
 {
 	struct dentry *parent;
 
-	parent = get_debugfs_parent(base);
+	parent = get_debugfs_parent(node);
 
-	base->debugfs.dir = debugfs_create_dir(base->name, parent);
-	if (PTR_ERR(base->debugfs.dir) == -ENODEV) {
+	node->debugfs.dir = debugfs_create_dir(node->name, parent);
+	if (PTR_ERR(node->debugfs.dir) == -ENODEV) {
 		pr_warn_once("debugfs is not supported\n");
 		return -ENODEV;
 	}
-	if (!base->debugfs.dir)
+	if (!node->debugfs.dir)
 		return -ENOMEM;
 
-	base->debugfs.type = debugfs_create_file("type", 0400,
-						 base->debugfs.dir,
-						 base,
+	node->debugfs.type = debugfs_create_file("type", 0400,
+						 node->debugfs.dir,
+						 node,
 						 &fops_type_read);
-	if (!base->debugfs.type)
+	if (!node->debugfs.type)
 		return -ENOMEM;
 
-	base->debugfs.users_refcount =
-		debugfs_create_file("users_refcount", 0400, base->debugfs.dir,
-				    base, &fs_base_users_refcount);
-	if (!base->debugfs.users_refcount)
+	node->debugfs.refcount =
+		debugfs_create_file("refcount", 0400, node->debugfs.dir,
+				    node, &fs_node_refcount);
+	if (!node->debugfs.refcount)
 		return -ENOMEM;
 
 	return 0;
 }
 
-int fs_debugfs_add(struct fs_base *base)
+int fs_debugfs_add(struct fs_node *node)
 {
-	int err = fs_debugfs_add_base(base);
+	int err = fs_debugfs_add_node(node);
 
 	if (err)
 		return err;
 
-	return add_obj_debugfs(base);
+	return add_obj_debugfs(node);
 }
 
-int fs_debugfs_add_ns(struct fs_base *base)
+int fs_debugfs_add_ns(struct fs_node *node)
 {
 	struct mlx5_flow_namespace *ns;
 
-	fs_get_obj(ns, base);
+	fs_get_obj(ns, node);
 	ns->debugfs.prios = debugfs_create_dir("priorities",
-					       base->debugfs.dir);
+					       node->debugfs.dir);
 	if (!ns->debugfs.prios)
 		return -ENOMEM;
 
 	return 0;
 }
 
-int fs_debugfs_add_prio(struct fs_base *base)
+int fs_debugfs_add_prio(struct fs_node *node)
 {
 	struct fs_prio *prio;
 
-	fs_get_obj(prio, base);
+	fs_get_obj(prio, node);
 
 	prio->debugfs.prio = debugfs_create_file("priority", 0400,
-						 base->debugfs.dir, prio,
+						 node->debugfs.dir, prio,
 						 &fs_prio);
 	if (!prio->debugfs.prio)
 		return -ENOMEM;
 
 	prio->debugfs.fts = debugfs_create_dir("flow_tables",
-					       base->debugfs.dir);
+					       node->debugfs.dir);
 	if (!prio->debugfs.fts)
 		return -ENOMEM;
 
 	prio->debugfs.ns = debugfs_create_dir("namespaces",
-					      base->debugfs.dir);
+					      node->debugfs.dir);
 	if (!prio->debugfs.ns)
 		return -ENOMEM;
 
 	return 0;
 }
 
-int fs_debugfs_add_ft(struct fs_base *base)
+int fs_debugfs_add_ft(struct fs_node *node)
 {
 	struct mlx5_flow_table *ft;
 
-	fs_get_obj(ft, base);
+	fs_get_obj(ft, node);
 
 	ft->debugfs.level = debugfs_create_file("level", 0400,
-						 base->debugfs.dir, ft,
+						 node->debugfs.dir, ft,
 						 &fs_ft_level);
 	if (!ft->debugfs.level)
 		return -ENOMEM;
 
 	ft->debugfs.id = debugfs_create_file("id", 0400,
-					     base->debugfs.dir, ft,
+					     node->debugfs.dir, ft,
 					     &fs_ft_id);
 	if (!ft->debugfs.id)
 		return -ENOMEM;
 
 	ft->debugfs.max_fte = debugfs_create_file("max_fte", 0400,
-						  base->debugfs.dir, ft,
+						  node->debugfs.dir, ft,
 						  &fs_ft_max_fte);
 	if (!ft->debugfs.max_fte)
 		return -ENOMEM;
 
 	ft->debugfs.fgs = debugfs_create_dir("groups",
-					     base->debugfs.dir);
+					     node->debugfs.dir);
 	if (!ft->debugfs.fgs)
 		return -ENOMEM;
 
@@ -564,26 +561,26 @@ int fs_debugfs_add_ft(struct fs_base *base)
 
 	ft->debugfs.autogroup.dir =
 		debugfs_create_dir("autogroup",
-				   base->debugfs.dir);
+				   node->debugfs.dir);
 
 	if (!ft->debugfs.autogroup.dir)
 		return -ENOMEM;
 
-	ft->debugfs.autogroup.max_types =
-		debugfs_create_file("max_types", 0400,
+	ft->debugfs.autogroup.required_groups =
+		debugfs_create_file("required_groups", 0400,
 				    ft->debugfs.autogroup.dir,
 				    ft,
-				    &fs_ft_autogroup_max_types);
-	if (!ft->debugfs.autogroup.max_types)
+				    &fs_ft_autogroup_required_groups);
+	if (!ft->debugfs.autogroup.required_groups)
 		return -ENOMEM;
 
-	ft->debugfs.autogroup.num_types =
-		debugfs_create_file("num_types", 0400,
+	ft->debugfs.autogroup.num_groups =
+		debugfs_create_file("num_groups", 0400,
 				    ft->debugfs.autogroup.dir,
 				    ft,
-				    &fs_ft_autogroup_num_types);
+				    &fs_ft_autogroup_num_groups);
 
-	if (!ft->debugfs.autogroup.num_types)
+	if (!ft->debugfs.autogroup.num_groups)
 		return -ENOMEM;
 
 	return 0;
@@ -647,7 +644,7 @@ static ssize_t udp_dport_read(struct file *filp, char __user *buf, size_t count,
 	u32 field;
 	int len;
 	char tbuf[PORT_STR_LEN];
-	const char *fmt = ctx->base->type == FS_TYPE_FLOW_GROUP ?
+	const char *fmt = ctx->node->type == FS_TYPE_FLOW_GROUP ?
 		"0x%x\n" : "%u\n";
 
 	field = MLX5_GET(fte_match_set_lyr_2_4, headers, udp_dport);
@@ -664,7 +661,7 @@ static ssize_t udp_sport_read(struct file *filp, char __user *buf, size_t count,
 	u32 field;
 	int len;
 	char tbuf[PORT_STR_LEN];
-	const char *fmt = ctx->base->type == FS_TYPE_FLOW_GROUP ?
+	const char *fmt = ctx->node->type == FS_TYPE_FLOW_GROUP ?
 		"0x%x\n" : "%u\n";
 
 	field = MLX5_GET(fte_match_set_lyr_2_4, headers, udp_sport);
@@ -681,7 +678,7 @@ static ssize_t tcp_dport_read(struct file *filp, char __user *buf, size_t count,
 	u32 field;
 	int len;
 	char tbuf[PORT_STR_LEN];
-	const char *fmt = ctx->base->type == FS_TYPE_FLOW_GROUP ?
+	const char *fmt = ctx->node->type == FS_TYPE_FLOW_GROUP ?
 		"0x%x\n" : "%u\n";
 
 	field = MLX5_GET(fte_match_set_lyr_2_4, headers, tcp_dport);
@@ -698,7 +695,7 @@ static ssize_t tcp_sport_read(struct file *filp, char __user *buf, size_t count,
 	u32 field;
 	int len;
 	char tbuf[PORT_STR_LEN];
-	const char *fmt = ctx->base->type == FS_TYPE_FLOW_GROUP ?
+	const char *fmt = ctx->node->type == FS_TYPE_FLOW_GROUP ?
 		"0x%x\n" : "%u\n";
 
 	field = MLX5_GET(fte_match_set_lyr_2_4, headers, tcp_sport);
@@ -719,7 +716,7 @@ static ssize_t src_ip_read(struct file *filp, char __user *buf, size_t count,
 
 	len = snprintf(tbuf, sizeof(tbuf), fmt,
 		       MLX5_ADDR_OF(fte_match_set_lyr_2_4,
-				    headers, src_ip));
+				    headers, src_ipv4_src_ipv6));
 
 	return simple_read_from_buffer(buf, count, pos, tbuf, len);
 }
@@ -736,7 +733,7 @@ static ssize_t dst_ip_read(struct file *filp, char __user *buf, size_t count,
 
 	len = snprintf(tbuf, sizeof(tbuf), fmt,
 		       MLX5_ADDR_OF(fte_match_set_lyr_2_4,
-				    headers, dst_ip));
+				    headers, dst_ipv4_dst_ipv6));
 
 	return simple_read_from_buffer(buf, count, pos, tbuf, len);
 }
@@ -856,6 +853,10 @@ static ssize_t dst_type_read(struct file *filp, char __user *buf, size_t count,
 		return simple_read_from_buffer(buf, count, pos,
 					       "flow table\n",
 					       sizeof("flow table\n") - 1);
+	case MLX5_FLOW_DESTINATION_TYPE_COUNTER:
+		return simple_read_from_buffer(buf, count, pos,
+					       "counter\n",
+					       sizeof("counter\n") - 1);
 	case MLX5_FLOW_DESTINATION_TYPE_TIR:
 		return simple_read_from_buffer(buf, count, pos, "tir\n",
 					       sizeof("tir\n") - 1);
@@ -941,7 +942,8 @@ static int fs_debugfs_create_header_files(char *mask_headers,
 			return -ENOMEM;
 	}
 
-	addr = MLX5_ADDR_OF(fte_match_set_lyr_2_4, mask_headers, dst_ip);
+	addr = MLX5_ADDR_OF(fte_match_set_lyr_2_4, mask_headers,
+			    dst_ipv4_dst_ipv6);
 	if (mask_field_no_zero(addr, 32)) {
 		header_files->dst_ip = debugfs_create_file("dst_ip", 0400,
 							   header_files->dir,
@@ -951,7 +953,8 @@ static int fs_debugfs_create_header_files(char *mask_headers,
 			return -ENOMEM;
 	}
 
-	addr = MLX5_ADDR_OF(fte_match_set_lyr_2_4, mask_headers, src_ip);
+	addr = MLX5_ADDR_OF(fte_match_set_lyr_2_4, mask_headers,
+			    src_ipv4_src_ipv6);
 	if (mask_field_no_zero(addr, 32)) {
 		header_files->src_ip = debugfs_create_file("src_ip", 0400,
 							   header_files->dir,
@@ -1028,12 +1031,12 @@ static int fs_debugfs_create_header_files(char *mask_headers,
 
 static int fs_debugfs_add_mask_headers(struct fs_debugfs_match_criteria
 				       *match_criteria,
-				       struct fs_base *base)
+				       struct fs_node *node)
 {
 	struct mlx5_flow_group *fg;
 	int err;
 
-	fs_get_obj(fg, base);
+	fs_get_obj(fg, node);
 
 	if (fg->mask.match_criteria_enable &
 	    1 << MLX5_CREATE_FLOW_GROUP_IN_MATCH_CRITERIA_ENABLE_OUTER_HEADERS) {
@@ -1043,7 +1046,7 @@ static int fs_debugfs_add_mask_headers(struct fs_debugfs_match_criteria
 					     fg->mask.match_criteria,
 					     outer_headers);
 
-		match_criteria->outer_headers_ctx.base = base;
+		match_criteria->outer_headers_ctx.node = node;
 		match_criteria->outer_headers_ctx.addr = outer_headers;
 		err = fs_debugfs_create_header_files(outer_headers,
 						     &match_criteria->outer_headers_ctx);
@@ -1059,7 +1062,7 @@ static int fs_debugfs_add_mask_headers(struct fs_debugfs_match_criteria
 					     fg->mask.match_criteria,
 					     inner_headers);
 
-		match_criteria->inner_headers_ctx.base = base;
+		match_criteria->inner_headers_ctx.node = node;
 		match_criteria->inner_headers_ctx.addr = inner_headers;
 		err = fs_debugfs_create_header_files(inner_headers,
 						     &match_criteria->inner_headers_ctx);
@@ -1070,15 +1073,15 @@ static int fs_debugfs_add_mask_headers(struct fs_debugfs_match_criteria
 }
 
 static int fs_debugfs_add_val_headers(struct fs_debugfs_match_criteria *match_criteria,
-				      struct fs_base *base)
+				      struct fs_node *node)
 {
 	char *outer_headers, *inner_headers;
 	struct fs_fte *fte;
 	int err;
 	struct mlx5_flow_group *fg;
 
-	fs_get_obj(fte, base);
-	fs_get_parent(fg, fte);
+	fs_get_obj(fte, node);
+	fs_get_obj(fg, fte->node.parent);
 	outer_headers = MLX5_ADDR_OF(fte_match_param, fte->val, outer_headers);
 	inner_headers = MLX5_ADDR_OF(fte_match_param, fte->val, inner_headers);
 
@@ -1090,7 +1093,7 @@ static int fs_debugfs_add_val_headers(struct fs_debugfs_match_criteria *match_cr
 						  fg->mask.match_criteria,
 						  outer_headers);
 
-		match_criteria->outer_headers_ctx.base = base;
+		match_criteria->outer_headers_ctx.node = node;
 		match_criteria->outer_headers_ctx.addr = outer_headers;
 		err = fs_debugfs_create_header_files(mask_outer_headers,
 						     &match_criteria->outer_headers_ctx);
@@ -1105,7 +1108,7 @@ static int fs_debugfs_add_val_headers(struct fs_debugfs_match_criteria *match_cr
 						  fg->mask.match_criteria,
 						  inner_headers);
 
-		match_criteria->inner_headers_ctx.base = base;
+		match_criteria->inner_headers_ctx.node = node;
 		match_criteria->inner_headers_ctx.addr = inner_headers;
 		err = fs_debugfs_create_header_files(mask_inner_headers,
 						     &match_criteria->inner_headers_ctx);
@@ -1116,7 +1119,7 @@ static int fs_debugfs_add_val_headers(struct fs_debugfs_match_criteria *match_cr
 }
 
 static int fs_debugfs_add_headers(struct fs_debugfs_match_criteria *match_criteria,
-				  struct fs_base *base)
+				  struct fs_node *node)
 {
 	match_criteria->outer_headers_ctx.header_files.dir =
 		debugfs_create_dir("outer_headers", match_criteria->dir);
@@ -1128,18 +1131,18 @@ static int fs_debugfs_add_headers(struct fs_debugfs_match_criteria *match_criter
 	if (!match_criteria->inner_headers_ctx.header_files.dir)
 		return -ENOMEM;
 
-	if (base->type == FS_TYPE_FLOW_ENTRY)
-		return fs_debugfs_add_val_headers(match_criteria, base);
+	if (node->type == FS_TYPE_FLOW_ENTRY)
+		return fs_debugfs_add_val_headers(match_criteria, node);
 	else
-		return fs_debugfs_add_mask_headers(match_criteria, base);
+		return fs_debugfs_add_mask_headers(match_criteria, node);
 }
 
 static int fs_debugfs_add_mask_misc(struct fs_debugfs_match_criteria *match_criteria,
-				    struct fs_base *base)
+				    struct fs_node *node)
 {
 	struct mlx5_flow_group *fg;
 
-	fs_get_obj(fg, base);
+	fs_get_obj(fg, node);
 
 	match_criteria->misc_params_ctx.misc_params.dir =
 		debugfs_create_dir("misc_params", match_criteria->dir);
@@ -1149,138 +1152,138 @@ static int fs_debugfs_add_mask_misc(struct fs_debugfs_match_criteria *match_crit
 	return 0;
 }
 
-static int fs_debugfs_add_mask(struct fs_base *base)
+static int fs_debugfs_add_mask(struct fs_node *node)
 {
 	int err = 0;
 	struct mlx5_flow_group *fg;
 
-	fs_get_obj(fg, base);
+	fs_get_obj(fg, node);
 
 	fg->debugfs.mask.match_criteria_enable =
 		debugfs_create_file("match_criteria_enable", 0400,
-				    base->debugfs.dir, fg,
+				    node->debugfs.dir, fg,
 				    &fs_fg_match_criteria_enable);
 
 	if (!fg->debugfs.mask.match_criteria_enable)
 		return -ENOMEM;
 
 	fg->debugfs.mask.match_criteria.dir =
-		debugfs_create_dir("mask", base->debugfs.dir);
+		debugfs_create_dir("mask", node->debugfs.dir);
 	if (!fg->debugfs.mask.match_criteria.dir)
 		return -ENOMEM;
 
-	err = fs_debugfs_add_headers(&fg->debugfs.mask.match_criteria, base);
+	err = fs_debugfs_add_headers(&fg->debugfs.mask.match_criteria, node);
 	if (err)
 		return err;
 
-	return fs_debugfs_add_mask_misc(&fg->debugfs.mask.match_criteria, base);
+	return fs_debugfs_add_mask_misc(&fg->debugfs.mask.match_criteria, node);
 }
 
-static int fs_debugfs_add_val(struct fs_base *base)
+static int fs_debugfs_add_val(struct fs_node *node)
 {
 	int err;
 	struct fs_fte *fte;
 
-	fs_get_obj(fte, base);
+	fs_get_obj(fte, node);
 
 	fte->debugfs.match_criteria.dir = debugfs_create_dir("value",
-							     base->debugfs.dir);
+							     node->debugfs.dir);
 	if (!fte->debugfs.match_criteria.dir)
 		return -ENOMEM;
 
-	err = fs_debugfs_add_headers(&fte->debugfs.match_criteria, base);
+	err = fs_debugfs_add_headers(&fte->debugfs.match_criteria, node);
 	return err;
 }
 
-static int fs_debugfs_add_fg(struct fs_base *base)
+static int fs_debugfs_add_fg(struct fs_node *node)
 {
 	struct mlx5_flow_group *fg;
 
-	fs_get_obj(fg, base);
+	fs_get_obj(fg, node);
 
 	fg->debugfs.max_ftes = debugfs_create_file("max_ftes", 0400,
-						   base->debugfs.dir, fg,
+						   node->debugfs.dir, fg,
 						   &fs_fg_max_ftes);
 	if (!fg->debugfs.max_ftes)
 		return -ENOMEM;
 
 	fg->debugfs.id = debugfs_create_file("id", 0400,
-					     base->debugfs.dir, fg,
+					     node->debugfs.dir, fg,
 					     &fs_fg_id);
 	if (!fg->debugfs.id)
 		return -ENOMEM;
 
 	fg->debugfs.num_ftes = debugfs_create_file("num_ftes", 0400,
-						   base->debugfs.dir, fg,
+						   node->debugfs.dir, fg,
 						   &fs_fg_num_ftes);
 	if (!fg->debugfs.num_ftes)
 		return -ENOMEM;
 
 	fg->debugfs.start_index = debugfs_create_file("start_index", 0400,
-						      base->debugfs.dir, fg,
+						      node->debugfs.dir, fg,
 						      &fs_fg_start_index);
 	if (!fg->debugfs.start_index)
 		return -ENOMEM;
 
-	if (fs_debugfs_add_mask(base))
+	if (fs_debugfs_add_mask(node))
 		return -ENOMEM;
 
-	fg->debugfs.ftes = debugfs_create_dir("entries", base->debugfs.dir);
+	fg->debugfs.ftes = debugfs_create_dir("entries", node->debugfs.dir);
 	if (!fg->debugfs.ftes)
 		return -ENOMEM;
 
 	return 0;
 }
 
-int fs_debugfs_add_fte(struct fs_base *base)
+int fs_debugfs_add_fte(struct fs_node *node)
 {
 	struct fs_fte *fte;
 
-	fs_get_obj(fte, base);
+	fs_get_obj(fte, node);
 
 	fte->debugfs.index = debugfs_create_file("index", 0400,
-						 base->debugfs.dir, fte,
+						 node->debugfs.dir, fte,
 						 &fs_fte_index);
 	if (!fte->debugfs.index)
 		return -ENOMEM;
 
 	fte->debugfs.action = debugfs_create_file("action", 0400,
-						   base->debugfs.dir, fte,
+						   node->debugfs.dir, fte,
 						   &fops_action);
 	if (!fte->debugfs.action)
 		return -ENOMEM;
 
 	fte->debugfs.flow_tag = debugfs_create_file("flow_tag", 0400,
-						    base->debugfs.dir, fte,
+						    node->debugfs.dir, fte,
 						    &fs_fte_flow_tag);
 	if (!fte->debugfs.flow_tag)
 		return -ENOMEM;
 
 	fte->debugfs.dests_size = debugfs_create_file("dests_size", 0400,
-						      base->debugfs.dir, fte,
+						      node->debugfs.dir, fte,
 						      &fs_fte_dests_size);
 	if (!fte->debugfs.dests_size)
 		return -ENOMEM;
 
-	if (fs_debugfs_add_val(base))
+	if (fs_debugfs_add_val(node))
 		return -ENOMEM;
 
 	fte->debugfs.dests = debugfs_create_dir("destinations",
-						base->debugfs.dir);
+						node->debugfs.dir);
 	if (!fte->debugfs.dests)
 		return -ENOMEM;
 
 	return 0;
 }
 
-static int fs_debugfs_add_dst(struct fs_base *base)
+static int fs_debugfs_add_dst(struct fs_node *node)
 {
 	struct mlx5_flow_rule *dst;
 
-	fs_get_obj(dst, base);
+	fs_get_obj(dst, node);
 
 	dst->debugfs.type = debugfs_create_file("dest_type", 0400,
-						base->debugfs.dir, dst,
+						node->debugfs.dir, dst,
 						&fops_dst_type);
 	if (!dst->debugfs.type)
 		return -ENOMEM;
@@ -1289,7 +1292,7 @@ static int fs_debugfs_add_dst(struct fs_base *base)
 	    MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE) {
 		char *path;
 
-		if (IS_ERR_OR_NULL(dst->dest_attr.ft->base.debugfs.dir))
+		if (IS_ERR_OR_NULL(dst->dest_attr.ft->node.debugfs.dir))
 			return -ENOENT;
 
 		path = kcalloc(1024, sizeof(char), GFP_KERNEL);
@@ -1302,9 +1305,9 @@ static int fs_debugfs_add_dst(struct fs_base *base)
 		 *entries->group->groups->flow table->flow tables
 		 */
 		snprintf(path, 1024, "../../../../../../../%s",
-			 dst->dest_attr.ft->base.debugfs.dir->d_name.name);
+			 dst->dest_attr.ft->node.debugfs.dir->d_name.name);
 		dst->debugfs.ft = debugfs_create_symlink("flow_table",
-							 base->debugfs.dir,
+							 node->debugfs.dir,
 							 path);
 		if (!dst->debugfs.ft) {
 			kfree(path);
@@ -1314,7 +1317,7 @@ static int fs_debugfs_add_dst(struct fs_base *base)
 	} else if (dst->dest_attr.type ==
 		   MLX5_FLOW_DESTINATION_TYPE_TIR) {
 		dst->debugfs.tir = debugfs_create_file("tir", 0400,
-							base->debugfs.dir, dst,
+							node->debugfs.dir, dst,
 							&fs_dst_tir);
 		if (!dst->debugfs.tir)
 			return -ENOMEM;

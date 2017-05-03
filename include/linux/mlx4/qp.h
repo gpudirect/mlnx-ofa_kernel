@@ -39,29 +39,6 @@
 #include <linux/mlx4/device.h>
 
 #define MLX4_INVALID_LKEY	0x100
-#define	DS_SIZE_ALIGNMENT	16
-
-/* When using this MACROs we must use other name for "owner_bit" */
-#ifdef CONFIG_INFINIBAND_WQE_FORMAT
-	#define WQE_FORMAT_1_MASK      cpu_to_be32(0xbfffffff)
-	#define SET_BYTE_COUNT(byte_count) (cpu_to_be32(byte_count) | owner_bit)
-	#define SET_LSO_MSS(mss_hdr_size) (cpu_to_be32(mss_hdr_size) | owner_bit)
-
-	/* The +8 is for mss_header and inline header */
-	#define GET_LSO_SEG_SIZE(lso_header_size)			\
-		((lso_header_size > 60) ?				\
-			ALIGN(lso_header_size + 8, DS_SIZE_ALIGNMENT) :		\
-			ALIGN(lso_header_size + 4, DS_SIZE_ALIGNMENT))
-
-	#define DS_BYTE_COUNT_MASK	cpu_to_be32(0x3fffffff)
-
-#else
-	#define SET_BYTE_COUNT(byte_count) cpu_to_be32(byte_count)
-	#define SET_LSO_MSS(mss_hdr_size) cpu_to_be32(mss_hdr_size)
-	#define GET_LSO_SEG_SIZE(lso_header_size)			\
-			ALIGN(lso_header_size + 4, DS_SIZE_ALIGNMENT)
-	#define DS_BYTE_COUNT_MASK	cpu_to_be32(0x7fffffff)
-#endif
 
 enum mlx4_qp_optpar {
 	MLX4_QP_OPTPAR_ALT_ADDR_PATH		= 1 << 0,
@@ -121,9 +98,9 @@ enum {
 	MLX4_QP_BIT_RAE				= 1 << 13,
 	MLX4_QP_BIT_FPP				= 1 <<	3,
 	MLX4_QP_BIT_RIC				= 1 <<	4,
-	MLX4_QP_BIT_COLL_SYNC_RQ                = 1 << 2,
-	MLX4_QP_BIT_COLL_SYNC_SQ                = 1 << 1,
-	MLX4_QP_BIT_COLL_MASTER                 = 1 << 0
+	MLX4_QP_BIT_COLL_SYNC_RQ			= 1 << 2,
+	MLX4_QP_BIT_COLL_SYNC_SQ			= 1 << 1,
+	MLX4_QP_BIT_COLL_MASTER			= 1 << 0
 };
 
 enum {
@@ -208,7 +185,7 @@ enum { /* feup */
 	MLX4_FEUP_FORCE_ETH_UP          = 1 << 6, /* force Eth UP */
 	MLX4_FSM_FORCE_ETH_SRC_MAC      = 1 << 5, /* force Source MAC */
 	MLX4_FVL_FORCE_ETH_VLAN         = 1 << 3,  /* force Eth vlan */
-	MLX4_FVL_RX_FORCE_ETH_VLAN      = 1 << 2 /* enforce Eth rx vlan */
+	MLX4_FVL_RX_FORCE_ETH_VLAN      = 1 << 2, /* enforce Eth rx vlan */
 };
 
 struct mlx4_qp_context {
@@ -241,15 +218,17 @@ struct mlx4_qp_context {
 	__be32			msn;
 	__be16			rq_wqe_counter;
 	__be16			sq_wqe_counter;
-	u8			reserved3[7];
+	u32			reserved3;
+	__be16			rate_limit_params;
+	u8			reserved4;
 	u8			qos_vport;
 	__be32			param3;
 	__be32			nummmcpeers_basemkey;
 	u8			log_page_size;
-	u8			reserved4[2];
+	u8			reserved5[2];
 	u8			mtt_base_addr_h;
 	__be32			mtt_base_addr_l;
-	u32			reserved5[10];
+	u32			reserved6[10];
 };
 
 struct mlx4_update_qp_context {
@@ -265,6 +244,7 @@ enum {
 	MLX4_UPD_QP_MASK_PM_STATE	= 32,
 	MLX4_UPD_QP_MASK_VSD		= 33,
 	MLX4_UPD_QP_MASK_QOS_VPP	= 34,
+	MLX4_UPD_QP_MASK_RATE_LIMIT	= 35,
 };
 
 enum {
@@ -285,8 +265,8 @@ enum {
 	MLX4_UPD_QP_PATH_MASK_SCHED_QUEUE		= 14 + 32,
 	MLX4_UPD_QP_PATH_MASK_IF_COUNTER_INDEX		= 15 + 32,
 	MLX4_UPD_QP_PATH_MASK_FVL_RX			= 16 + 32,
-	MLX4_UPD_QP_PATH_MASK_ETH_SRC_CHECK_UC_LB       = 18 + 32,
-	MLX4_UPD_QP_PATH_MASK_ETH_SRC_CHECK_MC_LB       = 19 + 32,
+	MLX4_UPD_QP_PATH_MASK_ETH_SRC_CHECK_UC_LB	= 18 + 32,
+	MLX4_UPD_QP_PATH_MASK_ETH_SRC_CHECK_MC_LB	= 19 + 32,
 	MLX4_UPD_QP_PATH_MASK_SV			= 22 + 32,
 };
 
@@ -297,19 +277,8 @@ enum { /* param3 */
 /* Which firmware version adds support for NEC (NoErrorCompletion) bit */
 #define MLX4_FW_VER_WQE_CTRL_NEC mlx4_fw_ver(2, 2, 232)
 
-#define MLX4_WQE_CTRL_INS_CVLAN_SHIFT	6
-#define MLX4_WQE_CTRL_INS_SVLAN_SHIFT	7
-
 enum {
-#ifdef CONFIG_INFINIBAND_WQE_FORMAT
-	MLX4_WQE_CTRL_NEC		= 1 << 31,
-	MLX4_WQE_CTRL_OWN		= 1 << 30,
-	MLX4_WQE_CTRL_RR		= 0,
-#else
-	MLX4_WQE_CTRL_OWN		= 1 << 31,
 	MLX4_WQE_CTRL_NEC		= 1 << 29,
-	MLX4_WQE_CTRL_RR		= 1 << 6,
-#endif
 	MLX4_WQE_CTRL_IIP		= 1 << 28,
 	MLX4_WQE_CTRL_ILP		= 1 << 27,
 	MLX4_WQE_CTRL_FENCE		= 1 << 6,
@@ -317,22 +286,24 @@ enum {
 	MLX4_WQE_CTRL_SOLICITED		= 1 << 1,
 	MLX4_WQE_CTRL_IP_CSUM		= 1 << 4,
 	MLX4_WQE_CTRL_TCP_UDP_CSUM	= 1 << 5,
-	MLX4_WQE_CTRL_INS_CVLAN		= 1 << MLX4_WQE_CTRL_INS_CVLAN_SHIFT,
-	MLX4_WQE_CTRL_INS_SVLAN		= 1 << MLX4_WQE_CTRL_INS_SVLAN_SHIFT,
+	MLX4_WQE_CTRL_INS_CVLAN		= 1 << 6,
+	MLX4_WQE_CTRL_INS_SVLAN		= 1 << 7,
 	MLX4_WQE_CTRL_STRONG_ORDER	= 1 << 7,
 	MLX4_WQE_CTRL_FORCE_LOOPBACK	= 1 << 0,
 };
 
+union mlx4_wqe_qpn_vlan {
+	struct {
+		__be16	vlan_tag;
+		u8	ins_vlan;
+		u8	fence_size;
+	};
+	__be32		bf_qpn;
+};
+
 struct mlx4_wqe_ctrl_seg {
 	__be32			owner_opcode;
-	union {
-		struct {
-			__be16			vlan_tag;
-			u8			ins_vlan;
-			u8			fence_size;
-		};
-		__be32			bf_qpn;
-	};
+	union mlx4_wqe_qpn_vlan	qpn_vlan;
 	/*
 	 * High 24 bits are SRC remote buffer; low 8 bits are flags:
 	 * [7]   SO (strong ordering)
@@ -477,15 +448,16 @@ struct mlx4_wqe_inline_seg {
 };
 
 enum mlx4_update_qp_attr {
-	MLX4_UPDATE_QP_SMAC			= 1 << 0,
-	MLX4_UPDATE_QP_ETH_SRC_CHECK_MC_LB	= 1 << 1,
-	MLX4_UPDATE_QP_VSD			= 1 << 2,
-	MLX4_UPDATE_QP_QOS_VPORT		= 1 << 3,
-	MLX4_UPDATE_QP_SUPPORTED_ATTRS          = (1 << 4) - 1
+	MLX4_UPDATE_QP_SMAC		= 1 << 0,
+	MLX4_UPDATE_QP_VSD		= 1 << 1,
+	MLX4_UPDATE_QP_RATE_LIMIT	= 1 << 2,
+	MLX4_UPDATE_QP_QOS_VPORT	= 1 << 3,
+	MLX4_UPDATE_QP_ETH_SRC_CHECK_MC_LB      = 1 << 4,
+	MLX4_UPDATE_QP_SUPPORTED_ATTRS	= (1 << 5) - 1
 };
 
 enum mlx4_update_qp_params_flags {
-	MLX4_UPDATE_QP_PARAMS_FLAGS_ETH_CHECK_MC_LB	= 1 << 0,
+	MLX4_UPDATE_QP_PARAMS_FLAGS_ETH_CHECK_MC_LB     = 1 << 0,
 	MLX4_UPDATE_QP_PARAMS_FLAGS_VSD_ENABLE		= 1 << 1,
 };
 
@@ -493,6 +465,8 @@ struct mlx4_update_qp_params {
 	u8	smac_index;
 	u8	qos_vport;
 	u32	flags;
+	u16	rate_unit;
+	u16	rate_val;
 };
 
 int mlx4_update_qp(struct mlx4_dev *dev, u32 qpn,
@@ -525,6 +499,6 @@ static inline u16 folded_qp(u32 q)
 	return res;
 }
 
-u32 mlx4_qp_roce_entropy(struct mlx4_dev *dev, u32 qpn);
+u16 mlx4_qp_roce_entropy(struct mlx4_dev *dev, u32 qpn);
 
 #endif /* MLX4_QP_H */

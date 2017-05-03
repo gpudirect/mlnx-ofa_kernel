@@ -35,16 +35,13 @@
 #include <linux/module.h>
 #include "mlx5_core.h"
 
-int mlx5_cmd_query_adapter(struct mlx5_core_dev *dev, u32 *out, int outlen)
+static int mlx5_cmd_query_adapter(struct mlx5_core_dev *dev, u32 *out,
+				  int outlen)
 {
-	u32 in[MLX5_ST_SZ_DW(query_adapter_in)];
-
-	memset(in, 0, sizeof(in));
+	u32 in[MLX5_ST_SZ_DW(query_adapter_in)] = {0};
 
 	MLX5_SET(query_adapter_in, in, opcode, MLX5_CMD_OP_QUERY_ADAPTER);
-
-	return mlx5_cmd_exec_check_status(dev, in, sizeof(in), out, outlen);
-
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, outlen);
 }
 
 int mlx5_query_board_id(struct mlx5_core_dev *dev)
@@ -90,111 +87,89 @@ int mlx5_core_query_vendor_id(struct mlx5_core_dev *mdev, u32 *vendor_id)
 			      query_adapter_struct.ieee_vendor_id);
 out:
 	kfree(out);
-
 	return err;
 }
 EXPORT_SYMBOL(mlx5_core_query_vendor_id);
+
+static int mlx5_get_pcam_reg(struct mlx5_core_dev *dev)
+{
+	return mlx5_query_pcam_reg(dev, dev->caps.pcam,
+				   MLX5_PCAM_FEATURE_ENHANCED_FEATURES,
+				   MLX5_PCAM_REGS_5000_TO_507F);
+}
+
+static int mlx5_get_mcam_reg(struct mlx5_core_dev *dev)
+{
+	return mlx5_query_mcam_reg(dev, dev->caps.mcam,
+				   MLX5_MCAM_FEATURE_ENHANCED_FEATURES,
+				   MLX5_MCAM_REGS_FIRST_128);
+}
 
 int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 {
 	int err;
 
-	err = mlx5_core_get_caps(dev, MLX5_CAP_GENERAL, HCA_CAP_OPMOD_GET_CUR);
-	if (err)
-		return err;
-
-	err = mlx5_core_get_caps(dev, MLX5_CAP_GENERAL, HCA_CAP_OPMOD_GET_MAX);
+	err = mlx5_core_get_caps(dev, MLX5_CAP_GENERAL);
 	if (err)
 		return err;
 
 	if (MLX5_CAP_GEN(dev, eth_net_offloads)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ETHERNET_OFFLOADS,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ETHERNET_OFFLOADS,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ETHERNET_OFFLOADS);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, pg)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ODP,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ODP,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ODP);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, atomic)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ATOMIC,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ATOMIC,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ATOMIC);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, roce)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ROCE,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ROCE,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ROCE);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, nic_flow_table)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_FLOW_TABLE,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_FLOW_TABLE,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_FLOW_TABLE);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, vport_group_manager) &&
 	    MLX5_CAP_GEN(dev, eswitch_flow_table)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH_FLOW_TABLE,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH_FLOW_TABLE,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH_FLOW_TABLE);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, eswitch_flow_table)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH,
-					 HCA_CAP_OPMOD_GET_CUR);
-		if (err)
-			return err;
-		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH,
-					 HCA_CAP_OPMOD_GET_MAX);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, vector_calc)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_VECTOR_CALC,
-					 HCA_CAP_OPMOD_GET_CUR);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_VECTOR_CALC);
 		if (err)
 			return err;
 	}
 
 	if (MLX5_CAP_GEN(dev, qos)) {
-		err = mlx5_core_get_caps(dev, MLX5_CAP_QOS,
-					 HCA_CAP_OPMOD_GET_CUR);
+		err = mlx5_core_get_caps(dev, MLX5_CAP_QOS);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, vector_calc)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_VECTOR_CALC);
 		if (err)
 			return err;
 	}
@@ -203,59 +178,122 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 	if (err)
 		return err;
 
+	if (MLX5_CAP_GEN(dev, pcam_reg))
+		mlx5_get_pcam_reg(dev);
+
+	if (MLX5_CAP_GEN(dev, mcam_reg))
+		mlx5_get_mcam_reg(dev);
+
 	return 0;
 }
 
 int mlx5_cmd_init_hca(struct mlx5_core_dev *dev)
 {
-	u32 in[MLX5_ST_SZ_DW(init_hca_in)];
-	u32 out[MLX5_ST_SZ_DW(init_hca_out)];
-
-	memset(in, 0, sizeof(in));
+	u32 out[MLX5_ST_SZ_DW(init_hca_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(init_hca_in)]   = {0};
 
 	MLX5_SET(init_hca_in, in, opcode, MLX5_CMD_OP_INIT_HCA);
-
-	memset(out, 0, sizeof(out));
-	return mlx5_cmd_exec_check_status(dev, in,  sizeof(in),
-					  out, sizeof(out));
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 
 int mlx5_cmd_teardown_hca(struct mlx5_core_dev *dev)
 {
-	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)];
-	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)];
-
-	memset(in, 0, sizeof(in));
+	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)]   = {0};
 
 	MLX5_SET(teardown_hca_in, in, opcode, MLX5_CMD_OP_TEARDOWN_HCA);
-
-	memset(out, 0, sizeof(out));
-	return mlx5_cmd_exec_check_status(dev, in,  sizeof(in),
-					  out, sizeof(out));
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 
-int mlx5_core_set_dc_cnak_trace(struct mlx5_core_dev *dev, int enable,
-				u64 addr)
+static int query_other_hca_cap(struct mlx5_core_dev *mdev,
+			       int function_id, void *out)
 {
-	struct mlx5_cmd_set_dc_cnak_mbox_in *in;
-	struct mlx5_cmd_set_dc_cnak_mbox_out out;
+	int out_sz = MLX5_ST_SZ_BYTES(query_other_hca_cap_out);
+	int in_sz = MLX5_ST_SZ_BYTES(query_other_hca_cap_in);
+	void *in;
 	int err;
 
-	in = kzalloc(sizeof(*in), GFP_KERNEL);
+	in = kzalloc(in_sz, GFP_KERNEL);
 	if (!in)
 		return -ENOMEM;
 
-	memset(&out, 0, sizeof(out));
-	in->hdr.opcode = cpu_to_be16(MLX5_CMD_OP_SET_DC_CNAK_TRACE);
-	in->enable = !!enable << 7;
-	in->pa = cpu_to_be64(addr);
-	err = mlx5_cmd_exec_check_status(dev, (void *)in, sizeof(*in),
-					 (void *)&out, sizeof(out));
-	if (err)
-		goto out;
-out:
-	kfree(in);
+	MLX5_SET(query_other_hca_cap_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_OTHER_HCA_CAP);
+	MLX5_SET(query_other_hca_cap_in, in, function_id, function_id);
 
+	err = mlx5_cmd_exec(mdev, in, in_sz, out, out_sz);
+
+	kfree(in);
 	return err;
 }
-EXPORT_SYMBOL_GPL(mlx5_core_set_dc_cnak_trace);
+
+static int modify_other_hca_cap(struct mlx5_core_dev *mdev,
+				int function_id, void *in)
+{
+	int out_sz = MLX5_ST_SZ_BYTES(modify_other_hca_cap_out);
+	int in_sz = MLX5_ST_SZ_BYTES(modify_other_hca_cap_in);
+	void *out;
+	int err;
+
+	out = kzalloc(out_sz, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+
+	MLX5_SET(modify_other_hca_cap_in, in, opcode,
+		 MLX5_CMD_OP_MODIFY_OTHER_HCA_CAP);
+	MLX5_SET(modify_other_hca_cap_in, in, function_id, function_id);
+
+	err = mlx5_cmd_exec(mdev, in, in_sz, out, out_sz);
+
+	kfree(out);
+	return err;
+}
+
+int mlx5_get_other_hca_cap_roce(struct mlx5_core_dev *mdev,
+				int function_id, bool *value)
+{
+	int out_sz = MLX5_ST_SZ_BYTES(query_other_hca_cap_out);
+	void *out;
+	void *other_capability;
+	int err;
+
+	out = kzalloc(out_sz, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+
+	err = query_other_hca_cap(mdev, function_id, out);
+	if (err)
+		goto out;
+
+	other_capability = MLX5_ADDR_OF(query_other_hca_cap_out,
+					out, other_capability);
+	*value = MLX5_GET(other_hca_cap, other_capability, roce);
+
+out:
+	kfree(out);
+	return err;
+}
+
+int mlx5_modify_other_hca_cap_roce(struct mlx5_core_dev *mdev,
+				   int function_id, bool value)
+{
+	int in_sz = MLX5_ST_SZ_BYTES(modify_other_hca_cap_in);
+	struct mlx5_ifc_other_hca_cap_bits *other_capability;
+	void *in;
+	int err;
+
+	in = kzalloc(in_sz, GFP_KERNEL);
+	if (!in)
+		return -ENOMEM;
+
+	MLX5_SET(modify_other_hca_cap_in, in, field_select, ROCE_SELECT);
+	other_capability = (struct mlx5_ifc_other_hca_cap_bits *)
+				MLX5_ADDR_OF(modify_other_hca_cap_in,
+					     in, other_capability);
+	MLX5_SET(other_hca_cap, other_capability, roce, value);
+
+	err = modify_other_hca_cap(mdev, function_id, in);
+
+	kfree(in);
+	return err;
+}
