@@ -717,7 +717,7 @@ static void mlx5_cq_invalidate_umem(void *invalidation_cookie,
 
 	struct mlx5_ib_cq *cq = (struct mlx5_ib_cq *)invalidation_cookie;
 
-	printk(KERN_ERR "WARN  mlx5_cq_invalidate_umem cq=%p umem=%p\n", cq, umem);
+	printk(KERN_INFO "DANGEROUS!!! mlx5_cq_invalidate_umem cq=%p umem=%p\n", cq, umem);
 
 	/* This function is called under client peer lock so its resources are race protected */
 	if (atomic_inc_return(&cq->invalidated) > 1) {
@@ -786,6 +786,7 @@ static int create_cq_user(struct mlx5_ib_dev *dev, struct ib_udata *udata,
                                       IB_ACCESS_LOCAL_WRITE, 1, 1);
 	if (IS_ERR(cq->buf.umem)) {
 		err = PTR_ERR(cq->buf.umem);
+		printk(KERN_ERR "error %d in ib_umem_get_ex, ucmd.buf_addr=%p\n", err, ucmd.buf_addr);
 		return err;
 	}
 
@@ -840,9 +841,12 @@ err_umem:
 
 static void destroy_cq_user(struct mlx5_ib_cq *cq, struct ib_ucontext *context)
 {
+	printk(KERN_INFO "destroy_cq_use mlx5_ib_cq=%p\n", cq);
 	mlx5_ib_db_unmap_user(to_mucontext(context), &cq->db);
-        if (cq->buf.umem)
+        if (cq->buf.umem) {
+            printk(KERN_INFO "destroy_cq_use buf umem=%p\n", cq->buf.umem);
             ib_umem_release(cq->buf.umem);
+        }
 }
 
 static void init_cq_buf(struct mlx5_ib_cq *cq, struct mlx5_ib_cq_buf *buf)
@@ -1028,6 +1032,8 @@ int mlx5_ib_destroy_cq(struct ib_cq *cq)
 	struct mlx5_ib_dev *dev = to_mdev(cq->device);
 	struct mlx5_ib_cq *mcq = to_mcq(cq);
 	struct ib_ucontext *context = NULL;
+
+	printk(KERN_INFO "mlx5_ib_destroy_cq mlx5_ib_cq=%p\n", mcq);
 
 	if (cq->uobject)
 		context = cq->uobject->context;
