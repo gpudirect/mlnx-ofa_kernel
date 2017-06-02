@@ -468,6 +468,12 @@ static struct ib_umem *peer_umem_get(struct ib_peer_memory_client *ib_peer_mem,
 	ib_peer_mem->stats.num_reg_pages +=
 			umem->nmap * (umem->page_size >> PAGE_SHIFT);
 	ib_peer_mem->stats.num_alloc_mrs += 1;
+
+        if (invalidation_ctx) {
+                ib_peer_remove_context(ib_peer_mem, invalidation_ctx->context_ticket);
+                mutex_unlock(&umem->ib_peer_mem->lock);
+        }
+
 	return umem;
 
 put_pages:
