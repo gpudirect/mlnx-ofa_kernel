@@ -37,7 +37,6 @@
 #define IB_USER_VERBS_H
 
 #include <linux/types.h>
-#include <rdma/ib_verbs.h>
 
 /*
  * Increment this value if any changes that break userspace ABI
@@ -101,15 +100,11 @@ enum {
 	IB_USER_VERBS_EX_CMD_MODIFY_WQ,
 	IB_USER_VERBS_EX_CMD_DESTROY_WQ,
 	IB_USER_VERBS_EX_CMD_CREATE_RWQ_IND_TBL,
-	IB_USER_VERBS_EX_CMD_DESTROY_RWQ_IND_TBL
-};
-
-enum {
-	IB_USER_LEGACY_LAST_QP_ATTR_MASK = IB_QP_DEST_QPN
-};
-
-enum {
-	IB_USER_LAST_QP_ATTR_MASK = IB_QP_RATE_LIMIT
+	IB_USER_VERBS_EX_CMD_DESTROY_RWQ_IND_TBL,
+	IB_USER_VERBS_EX_CMD_DESCRIBE_COUNTER_SET,
+	IB_USER_VERBS_EX_CMD_CREATE_COUNTER_SET,
+	IB_USER_VERBS_EX_CMD_DESTROY_COUNTER_SET,
+	IB_USER_VERBS_EX_CMD_QUERY_COUNTER_SET,
 };
 
 /*
@@ -245,6 +240,20 @@ struct ib_uverbs_rss_caps {
 	__u32 reserved;
 };
 
+struct ib_uverbs_tm_caps {
+	/* Max size of rendezvous request message */
+	__u32 max_rndv_hdr_size;
+	/* Max number of entries in tag matching list */
+	__u32 max_num_tags;
+	/* TM flags */
+	__u32 flags;
+	/* Max number of outstanding list operations */
+	__u32 max_ops;
+	/* Max number of SGE in tag matching entry */
+	__u32 max_sge;
+	__u32 reserved;
+};
+
 struct ib_uverbs_ex_query_device_resp {
 	struct ib_uverbs_query_device_resp base;
 	__u32 comp_mask;
@@ -255,7 +264,10 @@ struct ib_uverbs_ex_query_device_resp {
 	__u64 device_cap_flags_ex;
 	struct ib_uverbs_rss_caps rss_caps;
 	__u32  max_wq_type_rq;
-	__u32 reserved;
+	__u32 raw_packet_caps;
+	struct ib_uverbs_tm_caps xrq_caps;
+	__u16 max_counter_sets;
+	__u8 reserved[6];
 };
 
 struct ib_uverbs_query_port {
@@ -555,6 +567,20 @@ enum {
 	IB_UVERBS_CREATE_QP_SUP_COMP_MASK = IB_UVERBS_CREATE_QP_MASK_IND_TABLE,
 };
 
+enum {
+	/*
+	 * This value is equal to IB_QP_DEST_QPN.
+	 */
+	IB_USER_LEGACY_LAST_QP_ATTR_MASK = 1ULL << 20,
+};
+
+enum {
+	/*
+	 * This value is equal to IB_QP_RATE_LIMIT.
+	 */
+	IB_USER_LAST_QP_ATTR_MASK = 1ULL << 25,
+};
+
 struct ib_uverbs_ex_create_qp {
 	__u64 user_handle;
 	__u32 pd_handle;
@@ -573,7 +599,7 @@ struct ib_uverbs_ex_create_qp {
 	__u32 comp_mask;
 	__u32 create_flags;
 	__u32 rwq_ind_tbl_handle;
-	__u32  reserved1;
+	__u32  source_qpn;
 };
 
 struct ib_uverbs_open_qp {
@@ -929,6 +955,60 @@ struct ib_uverbs_flow_spec_ipv6 {
 	struct ib_uverbs_flow_ipv6_filter mask;
 };
 
+struct ib_uverbs_flow_spec_action_tag {
+	union {
+		struct ib_uverbs_flow_spec_hdr hdr;
+		struct {
+			__u32 type;
+			__u16 size;
+			__u16 reserved;
+		};
+	};
+	__u32			      tag_id;
+	__u32			      reserved1;
+};
+
+struct ib_uverbs_flow_spec_action_drop {
+	union {
+		struct ib_uverbs_flow_spec_hdr hdr;
+		struct {
+			__u32 type;
+			__u16 size;
+			__u16 reserved;
+		};
+	};
+};
+
+struct ib_uverbs_flow_spec_action_count {
+	union {
+		struct ib_uverbs_flow_spec_hdr hdr;
+		struct {
+			__u32 type;
+			__u16 size;
+			__u16 reserved;
+		};
+	};
+	__u32 cs_handle;
+	__u32 reserved1;
+};
+
+struct ib_uverbs_flow_tunnel_filter {
+	__be32 tunnel_id;
+};
+
+struct ib_uverbs_flow_spec_tunnel {
+	union {
+		struct ib_uverbs_flow_spec_hdr hdr;
+		struct {
+			__u32 type;
+			__u16 size;
+			__u16 reserved;
+		};
+	};
+	struct ib_uverbs_flow_tunnel_filter val;
+	struct ib_uverbs_flow_tunnel_filter mask;
+};
+
 struct ib_uverbs_flow_attr {
 	__u32 type;
 	__u16 size;
@@ -978,7 +1058,7 @@ struct ib_uverbs_create_xsrq {
 	__u32 max_wr;
 	__u32 max_sge;
 	__u32 srq_limit;
-	__u32 reserved;
+	__u32 max_num_tags;
 	__u32 xrcd_handle;
 	__u32 cq_handle;
 	__u64 driver_data[0];
@@ -1031,6 +1111,8 @@ struct ib_uverbs_ex_create_wq  {
 	__u32 cq_handle;
 	__u32 max_wr;
 	__u32 max_sge;
+	__u32 create_flags; /* Use enum ib_wq_flags */
+	__u32 reserved;
 };
 
 struct ib_uverbs_ex_create_wq_resp {
@@ -1059,6 +1141,8 @@ struct ib_uverbs_ex_modify_wq  {
 	__u32 wq_handle;
 	__u32 wq_state;
 	__u32 curr_wq_state;
+	__u32 flags; /* Use enum ib_wq_flags */
+	__u32 flags_mask; /* Use enum ib_wq_flags */
 };
 
 /* Prevent memory allocation rather than max expected size */
@@ -1084,5 +1168,60 @@ struct ib_uverbs_ex_destroy_rwq_ind_table  {
 	__u32 comp_mask;
 	__u32 ind_tbl_handle;
 };
+
+struct ib_uverbs_ex_describe_counter_set  {
+	__u64 counters_names_resp;
+	__u32 comp_mask;
+	__u16 counters_names_max;
+	__u16 cs_id;
+};
+
+struct ib_uverbs_ex_describe_counter_set_resp {
+	__u64 num_of_cs;
+	__u32 comp_mask;
+	__u32 response_length;
+	__u32 attributes;
+	__u8 counted_type;
+	__u8 entries_count;
+	__u16 reserved;
+};
+
+struct ib_uverbs_ex_create_counter_set {
+	__u32 comp_mask;
+	__u16 cs_id;
+	__u16 reserved;
+};
+
+struct ib_uverbs_ex_create_counter_set_resp {
+	__u32 comp_mask;
+	__u32 response_length;
+	__u32 cs_handle;
+	__u32 reserved;
+};
+
+struct ib_uverbs_ex_destroy_counter_set  {
+	__u32 comp_mask;
+	__u32 cs_handle;
+};
+
+struct ib_uverbs_ex_destroy_counter_set_resp {
+	__u32 comp_mask;
+	__u32 response_length;
+};
+
+struct ib_uverbs_ex_query_counter_set {
+	__u64 out_buff;
+	__u32 out_buff_len;
+	__u32 query_attr; /* Use enum ib_query_counter_set_flags */
+	__u32 cs_handle;
+	__u32 comp_mask;
+};
+
+struct ib_uverbs_ex_query_counter_set_resp {
+	__u32 comp_mask;
+	__u32 response_length;
+};
+
+#define IB_DEVICE_NAME_MAX 64
 
 #endif /* IB_USER_VERBS_H */

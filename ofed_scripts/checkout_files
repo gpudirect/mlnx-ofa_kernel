@@ -13,6 +13,7 @@ drivers/infiniband/sw/Makefile
 drivers/infiniband/sw/rxe
 drivers/net/ethernet/mellanox/mlx4
 drivers/net/ethernet/mellanox/mlx5
+drivers/net/ethernet/mellanox/mlxfw
 drivers/net/ethernet/mellanox/Kconfig
 drivers/nvme/
 drivers/scsi/scsi_priv.h
@@ -27,3 +28,5 @@ include/scsi/srp.h
 include/scsi/iser.h
 include/linux/nvme.h
 include/linux/nvme-rdma.h
+include/linux/nvme-fc-driver.h
+include/linux/nvme-fc.h

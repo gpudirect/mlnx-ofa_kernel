@@ -1,4 +1,4 @@
-PHONY += all kernel install_kernel install clean clean_kernel
+PHONY += all kernel install_kernel install clean clean_kernel distclean install_modules install_scripts build_py_scripts install_py_scripts help
 	
 all:
 .PHONY: $(PHONY)
@@ -9,6 +9,8 @@ include ./configure.mk.kernel
 
 export COMPAT_CONFIG=$(CWD)/compat.config
 export COMPAT_AUTOCONF=$(CWD)/include/linux/compat_autoconf.h
+export KSRC
+export KSRC_OBJ
 export KLIB_BUILD
 export KVERSION
 export MAKE
@@ -77,7 +79,7 @@ export MLNX_CFLAGS
 # compiled with GCC 4.6.0 and above.
 # therefore, to prevent unknown symbol issues we disable function tracing.
 #
-compile_h=$(shell /bin/ls -1 $(KSRC)/include/*/compile.h 2> /dev/null | head -1)
+compile_h=$(shell /bin/ls -1 $(KSRC_OBJ)/include/*/compile.h 2> /dev/null | head -1)
 ifneq ($(compile_h),)
 KERNEL_GCC_MAJOR := $(shell grep LINUX_COMPILER $(compile_h) | sed -r -e 's/.*gcc version ([0-9\.\-]*) .*/\1/g' | cut -d'.' -f1)
 KERNEL_GCC_MINOR := $(shell grep LINUX_COMPILER $(compile_h) | sed -r -e 's/.*gcc version ([0-9\.\-]*) .*/\1/g' | cut -d'.' -f2)
@@ -126,8 +128,8 @@ all: kernel build_py_scripts
 install: install_kernel install_scripts
 install_kernel: install_modules
 
-autoconf_h=$(shell /bin/ls -1 $(KSRC)/include/*/autoconf.h 2> /dev/null | head -1)
-kconfig_h=$(shell /bin/ls -1 $(KSRC)/include/*/kconfig.h 2> /dev/null | head -1)
+autoconf_h=$(shell /bin/ls -1 $(KSRC_OBJ)/include/*/autoconf.h 2> /dev/null | head -1)
+kconfig_h=$(shell /bin/ls -1 $(KSRC_OBJ)/include/*/kconfig.h 2> /dev/null | head -1)
 
 ifneq ($(kconfig_h),)
 KCONFIG_H = -include $(kconfig_h)
@@ -145,9 +147,10 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 	@echo "Building kernel modules"
 	@echo "Kernel version: $(KVERSION)"
 	@echo "Modules directory: $(INSTALL_MOD_PATH)/lib/modules/$(KVERSION)/$(INSTALL_MOD_DIR)"
+	@echo "Kernel build: $(KSRC_OBJ)"
 	@echo "Kernel sources: $(KSRC)"
 	env CWD=$(CWD) BACKPORT_INCLUDES=$(BACKPORT_INCLUDES) \
-		$(MAKE) -C $(KSRC) SUBDIRS="$(CWD)" \
+		$(MAKE) -C $(KSRC_OBJ) SUBDIRS="$(CWD)" \
 		V=$(V) KBUILD_NOCMDDEP=1 $(WITH_MAKE_PARAMS) \
 		CONFIG_COMPAT_VERSION=$(CONFIG_COMPAT_VERSION) \
 		CONFIG_COMPAT_KOBJECT_BACKPORT=$(CONFIG_COMPAT_KOBJECT_BACKPORT) \
@@ -165,14 +168,17 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_RDMA_RXE=$(CONFIG_RDMA_RXE) \
 		CONFIG_RDMA_RXE_DUMMY=$(CONFIG_RDMA_RXE_DUMMY) \
 		CONFIG_NVME_CORE=$(CONFIG_NVME_CORE) \
+		CONFIG_NVME_HOST_WITHOUT_FC=$(CONFIG_NVME_HOST_WITHOUT_FC) \
 		CONFIG_BLK_DEV_NVME=$(CONFIG_BLK_DEV_NVME) \
 		CONFIG_NVME_FABRICS=$(CONFIG_NVME_FABRICS) \
+		CONFIG_NVME_FC=$(CONFIG_NVME_FC) \
 		CONFIG_NVME_RDMA=$(CONFIG_NVME_RDMA) \
-		CONFIG_BLK_DEV_NVME_SCSI=$(CONFIG_BLK_DEV_NVME_SCSI) \
 		CONFIG_NVME_HOST_DUMMY=$(CONFIG_NVME_HOST_DUMMY) \
 		CONFIG_NVME_TARGET=$(CONFIG_NVME_TARGET) \
 		CONFIG_NVME_TARGET_LOOP=$(CONFIG_NVME_TARGET_LOOP) \
 		CONFIG_NVME_TARGET_RDMA=$(CONFIG_NVME_TARGET_RDMA) \
+		CONFIG_NVME_TARGET_FC=$(CONFIG_NVME_TARGET_FC) \
+		CONFIG_NVME_TARGET_FCLOOP=$(CONFIG_NVME_TARGET_FCLOOP) \
 		CONFIG_NVME_TARGET_DUMMY=$(CONFIG_NVME_TARGET_DUMMY) \
 		CONFIG_SCSI_SRP_ATTRS=$(CONFIG_SCSI_SRP_ATTRS) \
 		CONFIG_INFINIBAND_USER_MAD=$(CONFIG_INFINIBAND_USER_MAD) \
@@ -194,9 +200,17 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_INFINIBAND_SDP_DEBUG_DATA=$(CONFIG_INFINIBAND_SDP_DEBUG_DATA) \
 		CONFIG_INFINIBAND_MADEYE=$(CONFIG_INFINIBAND_MADEYE) \
 		CONFIG_MLX4_CORE=$(CONFIG_MLX4_CORE) \
+		CONFIG_MLXFW=$(CONFIG_MLXFW) \
 		CONFIG_MLX5_CORE=$(CONFIG_MLX5_CORE) \
+		CONFIG_MLX5_ACCEL=$(CONFIG_MLX5_ACCEL) \
+		CONFIG_MLX5_EN_IPSEC=$(CONFIG_MLX5_EN_IPSEC) \
+		CONFIG_MLX5_FPGA=$(CONFIG_MLX5_FPGA) \
+		CONFIG_MLX5_FPGA_TOOLS=$(CONFIG_MLX5_FPGA_TOOLS) \
 		CONFIG_MLX5_CORE_EN=$(CONFIG_MLX5_CORE_EN) \
 		CONFIG_MLX5_CORE_EN_DCB=$(CONFIG_MLX5_CORE_EN_DCB) \
+		CONFIG_MLX5_MPFS=$(CONFIG_MLX5_MPFS) \
+		CONFIG_MLX5_ESWITCH=$(CONFIG_MLX5_ESWITCH) \
+		CONFIG_MLX5_CORE_IPOIB=$(CONFIG_MLX5_CORE_IPOIB) \
 		CONFIG_MLX4_EN=$(CONFIG_MLX4_EN) \
 		CONFIG_MLX4_EN_DCB=$(CONFIG_MLX4_EN_DCB) \
 		CONFIG_MLX4_IB_DEBUG_FS=$(CONFIG_MLX4_IB_DEBUG_FS) \
@@ -249,7 +263,7 @@ install_modules:
 	@echo "Installing kernel modules"
 
 ifeq ($(shell /usr/bin/lsb_release -s -i 2>/dev/null | grep -qiE "debian|ubuntu" 2>/dev/null && echo YES || echo ''),)
-	$(MAKE) -C $(KSRC) SUBDIRS="$(CWD)" \
+	$(MAKE) -C $(KSRC_OBJ) SUBDIRS="$(CWD)" \
 		INSTALL_MOD_PATH=$(INSTALL_MOD_PATH) \
 		INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) \
 		$(WITH_MAKE_PARAMS) modules_install;
@@ -311,7 +325,9 @@ endif
 endif
 
 	install -d $(INSTALL_MOD_PATH)/etc/udev/rules.d
+ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/udev/rules.d/90-ib.rules)","")
 	install -m 0644 ofed_scripts/90-ib.rules $(INSTALL_MOD_PATH)/etc/udev/rules.d
+endif
 ifneq ($(shell udevinfo -V 2> /dev/null | awk '{print $NF}' 2>/dev/null | grep -E "^0[1-4]"),)
 	sed -i -e 's/KERNEL==/KERNEL=/g' $(INSTALL_MOD_PATH)/etc/udev/rules.d
 endif
@@ -322,6 +338,7 @@ endif
 	install -m 0755 ofed_scripts/compat_gid_gen $(INSTALL_MOD_PATH)/usr/sbin
 	install -m 0755 ofed_scripts/cma_roce_mode $(INSTALL_MOD_PATH)/usr/sbin
 	install -m 0755 ofed_scripts/cma_roce_tos $(INSTALL_MOD_PATH)/usr/sbin
+	install -m 0755 ofed_scripts/setup_mr_cache.sh $(INSTALL_MOD_PATH)/usr/sbin
 	install -d $(INSTALL_MOD_PATH)/etc/
 
 
@@ -344,22 +361,26 @@ endif
 clean: clean_kernel
 
 clean_kernel:
-	$(MAKE) -C $(KSRC) rm-files= SUBDIRS="$(CWD)" $(WITH_MAKE_PARAMS) clean
+	$(MAKE) -C $(KSRC_OBJ) rm-files= SUBDIRS="$(CWD)" $(WITH_MAKE_PARAMS) clean
 
 distclean: clean_kernel
 	@/bin/rm -f $(clean-files)
+	@/bin/rm -rf $(PWD)/rpm-dist
 
 clean-files := Module.symvers modules.order Module.markers compat/modules.order
 clean-files += $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 
 help:
 	@echo
-	@echo kernel: 		        build kernel modules
-	@echo all: 		        build kernel modules
+	@echo "kernel:                      Build kernel modules"
+	@echo "build_py_scripts:            Build python scripts"
+	@echo "all:                         Run kernel and build_py_scripts"
 	@echo
-	@echo install_kernel:	        install kernel modules under $(INSTALL_MOD_PATH)/lib/modules/$(KVERSION)/$(INSTALL_MOD_DIR)
-	@echo install:	        	run install_kernel
+	@echo "install_kernel:              Install kernel modules under $(INSTALL_MOD_PATH)/lib/modules/$(KVERSION)/$(INSTALL_MOD_DIR)"
+	@echo "install_scripts:             Install scripts and configurations files"
+	@echo "install:                     Run install_kernel and install_scripts"
 	@echo
-	@echo clean:	        	delete kernel modules binaries
-	@echo clean_kernel:	        delete kernel modules binaries
+	@echo "clean_kernel:                Delete kernel modules binaries"
+	@echo "clean:                       Run clean_kernel"
+	@echo "distclean:                   Run clean_kernel and also remove auto-generated files"
 	@echo

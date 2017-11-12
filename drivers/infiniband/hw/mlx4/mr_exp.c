@@ -126,7 +126,7 @@ int mlx4_ib_umem_calc_optimal_mtt_size(struct ib_umem *umem,
 	u64 last_block_end = 0;
 	u64 total_len = 0;
 	u64 last_block_aligned_end = 0;
-	u64 min_shift = ilog2(umem->page_size);
+	u64 min_shift = umem->page_shift;
 	struct scatterlist *sg;
 	int i;
 	u64 next_block_start;
@@ -156,7 +156,7 @@ int mlx4_ib_umem_calc_optimal_mtt_size(struct ib_umem *umem,
 			   number, resulting in access to the wrong
 			   data. */
 			misalignment_bits =
-			(start_va & (~(((u64)(umem->page_size))-1ULL)))
+			(start_va & (~(((u64)(BIT(umem->page_shift)))-1ULL)))
 						^ current_block_start;
 			block_shift = min(alignment_of(misalignment_bits)
 				, block_shift);
@@ -233,13 +233,13 @@ end:
 
 }
 
-struct ib_mr *mlx4_ib_exp_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
-				      u64 virt_addr, int access_flags,
+struct ib_mr *mlx4_ib_exp_reg_user_mr(struct ib_pd *pd,
+				      struct ib_mr_init_attr *attr,
 				      struct ib_udata *udata,
 				      int mr_id)
 {
-	return mlx4_ib_reg_user_mr(pd, start, length,
-				   virt_addr, access_flags,
+	return mlx4_ib_reg_user_mr(pd, attr->start, attr->length,
+				   attr->hca_va, attr->access_flags,
 				   udata,
 				   mr_id);
 }

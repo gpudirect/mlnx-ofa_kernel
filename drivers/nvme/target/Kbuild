@@ -1,8 +1,0 @@
-obj-$(CONFIG_NVMF_TARGET) += nvmet-rdma.o
-obj-$(CONFIG_NVMF_TARGET_DUMMY) += nvmet-rdma.o
-
-ifeq ($(CONFIG_NVMF_TARGET_DUMMY),m)
-nvmet-rdma-y             := nvmet-rdma_dummy.o
-else
-nvmet-rdma-y              := rdma.o
-endif

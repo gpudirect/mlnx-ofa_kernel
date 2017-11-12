@@ -85,6 +85,32 @@
 	__memtrack_addr;							\
 })
 
+#define kvzalloc(size, flags) ({						\
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kvzalloc", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kvzalloc"); \
+	else									\
+		__memtrack_addr = kvzalloc(size, flags);			\
+	if (__memtrack_addr && !is_non_trackable_alloc_func(__func__)) {	\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), size, 0UL, 0, __FILE__, __LINE__, flags); \
+	}									\
+	__memtrack_addr;							\
+})
+
+#define kvmalloc_array(n, size, flags) ({					\
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kvmalloc_array", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kvmalloc_array"); \
+	else									\
+		__memtrack_addr = kvmalloc_array(n, size, flags);		\
+	if (__memtrack_addr && !is_non_trackable_alloc_func(__func__) && (n)*(size)) {	\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), (n)*size, 0UL, 0, __FILE__, __LINE__, flags); \
+	}									\
+	__memtrack_addr;							\
+})
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 19)
 #define kcalloc(n, size, flags) kzalloc((n)*(size), flags)
 #else
@@ -159,6 +185,21 @@
 		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kmalloc_node"); \
 	else									\
 		__memtrack_addr = kmalloc_node(sz, flgs, node);			\
+	if (__memtrack_addr) {							\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), sz, 0UL, 0, __FILE__, __LINE__, flgs); \
+		if (memtrack_randomize_mem() && ((flgs) == GFP_KERNEL))		\
+			memset(__memtrack_addr, 0x5A, sz);			\
+	}									\
+	__memtrack_addr;							\
+})
+
+#define kvmalloc_node(sz, flgs, node) ({						\
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kvmalloc_node", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kvmalloc_node"); \
+	else									\
+		__memtrack_addr = kvmalloc_node(sz, flgs, node);			\
 	if (__memtrack_addr) {							\
 		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), sz, 0UL, 0, __FILE__, __LINE__, flgs); \
 		if (memtrack_randomize_mem() && ((flgs) == GFP_KERNEL))		\
@@ -931,7 +972,7 @@
 	#undef alloc_workqueue
 #endif
 #ifdef CONFIG_LOCKDEP
-#define alloc_workqueue(name, flags, max_active)				\
+#define alloc_workqueue(name, flags, max_active, args...)			\
 ({										\
 	static struct lock_class_key __key;					\
 	const char *__lock_name;						\
@@ -946,20 +987,21 @@
 		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "alloc_workqueue"); \
 	else									\
 		wq_addr = __alloc_workqueue_key((name), (flags), (max_active),	\
-						&__key, __lock_name);		\
+						&__key, __lock_name, ##args));	\
 	if (wq_addr) {								\
 		memtrack_alloc(MEMTRACK_WORK_QUEUE, 0UL, (unsigned long)(wq_addr), 0, 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
 	}									\
 	wq_addr;								\
 })
 #else
-#define alloc_workqueue(name, flags, max_active) ({				\
+#define alloc_workqueue(name, flags, max_active, args...) ({			\
 	struct workqueue_struct *wq_addr = NULL;				\
 										\
 	if (memtrack_inject_error(THIS_MODULE, __FILE__, "alloc_workqueue", __func__, __LINE__)) \
 		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "alloc_workqueue"); \
 	else									\
-		wq_addr = __alloc_workqueue_key((name), (flags), (max_active), NULL, NULL); \
+		wq_addr = __alloc_workqueue_key((name), (flags), (max_active),	\
+						NULL, NULL, ##args);		\
 	if (wq_addr) {								\
 		memtrack_alloc(MEMTRACK_WORK_QUEUE, 0UL, (unsigned long)(wq_addr), 0, 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
 	}									\

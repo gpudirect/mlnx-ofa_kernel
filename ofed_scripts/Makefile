@@ -3,10 +3,7 @@ EXTRA_CFLAGS += $(OPENIB_KERNEL_EXTRA_CFLAGS) \
 		-I$(CWD)/include \
 		-I$(CWD)/drivers/infiniband/ulp/ipoib$(CONFIG_IPOIB_VERSION) \
 		-I$(CWD)/drivers/infiniband/debug \
-		-I$(CWD)/drivers/net/ethernet/chelsio/cxgb3 \
-		-I$(CWD)/drivers/net/ethernet/chelsio/cxgb4 \
 		-I$(CWD)/net/rds \
-		-I$(CWD)/net/eipoib \
 		-I$(CWD)/drivers/net/ethernet/mellanox/mlx4 \
 		-I$(CWD)/drivers/net/ethernet/mellanox/mlx5/core \
 		-I$(CWD)/drivers/infiniband/hw/mlx4 \
@@ -14,10 +11,13 @@ EXTRA_CFLAGS += $(OPENIB_KERNEL_EXTRA_CFLAGS) \
 
 obj-y := compat$(CONFIG_COMPAT_VERSION)/
 obj-$(CONFIG_INFINIBAND)        += drivers/infiniband/
-obj-$(CONFIG_CHELSIO_T3)        += drivers/net/ethernet/chelsio/cxgb3/
-obj-$(CONFIG_CHELSIO_T4)        += drivers/net/ethernet/chelsio/cxgb4/
+obj-$(CONFIG_INFINIBAND_IPATH)  += drivers/infiniband/hw/ipath/
+obj-$(CONFIG_INFINIBAND_EHCA)   += drivers/infiniband/hw/ehca/
+obj-$(CONFIG_INFINIBAND_AMSO1100)   += drivers/infiniband/hw/amso1100/
 obj-$(CONFIG_MLX4_CORE)         += drivers/net/ethernet/mellanox/mlx4/
 obj-$(CONFIG_MLX5_CORE)         += drivers/net/ethernet/mellanox/mlx5/core/
+obj-$(CONFIG_MLX5_FPGA_TOOLS)   += drivers/net/ethernet/mellanox/mlx5/fpga/
+obj-$(CONFIG_MLXFW)             += drivers/net/ethernet/mellanox/mlxfw/
 obj-$(CONFIG_RDS)               += net/rds/
 obj-$(CONFIG_MEMTRACK)          += drivers/infiniband/debug/
 obj-$(CONFIG_SUNRPC_XPRT_RDMA)  += net/sunrpc/xprtrdma/
@@ -25,17 +25,21 @@ obj-$(CONFIG_SUNRPC_XPRT_RDMA_DUMMY)  += net/sunrpc/xprtrdma/
 obj-$(CONFIG_SUNRPC_XPRT_RDMA_CLIENT)  += net/sunrpc/xprtrdma/
 obj-$(CONFIG_SUNRPC_XPRT_RDMA_SERVER)  += net/sunrpc/xprtrdma/
 obj-$(CONFIG_NET_9P_RDMA) += net/9p/
-obj-$(CONFIG_9P_FS) += fs/9p/
-obj-$(CONFIG_SCSI_CXGB3_ISCSI)  += drivers/scsi/cxgbi/
-obj-$(CONFIG_SCSI_CXGB4_ISCSI)  += drivers/scsi/cxgbi/
 obj-$(CONFIG_SCSI_SRP_ATTRS)    += drivers/scsi/
-obj-$(CONFIG_ISCSI_TARGET_CXGB4) += drivers/target/iscsi/cxgbit/
 obj-$(CONFIG_NVME_CORE)         += drivers/nvme/host/
+obj-$(CONFIG_NVME_HOST_WITHOUT_FC)      += drivers/nvme/host/
+obj-$(CONFIG_NVME_HOST_WITHOUT_FC)      += drivers/nvme/target/
 obj-$(CONFIG_BLK_DEV_NVME)      += drivers/nvme/host/
 obj-$(CONFIG_NVME_FABRICS)      += drivers/nvme/host/
+obj-$(CONFIG_NVME_FC)           += drivers/nvme/host/
 obj-$(CONFIG_NVME_RDMA)         += drivers/nvme/host/
 obj-$(CONFIG_NVME_HOST_DUMMY)   += drivers/nvme/host/
 obj-$(CONFIG_NVME_TARGET)       += drivers/nvme/target/
 obj-$(CONFIG_NVME_TARGET_LOOP)  += drivers/nvme/target/
 obj-$(CONFIG_NVME_TARGET_RDMA)  += drivers/nvme/target/
+obj-$(CONFIG_NVME_TARGET_FC)    += drivers/nvme/target/
+obj-$(CONFIG_NVME_TARGET_FCLOOP)  += drivers/nvme/target/
 obj-$(CONFIG_NVME_TARGET_DUMMY) += drivers/nvme/target/
+obj-$(CONFIG_RDMA_RXE_DUMMY)	+= drivers/infiniband/sw/rxe/
+obj-$(CONFIG_SMC)		+= net/smc/
+obj-$(CONFIG_SMC_DIAG)		+= net/smc/

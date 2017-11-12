@@ -165,7 +165,8 @@ static int alloc_4k(struct mlx5_core_dev *dev, u64 *addr)
 	fp = list_entry(dev->priv.free_list.next, struct fw_page, list);
 	n = find_first_bit(&fp->bitmask, 8 * sizeof(fp->bitmask));
 	if (n >= MLX5_NUM_4K_IN_PAGE) {
-		mlx5_core_warn(dev, "alloc 4k bug\n");
+		mlx5_core_warn(dev, "alloc 4k bug: fw page = %p, n = %u, bitmask: %lu, max num of 4K pages: %d\n",
+				fp, n, fp->bitmask,  MLX5_NUM_4K_IN_PAGE);
 		return -ENOENT;
 	}
 	clear_bit(n, &fp->bitmask);
@@ -180,7 +181,7 @@ static int alloc_4k(struct mlx5_core_dev *dev, u64 *addr)
 
 #define MLX5_U64_4K_PAGE_MASK ((~(u64)0U) << PAGE_SHIFT)
 
-static void free_4k(struct mlx5_core_dev *dev, u64 addr)
+static int free_4k(struct mlx5_core_dev *dev, u64 addr)
 {
 	struct fw_page *fwp;
 	int n;
@@ -188,14 +189,21 @@ static void free_4k(struct mlx5_core_dev *dev, u64 addr)
 	fwp = find_fw_page(dev, addr & MLX5_U64_4K_PAGE_MASK);
 	if (!fwp) {
 		mlx5_core_warn(dev, "page not found\n");
-		return;
+		return -ENOMEM;
 	}
 
 	n = (addr & ~MLX5_U64_4K_PAGE_MASK) >> MLX5_ADAPTER_PAGE_SHIFT;
+	if (test_bit(n, &fwp->bitmask)) {
+		mlx5_core_warn(dev, "addr 0x%llx is already freed, n %d\n", addr, n);
+		return -EINVAL;
+	}
+
 	fwp->free_count++;
 	set_bit(n, &fwp->bitmask);
 	if (fwp->free_count == 1)
 		list_add(&fwp->list, &dev->priv.free_list);
+
+	return 0;
 }
 
 static int alloc_system_page(struct mlx5_core_dev *dev, u16 func_id)
@@ -275,7 +283,7 @@ static int give_pages(struct mlx5_core_dev *dev, u16 func_id, int npages,
 	int i;
 
 	inlen += npages * MLX5_FLD_SZ_BYTES(manage_pages_in, pas[0]);
-	in = mlx5_vzalloc(inlen);
+	in = kvzalloc(inlen, GFP_KERNEL);
 	if (!in) {
 		err = -ENOMEM;
 		mlx5_core_warn(dev, "vzalloc failed %d\n", inlen);
@@ -386,12 +394,13 @@ static int reclaim_pages(struct mlx5_core_dev *dev, u32 func_id, int npages,
 	u32 *out;
 	int err;
 	int i;
+	int claimed = 0;
 
 	if (nclaimed)
 		*nclaimed = 0;
 
 	outlen += npages * MLX5_FLD_SZ_BYTES(manage_pages_out, pas[0]);
-	out = mlx5_vzalloc(outlen);
+	out = kvzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
@@ -416,15 +425,15 @@ static int reclaim_pages(struct mlx5_core_dev *dev, u32 func_id, int npages,
 	}
 
 	for (i = 0; i < num_claimed; i++)
-		free_4k(dev, MLX5_GET64(manage_pages_out, out, pas[i]));
-
+		if (!free_4k(dev, MLX5_GET64(manage_pages_out, out, pas[i])))
+			claimed++;
 
 	if (nclaimed)
-		*nclaimed = num_claimed;
+		*nclaimed = claimed;
 
-	dev->priv.fw_pages -= num_claimed;
+	dev->priv.fw_pages -= claimed;
 	if (func_id)
-		dev->priv.vfs_pages -= num_claimed;
+		dev->priv.vfs_pages -= claimed;
 
 out_free:
 	kvfree(out);
@@ -562,10 +571,15 @@ int mlx5_reclaim_startup_pages(struct mlx5_core_dev *dev)
 		}
 	}
 
+	if (dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR) {
+		dev->priv.vfs_pages = 0;
+		dev->priv.fw_pages = 0;
+	}
+
 	WARN(dev->priv.fw_pages,
 	     "FW pages counter is %d after reclaiming all pages\n",
 	     dev->priv.fw_pages);
-	WARN(dev->priv.vfs_pages && (dev->state != MLX5_DEVICE_STATE_INTERNAL_ERROR),
+	WARN(dev->priv.vfs_pages,
 	     "VFs FW pages counter is %d after reclaiming all pages\n",
 	     dev->priv.vfs_pages);
 
@@ -624,8 +638,8 @@ int mlx5_pagealloc_start(struct mlx5_core_dev *dev)
 
 void mlx5_pagealloc_stop(struct mlx5_core_dev *dev)
 {
-	dev->priv.gc_allowed = false;
 	cancel_delayed_work(&dev->priv.gc_dwork);
+	queue_delayed_work(dev->priv.pg_wq, &dev->priv.gc_dwork, 0);
 	destroy_workqueue(dev->priv.pg_wq);
 }
 

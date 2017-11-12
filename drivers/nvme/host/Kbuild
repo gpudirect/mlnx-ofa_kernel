@@ -1,8 +1,0 @@
-obj-$(CONFIG_NVMF_HOST) += nvme-rdma.o
-obj-$(CONFIG_NVMF_HOST_DUMMY) += nvme-rdma.o
-
-ifeq ($(CONFIG_NVMF_HOST_DUMMY),m)
-nvme-rdma-y             := nvme-rdma_dummy.o
-else
-nvme-rdma-y             := rdma.o
-endif

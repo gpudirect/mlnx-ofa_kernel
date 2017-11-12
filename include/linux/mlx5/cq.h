@@ -42,13 +42,13 @@ struct mlx5_core_cq {
 	int			cqe_sz;
 	__be32		       *set_ci_db;
 	__be32		       *arm_db;
+	struct mlx5_uars_page  *uar;
 	atomic_t		refcount;
 	struct completion	free;
 	unsigned		vector;
 	unsigned int		irqn;
 	void (*comp)		(struct mlx5_core_cq *);
 	void (*event)		(struct mlx5_core_cq *, enum mlx5_event);
-	struct mlx5_uar	       *uar;
 	u32			cons_index;
 	unsigned		arm_sn;
 	struct mlx5_rsc_debug	*dbg;
@@ -125,11 +125,13 @@ struct mlx5_cq_modify_params {
 enum {
 	CQE_SIZE_64 = 0,
 	CQE_SIZE_128 = 1,
+	CQE_SIZE_128_PAD = 2,
 };
 
-static inline int cqe_sz_to_mlx_sz(u8 size)
+static inline int cqe_sz_to_mlx_sz(u8 size, int padding_128_en)
 {
-	return size == 64 ? CQE_SIZE_64 : CQE_SIZE_128;
+	return padding_128_en ? CQE_SIZE_128_PAD :
+				size == 64 ? CQE_SIZE_64 : CQE_SIZE_128;
 }
 
 static inline void mlx5_cq_set_ci(struct mlx5_core_cq *cq)
@@ -144,7 +146,6 @@ enum {
 
 static inline void mlx5_cq_arm(struct mlx5_core_cq *cq, u32 cmd,
 			       void __iomem *uar_page,
-			       spinlock_t *doorbell_lock,
 			       u32 cons_index)
 {
 	__be32 doorbell[2];
@@ -164,7 +165,7 @@ static inline void mlx5_cq_arm(struct mlx5_core_cq *cq, u32 cmd,
 	doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
 	doorbell[1] = cpu_to_be32(cq->cqn);
 
-	mlx5_write64(doorbell, uar_page + MLX5_CQ_DOORBELL, doorbell_lock);
+	mlx5_write64(doorbell, uar_page + MLX5_CQ_DOORBELL, NULL);
 }
 
 int mlx5_init_cq_table(struct mlx5_core_dev *dev);

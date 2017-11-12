@@ -33,6 +33,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mlx5/driver.h>
+#include <linux/mlx5/fs.h>
 #include "mlx5_core.h"
 #include "vxlan.h"
 
@@ -88,6 +89,9 @@ static void mlx5e_vxlan_add_port(struct work_struct *work)
 	u16 port = vxlan_work->port;
 	struct mlx5e_vxlan *vxlan;
 	int err;
+#ifdef CONFIG_MLX5_INNER_RSS
+	u16 etype;
+#endif
 
 	if (mlx5e_vxlan_lookup_port(priv, port))
 		goto free_work;
@@ -100,9 +104,6 @@ static void mlx5e_vxlan_add_port(struct work_struct *work)
 		goto err_delete_port;
 
 #ifdef CONFIG_MLX5_INNER_RSS
-{
-	u16 etype;
-
 	if (vxlan_work->sa_family == AF_INET)
 		etype = ETH_P_IP;
 	else if (vxlan_work->sa_family == AF_INET6)
@@ -115,7 +116,6 @@ static void mlx5e_vxlan_add_port(struct work_struct *work)
 		pr_warn("Failed to add flow rule for VXLAN port %d\n", port);
 		goto err_free;
 	}
-}
 #endif
 
 	vxlan->udp_port = port;
@@ -123,20 +123,16 @@ static void mlx5e_vxlan_add_port(struct work_struct *work)
 	err = radix_tree_insert(&vxlan_db->tree, vxlan->udp_port, vxlan);
 	spin_unlock_irq(&vxlan_db->lock);
 	if (err)
-#ifdef CONFIG_MLX5_INNER_RSS
 		goto err_del_flow_rule;
-#else
-		goto err_free;
-#endif
 
 	if (mlx5_vxlan_debugfs_add(priv->mdev, vxlan))
 		pr_warn("Failed to add VXLAN port %d to debugfs\n", vxlan->udp_port);
 
 	goto free_work;
 
-#ifdef CONFIG_MLX5_INNER_RSS
 err_del_flow_rule:
-	mlx5_del_flow_rule(vxlan->flow_rule);
+#ifdef CONFIG_MLX5_INNER_RSS
+	mlx5_del_flow_rules(vxlan->flow_rule);
 #endif
 err_free:
 	kfree(vxlan);
@@ -160,7 +156,7 @@ static void __mlx5e_vxlan_core_del_port(struct mlx5e_priv *priv, u16 port)
 
 	mlx5_vxlan_debugfs_remove(priv->mdev, vxlan);
 #ifdef CONFIG_MLX5_INNER_RSS
-	mlx5_del_flow_rule(vxlan->flow_rule);
+	mlx5_del_flow_rules(vxlan->flow_rule);
 #endif
 	mlx5e_vxlan_core_del_port_cmd(priv->mdev, vxlan->udp_port);
 
