@@ -62,7 +62,7 @@ out:
 static int mlx5e_diag_fill_driver_version(void *buff)
 {
 	memset(buff, 0, MLX5_DRV_VER_SZ);
-	strlcpy(buff, DRIVER_VERSION " (" DRIVER_RELDATE ")", MLX5_DRV_VER_SZ);
+	strlcpy(buff, DRIVER_VERSION, MLX5_DRV_VER_SZ);
 	return MLX5_DRV_VER_SZ;
 }
 
@@ -73,16 +73,25 @@ static int dump_rq_info(struct mlx5e_rq *rq, void *buffer)
 	rqd->wq_type = MLX5_DIAG_RQ;
 	rqd->wqn = rq->rqn;
 	rqd->ci = 0;
-	rqd->pi = rq->wq.cur_sz;
-	rqd->wqe_stride = rq->wq.log_stride;
-	rqd->size = rq->wq.sz_m1 + 1;
-	rqd->wqe_num = ((rq->wq.sz_m1 + 1) << rq->wq.log_stride);
+	switch (rq->wq_type) {
+	case MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ:
+		rqd->pi = rq->mpwqe.wq.cur_sz;
+		rqd->wqe_stride = rq->mpwqe.wq.log_stride;
+		rqd->size = rq->mpwqe.wq.sz_m1 + 1;
+		rqd->wqe_num = ((rq->mpwqe.wq.sz_m1 + 1) << rq->mpwqe.wq.log_stride);
+		break;
+	default: /* MLX5_WQ_TYPE_CYCLIC */
+		rqd->pi = rq->wqe.wq.cur_sz;
+		rqd->wqe_stride = rq->wqe.wq.log_stride;
+		rqd->size = rq->wqe.wq.sz_m1 + 1;
+		rqd->wqe_num = ((rq->wqe.wq.sz_m1 + 1) << rq->wqe.wq.log_stride);
+	}
 	rqd->group_id = rq->channel->ix;
 
 	return sizeof(*rqd);
 }
 
-static int dump_sq_info(struct mlx5e_sq *sq, void *buffer)
+static int dump_sq_info(struct mlx5e_txqsq *sq, void *buffer)
 {
 	struct mlx5_diag_wq *sqd = (struct mlx5_diag_wq *)buffer;
 
@@ -181,18 +190,18 @@ static void dump_channel_info(struct mlx5e_channel *c,
 static void dump_channels_info(struct mlx5e_priv *priv,
 			       struct mlx5_diag_dump *dump_hdr)
 {
-	u32 nch = priv->params.num_channels;
+	u32 nch = priv->channels.num;
 	int i;
 
 	for (i = 0; i < nch; i++)
-		dump_channel_info(priv->channel[i], dump_hdr);
+		dump_channel_info(priv->channels.c[i], dump_hdr);
 }
 
 int mlx5e_set_dump(struct net_device *netdev, struct ethtool_dump *dump)
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	priv->dump.flag = dump->flag;
+	priv->channels.params.dump.flag = dump->flag;
 	return 0;
 }
 
@@ -202,7 +211,7 @@ int mlx5e_get_dump_flag(struct net_device *netdev, struct ethtool_dump *dump)
 	__u32 extra_len = 0;
 
 	dump->version = MLX5_DIAG_DUMP_VERSION;
-	dump->flag = priv->dump.flag;
+	dump->flag = priv->channels.params.dump.flag;
 
 	if (dump->flag & MLX5_DIAG_FLAG_MST) {
 		u32 mst_size = mlx5_mst_capture(priv->mdev);
@@ -214,15 +223,15 @@ int mlx5e_get_dump_flag(struct net_device *netdev, struct ethtool_dump *dump)
 				    mst_size);
 			mst_size = 0;
 		}
-		priv->dump.mst_size = mst_size;
+		priv->channels.params.dump.mst_size = mst_size;
 		extra_len += mst_size ? DIAG_BLK_SZ(mst_size) : 0;
 	}
 
 	mutex_lock(&priv->state_lock);
 	if (dump->flag & MLX5_DIAG_FLAG_CHANNELS &&
 	    test_bit(MLX5E_STATE_OPENED, &priv->state)) {
-		u32 nch = priv->params.num_channels;
-		u32 ntc = priv->params.num_tc;
+		u32 nch = priv->channels.num;
+		u32 ntc = priv->channels.params.num_tc;
 
 		extra_len +=
 			nch * ntc * DIAG_BLK_SZ(sizeof(struct mlx5_diag_wq)) + /* SQs     */
@@ -246,8 +255,16 @@ int mlx5e_get_dump_data(struct net_device *netdev, struct ethtool_dump *dump,
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct mlx5_diag_dump *dump_hdr = buffer;
 	struct mlx5_diag_blk *dump_blk;
-	struct mlx5_mcion_reg mcion;
+	struct mlx5_mcion_reg mcion = {};
+	int module_num;
+	int err;
 
+	err = mlx5_query_module_num(priv->mdev, &module_num);
+
+	if (err)
+		return err;
+
+	mcion.module = module_num;
 	dump_hdr->version = MLX5_DIAG_DUMP_VERSION;
 	dump_hdr->flag = 0;
 	dump_hdr->num_blocks = 0;
@@ -276,17 +293,17 @@ int mlx5e_get_dump_data(struct net_device *netdev, struct ethtool_dump *dump,
 
 	/* Dump channels info */
 	mutex_lock(&priv->state_lock);
-	if (priv->dump.flag & MLX5_DIAG_FLAG_CHANNELS &&
+	if (priv->channels.params.dump.flag & MLX5_DIAG_FLAG_CHANNELS &&
 	    test_bit(MLX5E_STATE_OPENED, &priv->state))
 		dump_channels_info(priv, dump_hdr);
 	mutex_unlock(&priv->state_lock);
 
-	if (priv->dump.flag & MLX5_DIAG_FLAG_MST) {
+	if (priv->channels.params.dump.flag & MLX5_DIAG_FLAG_MST) {
 		/* Dump mst buffer */
 		dump_blk = DIAG_GET_NEXT_BLK(dump_hdr);
 		dump_blk->type = MLX5_DIAG_MST;
 		dump_blk->length = mlx5_mst_dump(priv->mdev, &dump_blk->data,
-						 priv->dump.mst_size);
+						 priv->channels.params.dump.mst_size);
 		dump_hdr->total_length += DIAG_BLK_SZ(dump_blk->length);
 		dump_hdr->num_blocks++;
 		dump_hdr->flag |= MLX5_DIAG_FLAG_MST;

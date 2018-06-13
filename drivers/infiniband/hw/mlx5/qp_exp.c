@@ -61,10 +61,21 @@ int mlx5_ib_exp_get_cmd_data(struct mlx5_ib_dev *dev,
 			return -EOPNOTSUPP;
 
 		if (ucmd.mp_rq.use_shift & ~IB_MP_RQ_2BYTES_SHIFT ||
-		    ucmd.mp_rq.single_stride_log_num_of_bytes < MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES ||
-		    ucmd.mp_rq.single_stride_log_num_of_bytes > MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES ||
-		    ucmd.mp_rq.single_wqe_log_num_of_strides < MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES ||
-		    ucmd.mp_rq.single_wqe_log_num_of_strides > MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES)
+		    ucmd.mp_rq.single_stride_log_num_of_bytes <
+		    MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES ||
+		    ucmd.mp_rq.single_stride_log_num_of_bytes >
+		    MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES)
+			return -EINVAL;
+
+		if ((ucmd.mp_rq.single_wqe_log_num_of_strides <
+		     MLX5_EXT_MIN_SINGLE_WQE_LOG_NUM_STRIDES) ||
+		    ((ucmd.mp_rq.single_wqe_log_num_of_strides <
+		      MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES) &&
+		     !MLX5_CAP_GEN(dev->mdev, ext_stride_num_range)))
+			return -EINVAL;
+
+		if (ucmd.mp_rq.single_wqe_log_num_of_strides >
+		    MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES)
 			return -EINVAL;
 
 		data->mp_rq.use_shift = ucmd.mp_rq.use_shift;
@@ -89,6 +100,11 @@ int mlx5_ib_exp_get_cmd_data(struct mlx5_ib_dev *dev,
 	if ((ucmd.flags & MLX5_EXP_WQ_FLAG_SCATTER_FCS) &&
 	    (!MLX5_CAP_GEN(dev->mdev, eth_net_offloads) ||
 	     !MLX5_CAP_ETH(dev->mdev, scatter_fcs)))
+		return -EOPNOTSUPP;
+
+	if ((ucmd.flags & MLX5_EXP_WQ_FLAG_DELAY_DROP) &&
+	    !(MLX5_CAP_GEN(dev->mdev, rq_delay_drop) &&
+	      MLX5_CAP_GEN(dev->mdev, general_notification_event)))
 		return -EOPNOTSUPP;
 
 	return 0;
@@ -117,13 +133,25 @@ void mlx5_ib_exp_set_rqc(void *rqc, struct mlx5_ib_rwq *rwq)
 
 	wq = MLX5_ADDR_OF(rqc, rqc, wq);
 	if (rwq->mp_rq.use_mp_rq) {
-		MLX5_SET(wq, wq, wq_type, MLX5_WQ_TYPE_STRQ_CYCLIC);
+		int log_num_of_strides;
+		u8 twos_comp_log_num_of_strides;
+
+		MLX5_SET(wq, wq, wq_type, MLX5_WQ_TYPE_CYCLIC_STRIDING_RQ);
+
+		/* Normalize to device's interface values (range of (-6) - 7) */
+		log_num_of_strides =
+			rwq->mp_rq.single_wqe_log_num_of_strides - 9;
+		/* Convert to 2's complement representation */
+		twos_comp_log_num_of_strides = log_num_of_strides < 0 ?
+			((u32)(~abs(log_num_of_strides)) + 1) & 0xF :
+			(u8)log_num_of_strides;
 		MLX5_SET(wq, wq, log_wqe_num_of_strides,
-			 (rwq->mp_rq.single_wqe_log_num_of_strides -
-			  MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES));
+			 twos_comp_log_num_of_strides);
+
 		MLX5_SET(wq, wq, log_wqe_stride_size,
 			 (rwq->mp_rq.single_stride_log_num_of_bytes -
 			  MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES));
+
 		if (rwq->mp_rq.use_shift == IB_MP_RQ_2BYTES_SHIFT)
 			MLX5_SET(wq, wq, two_byte_shift_en, 0x1);
 	}
@@ -137,6 +165,9 @@ void mlx5_ib_exp_set_rqc(void *rqc, struct mlx5_ib_rwq *rwq)
 
 	if (rwq->flags & MLX5_EXP_WQ_FLAG_SCATTER_FCS)
 		MLX5_SET(rqc, rqc, scatter_fcs, 1);
+
+	if (rwq->flags & MLX5_EXP_WQ_FLAG_DELAY_DROP)
+		MLX5_SET(rqc, rqc, delay_drop_en, 1);
 }
 
 void mlx5_ib_exp_get_hash_parameters(struct ib_qp_init_attr *init_attr,
@@ -324,12 +355,17 @@ struct ib_dct *mlx5_ib_create_dct(struct ib_pd *pd,
 	struct mlx5_ib_create_dct ucmd;
 	struct mlx5_ib_dev *dev = to_mdev(pd->device);
 	struct mlx5_ib_dct *dct;
+	struct mlx5_ib_port *mibport;
 	void *dctc;
 	int cqe_sz;
 	int err;
 	u32 flags = 0;
 	u32 uidx = 0;
 	u32 cqn;
+	u8 tclass = attr->tclass;
+
+	if (!rdma_is_port_valid(&dev->ib_dev, attr->port))
+		return ERR_PTR(-EINVAL);
 
 	if (pd && pd->uobject) {
 		if (ib_copy_from_udata(&ucmd, udata, sizeof(ucmd))) {
@@ -389,7 +425,9 @@ struct ib_dct *mlx5_ib_create_dct(struct ib_pd *pd,
 	MLX5_SET(dctc, dctc, min_rnr_nak , attr->min_rnr_timer);
 	MLX5_SET(dctc, dctc, srqn_xrqn , to_msrq(attr->srq)->msrq.srqn);
 	MLX5_SET(dctc, dctc, pd , to_mpd(pd)->pdn);
-	MLX5_SET(dctc, dctc, tclass, attr->tclass);
+	if (dev->tcd[attr->port - 1].val >= 0)
+		tclass = dev->tcd[attr->port - 1].val;
+	MLX5_SET(dctc, dctc, tclass, tclass);
 	MLX5_SET(dctc, dctc, flow_label , attr->flow_label);
 	MLX5_SET64(dctc, dctc, dc_access_key , attr->dc_key);
 	MLX5_SET(dctc, dctc, mtu , attr->mtu);
@@ -398,9 +436,31 @@ struct ib_dct *mlx5_ib_create_dct(struct ib_pd *pd,
 	MLX5_SET(dctc, dctc, my_addr_index , attr->gid_index);
 	MLX5_SET(dctc, dctc, hop_limit , attr->hop_limit);
 
+	mibport = &dev->port[attr->port - 1];
+	MLX5_SET(dctc, dctc, counter_set_id, mibport->cnts.set_id);
+
 	if (MLX5_CAP_GEN(dev->mdev, cqe_version)) {
 		/* 0xffffff means we ask to work with cqe version 0 */
 		MLX5_SET(dctc, dctc, user_index, uidx);
+	}
+
+	if (attr->create_flags & IB_EXP_DCT_OOO_RW_DATA_PLACEMENT) {
+		if (MLX5_CAP_GEN(dev->mdev, multipath_dc_qp)) {
+			MLX5_SET(dctc, dctc, multipath, 1);
+		} else {
+			err = -EINVAL;
+			goto err_alloc;
+		}
+	}
+
+	if (attr->srq && attr->srq->srq_type == IB_EXP_SRQT_TAG_MATCHING) {
+		if (MLX5_CAP_GEN(dev->mdev, rndv_offload_dc)) {
+			MLX5_SET(dctc, dctc, offload_type,
+				 MLX5_DCTC_OFFLOAD_TYPE_RNDV);
+		} else {
+			err = -EINVAL;
+			goto err_alloc;
+		}
 	}
 
 	err = mlx5_core_create_dct(dev->mdev, &dct->mdct, in);
@@ -527,4 +587,22 @@ void mlx5_ib_set_mlx_seg(struct mlx5_mlx_seg *seg, struct mlx5_mlx_wr *wr)
 	seg->stat_rate_sl = wr->sl & 0xf;
 	seg->dlid = cpu_to_be16(wr->dlid);
 	seg->flags = wr->icrc ? 8 : 0;
+}
+
+int mlx5_ib_set_qp_offload_type(struct mlx5_qp_context *context, struct ib_qp *qp,
+				enum ib_qp_offload_type offload_type)
+{
+	switch (offload_type) {
+	case IB_QP_OFFLOAD_NVMF:
+		if (qp->srq &&
+		    qp->srq->srq_type == IB_EXP_SRQT_NVMF) {
+			context->flags |= cpu_to_be32(MLX5_QPC_OFFLOAD_TYPE_NVMF << 4);
+			break;
+		}
+	/* Fall through */
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
 }

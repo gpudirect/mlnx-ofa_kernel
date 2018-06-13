@@ -2,6 +2,7 @@
 #define _COMPAT_LINUX_NETDEVICE_H 1
 
 #include "../../compat/config.h"
+#include <linux/kconfig.h>
 
 #include_next <linux/netdevice.h>
 
@@ -87,21 +88,14 @@ static inline void netif_trans_update(struct net_device *dev)
 #define netdev_master_upper_dev_link(a,b,c,d) netdev_master_upper_dev_link(a,b)
 #endif
 
-#ifdef HAVE_ALLOC_NETDEV_MQS_6_PARAMS
-#define alloc_netdev_mqs(a, b, c, d, e) alloc_netdev_mqs(a, b, NET_NAME_UNKNOWN, c, d, e)
+#ifdef HAVE_ALLOC_NETDEV_MQS_5_PARAMS
+#define alloc_netdev_mqs(p1, p2, p3, p4, p5, p6) alloc_netdev_mqs(p1, p2, p4, p5, p6)
+#elif defined(HAVE_ALLOC_NETDEV_MQ_4_PARAMS)
+#define alloc_netdev_mqs(sizeof_priv, name, name_assign_type, setup, txqs, rxqs)	\
+	alloc_netdev_mq(sizeof_priv, name, setup,					\
+			max_t(unsigned int, txqs, rxqs))
 #endif
 
-#ifdef alloc_netdev_mq
-#undef alloc_netdev_mq
-#define alloc_netdev_mq(sizeof_priv, name, setup, count) \
-    alloc_netdev_mqs(sizeof_priv, name, setup, count, count)
-#endif
-
-#ifdef alloc_netdev
-#undef alloc_netdev
-#define alloc_netdev(sizeof_priv, name, name_assign_type, setup) \
-	alloc_netdev_mqs(sizeof_priv, name, setup, 1, 1)
-#endif
 
 #ifndef HAVE_NETIF_IS_BOND_MASTER
 #define netif_is_bond_master LINUX_BACKPORT(netif_is_bond_master)
@@ -132,12 +126,164 @@ static inline bool netif_is_bond_master(struct net_device *dev)
 #endif
 
 #ifndef HAVE_NETDEV_NOTIFIER_INFO_TO_DEV
+struct netdev_notifier_info {
+	struct net_device *dev;
+};
+
 #define netdev_notifier_info_to_dev LINUX_BACKPORT(netdev_notifier_info_to_dev)
 static inline struct net_device *
 netdev_notifier_info_to_dev(void *ptr)
 {
 	return (struct net_device *)ptr;
 }
+
+static inline struct net_device *
+netdev_notifier_info_to_dev_v2(void *ptr)
+{
+	return (((struct netdev_notifier_info *)ptr)->dev);
+}
+#endif
+
+/* This is geared toward RHL kernels 3.10.0-327, 2.6.32-696,
+ * and those that conform to them.
+ */
+#if defined(HAVE_BONDING_H) && !defined(HAVE_LAG_TX_TYPE) && \
+   !defined(HAVE_NETDEV_NOTIFIER_INFO)
+#define MLX_USE_LAG_COMPAT
+
+#define NETDEV_CHANGEUPPER			0x1015
+#define NETDEV_CHANGELOWERSTATE			0x101B
+
+enum netdev_lag_tx_type {
+	NETDEV_LAG_TX_TYPE_UNKNOWN,
+	NETDEV_LAG_TX_TYPE_RANDOM,
+	NETDEV_LAG_TX_TYPE_BROADCAST,
+	NETDEV_LAG_TX_TYPE_ROUNDROBIN,
+	NETDEV_LAG_TX_TYPE_ACTIVEBACKUP,
+	NETDEV_LAG_TX_TYPE_HASH,
+};
+
+struct netdev_notifier_changelowerstate_info {
+	struct netdev_notifier_info info; /* must be first */
+	void *lower_state_info; /* is lower dev state */
+};
+
+struct netdev_lag_lower_state_info {
+	u8 link_up : 1,
+	   tx_enabled : 1;
+};
+
+struct netdev_notifier_changeupper_info {
+	struct netdev_notifier_info info; /* must be first */
+	struct net_device *upper_dev; /* new upper dev */
+	bool master; /* is upper dev master */
+	bool linking; /* is the notification for link or unlink */
+	void *upper_info; /* upper dev info */
+};
+
+struct netdev_lag_upper_info {
+	enum netdev_lag_tx_type tx_type;
+};
+
+static inline bool netif_is_lag_master(struct net_device *dev)
+{
+	return netif_is_bond_master(dev);
+}
+
+static inline bool netif_is_lag_port(struct net_device *dev)
+{
+	return netif_is_bond_slave(dev);
+}
+#endif
+
+#ifndef NET_NAME_UNKNOWN
+#define NET_NAME_UNKNOWN        0       /*  unknown origin (not exposed to userspace) */
+#endif
+
+
+#if IS_ENABLED(CONFIG_VXLAN) && (defined(HAVE_NDO_ADD_VXLAN_PORT) || defined(HAVE_NDO_UDP_TUNNEL_ADD))
+#define HAVE_KERNEL_WITH_VXLAN_SUPPORT_ON
+#endif
+
+#if (defined(HAVE_NDO_GET_STATS64) && !defined(HAVE_NETDEV_STATS_TO_STATS64))
+static inline void netdev_stats_to_stats64(struct rtnl_link_stats64 *stats64,
+					   const struct net_device_stats *netdev_stats)
+{
+#if BITS_PER_LONG == 64
+	BUILD_BUG_ON(sizeof(*stats64) != sizeof(*netdev_stats));
+	memcpy(stats64, netdev_stats, sizeof(*stats64));
+#else
+	size_t i, n = sizeof(*stats64) / sizeof(u64);
+	const unsigned long *src = (const unsigned long *)netdev_stats;
+	u64 *dst = (u64 *)stats64;
+
+	BUILD_BUG_ON(sizeof(*netdev_stats) / sizeof(unsigned long) !=
+		     sizeof(*stats64) / sizeof(u64));
+	for (i = 0; i < n; i++)
+		dst[i] = src[i];
+#endif
+}
+#endif
+
+#ifdef HAVE_NETDEV_XDP
+#define HAVE_NETDEV_BPF 1
+#define netdev_bpf	netdev_xdp
+#define ndo_bpf		ndo_xdp
+#endif
+
+#ifndef HAVE_TC_SETUP_QDISC_MQPRIO
+#define TC_SETUP_QDISC_MQPRIO TC_SETUP_MQPRIO
+#endif
+
+#ifndef netdev_WARN_ONCE
+
+#define netdev_level_once(level, dev, fmt, ...)			\
+do {								\
+	static bool __print_once __read_mostly;			\
+								\
+	if (!__print_once) {					\
+		__print_once = true;				\
+		netdev_printk(level, dev, fmt, ##__VA_ARGS__);	\
+	}							\
+} while (0)
+
+#define netdev_emerg_once(dev, fmt, ...) \
+	netdev_level_once(KERN_EMERG, dev, fmt, ##__VA_ARGS__)
+#define netdev_alert_once(dev, fmt, ...) \
+	netdev_level_once(KERN_ALERT, dev, fmt, ##__VA_ARGS__)
+#define netdev_crit_once(dev, fmt, ...) \
+	netdev_level_once(KERN_CRIT, dev, fmt, ##__VA_ARGS__)
+#define netdev_err_once(dev, fmt, ...) \
+	netdev_level_once(KERN_ERR, dev, fmt, ##__VA_ARGS__)
+#define netdev_warn_once(dev, fmt, ...) \
+	netdev_level_once(KERN_WARNING, dev, fmt, ##__VA_ARGS__)
+#define netdev_notice_once(dev, fmt, ...) \
+	netdev_level_once(KERN_NOTICE, dev, fmt, ##__VA_ARGS__)
+#define netdev_info_once(dev, fmt, ...) \
+	netdev_level_once(KERN_INFO, dev, fmt, ##__VA_ARGS__)
+
+
+#define netdev_WARN_ONCE(dev, condition, format, arg...)		\
+	WARN_ONCE(1, "netdevice: %s%s\n" format, netdev_name(dev)	\
+		  netdev_reg_state(dev), ##args)
+#endif /* netdev_WARN_ONCE */
+
+#ifndef HAVE_NAPI_COMPLETE_DONE
+#define napi_complete_done(p1, p2) napi_complete(p1)
+#endif
+
+
+#ifndef HAVE_NETDEV_PHYS_ITEM_ID
+#ifndef MAX_PHYS_ITEM_ID_LEN
+#define MAX_PHYS_ITEM_ID_LEN 32
+#endif
+/* This structure holds a unique identifier to identify some
+ * physical item (port for example) used by a netdevice.
+ */
+struct netdev_phys_item_id {
+    unsigned char id[MAX_PHYS_ITEM_ID_LEN];
+    unsigned char id_len;
+};
 #endif
 
 #endif	/* _COMPAT_LINUX_NETDEVICE_H */

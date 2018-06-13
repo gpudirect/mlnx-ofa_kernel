@@ -273,15 +273,11 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	rxe_init_task(rxe, &qp->comp.task, qp,
 		      rxe_completer, "comp");
 
-	init_timer(&qp->rnr_nak_timer);
-	qp->rnr_nak_timer.function = rnr_nak_timer;
-	qp->rnr_nak_timer.data = (unsigned long)qp;
-
-	init_timer(&qp->retrans_timer);
-	qp->retrans_timer.function = retransmit_timer;
-	qp->retrans_timer.data = (unsigned long)qp;
 	qp->qp_timeout_jiffies = 0; /* Can't be set for UD/UC in modify_qp */
-
+	if (init->qp_type == IB_QPT_RC) {
+		timer_setup(&qp->rnr_nak_timer, rnr_nak_timer, 0);
+		timer_setup(&qp->retrans_timer, retransmit_timer, 0);
+	}
 	return 0;
 }
 
@@ -635,24 +631,25 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 
 	if (mask & IB_QP_AV) {
 		ib_get_cached_gid(&rxe->ib_dev, 1,
-				  attr->ah_attr.grh.sgid_index, &sgid,
-				  &sgid_attr);
-		rxe_av_from_attr(rxe, attr->port_num, &qp->pri_av,
-				 &attr->ah_attr);
-		rxe_av_fill_ip_info(rxe, &qp->pri_av, &attr->ah_attr,
+				  rdma_ah_read_grh(&attr->ah_attr)->sgid_index,
+				  &sgid, &sgid_attr);
+		rxe_av_from_attr(attr->port_num, &qp->pri_av, &attr->ah_attr);
+		rxe_av_fill_ip_info(&qp->pri_av, &attr->ah_attr,
 				    &sgid_attr, &sgid);
 		if (sgid_attr.ndev)
 			dev_put(sgid_attr.ndev);
 	}
 
 	if (mask & IB_QP_ALT_PATH) {
-		ib_get_cached_gid(&rxe->ib_dev, 1,
-				  attr->alt_ah_attr.grh.sgid_index, &sgid,
-				  &sgid_attr);
+		u8 sgid_index =
+			rdma_ah_read_grh(&attr->alt_ah_attr)->sgid_index;
 
-		rxe_av_from_attr(rxe, attr->alt_port_num, &qp->alt_av,
+		ib_get_cached_gid(&rxe->ib_dev, 1, sgid_index,
+				  &sgid, &sgid_attr);
+
+		rxe_av_from_attr(attr->alt_port_num, &qp->alt_av,
 				 &attr->alt_ah_attr);
-		rxe_av_fill_ip_info(rxe, &qp->alt_av, &attr->alt_ah_attr,
+		rxe_av_fill_ip_info(&qp->alt_av, &attr->alt_ah_attr,
 				    &sgid_attr, &sgid);
 		if (sgid_attr.ndev)
 			dev_put(sgid_attr.ndev);
@@ -767,8 +764,6 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 /* called by the query qp verb */
 int rxe_qp_to_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask)
 {
-	struct rxe_dev *rxe = to_rdev(qp->ibqp.device);
-
 	*attr = qp->attr;
 
 	attr->rq_psn				= qp->resp.psn;
@@ -783,8 +778,8 @@ int rxe_qp_to_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask)
 		attr->cap.max_recv_sge		= qp->rq.max_sge;
 	}
 
-	rxe_av_to_attr(rxe, &qp->pri_av, &attr->ah_attr);
-	rxe_av_to_attr(rxe, &qp->alt_av, &attr->alt_ah_attr);
+	rxe_av_to_attr(&qp->pri_av, &attr->ah_attr);
+	rxe_av_to_attr(&qp->alt_av, &attr->alt_ah_attr);
 
 	if (qp->req.state == QP_STATE_DRAIN) {
 		attr->sq_draining = 1;
@@ -809,8 +804,10 @@ void rxe_qp_destroy(struct rxe_qp *qp)
 	qp->qp_timeout_jiffies = 0;
 	rxe_cleanup_task(&qp->resp.task);
 
-	del_timer_sync(&qp->retrans_timer);
-	del_timer_sync(&qp->rnr_nak_timer);
+	if (qp_type(qp) == IB_QPT_RC) {
+		del_timer_sync(&qp->retrans_timer);
+		del_timer_sync(&qp->rnr_nak_timer);
+	}
 
 	rxe_cleanup_task(&qp->req.task);
 	rxe_cleanup_task(&qp->comp.task);
@@ -824,9 +821,9 @@ void rxe_qp_destroy(struct rxe_qp *qp)
 }
 
 /* called when the last reference to the qp is dropped */
-void rxe_qp_cleanup(void *arg)
+static void rxe_qp_do_cleanup(struct work_struct *work)
 {
-	struct rxe_qp *qp = arg;
+	struct rxe_qp *qp = container_of(work, typeof(*qp), cleanup_work.work);
 
 	rxe_drop_all_mcast_groups(qp);
 
@@ -851,7 +848,19 @@ void rxe_qp_cleanup(void *arg)
 		qp->resp.mr = NULL;
 	}
 
+	if (qp_type(qp) == IB_QPT_RC)
+		sk_dst_reset(qp->sk->sk);
+
 	free_rd_atomic_resources(qp);
 
 	kernel_sock_shutdown(qp->sk, SHUT_RDWR);
+	sock_release(qp->sk);
+}
+
+/* called when the last reference to the qp is dropped */
+void rxe_qp_cleanup(struct rxe_pool_entry *arg)
+{
+	struct rxe_qp *qp = container_of(arg, typeof(*qp), pelem);
+
+	execute_in_process_context(rxe_qp_do_cleanup, &qp->cleanup_work);
 }

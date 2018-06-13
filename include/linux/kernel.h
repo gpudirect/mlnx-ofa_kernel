@@ -23,7 +23,7 @@
 #endif
 
 #ifndef U64_MAX
-#define U64_MAX        ((u64)~0U)
+#define U64_MAX        ((u64)~0ULL)
 #endif
 
 #ifdef __KERNEL__
@@ -34,5 +34,14 @@ static inline u32 reciprocal_scale(u32 val, u32 ep_ro)
 }
 #endif
 #endif /* __KERNEL__ */
+
+#ifndef u64_to_user_ptr
+#define u64_to_user_ptr(x) (		\
+{					\
+	typecheck(u64, x);		\
+	(void __user *)(uintptr_t)x;	\
+}					\
+)
+#endif
 
 #endif /* COMPAT_KERNEL_H */

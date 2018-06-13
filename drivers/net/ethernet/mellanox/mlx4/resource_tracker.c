@@ -238,8 +238,8 @@ static void *res_tracker_lookup(struct rb_root *root, u64 res_id)
 	struct rb_node *node = root->rb_node;
 
 	while (node) {
-		struct res_common *res = container_of(node, struct res_common,
-						      node);
+		struct res_common *res = rb_entry(node, struct res_common,
+						  node);
 
 		if (res_id < res->res_id)
 			node = node->rb_left;
@@ -257,8 +257,8 @@ static int res_tracker_insert(struct rb_root *root, struct res_common *res)
 
 	/* Figure out where to put new node */
 	while (*new) {
-		struct res_common *this = container_of(*new, struct res_common,
-						       node);
+		struct res_common *this = rb_entry(*new, struct res_common,
+						   node);
 
 		parent = *new;
 		if (res->res_id < this->res_id)
@@ -312,7 +312,7 @@ static inline int mlx4_grant_resource(struct mlx4_dev *dev, int slave,
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct resource_allocator *res_alloc =
 		&priv->mfunc.master.res_tracker.res_alloc[res_type];
-	int err = -EINVAL;
+	int err = -EDQUOT;
 	int allocated, free, reserved, guaranteed, from_free;
 	int from_rsvd;
 
@@ -480,6 +480,41 @@ static int get_max_gauranteed_vfs_counter(struct mlx4_dev *dev)
 		/ MLX4_MAX_PORTS;
 }
 
+
+static void init_counter_resource_tracker(struct mlx4_dev *dev,
+					  struct resource_allocator *res_alloc,
+					  int vf, int max_vfs_guarantee_counter)
+{
+	res_alloc->quota[vf] = dev->caps.max_counters;
+	if (vf == mlx4_master_func_num(dev))
+		res_alloc->guaranteed[vf] =
+			MLX4_PF_COUNTERS_PER_PORT * MLX4_MAX_PORTS;
+	else if (vf <= max_vfs_guarantee_counter)
+		res_alloc->guaranteed[vf] =
+			MLX4_VF_COUNTERS_PER_PORT * MLX4_MAX_PORTS;
+	else
+		res_alloc->guaranteed[vf] = 0;
+
+	res_alloc->res_reserved += res_alloc->guaranteed[vf];
+}
+
+void mlx4_update_counter_resource_tracker(struct mlx4_dev *dev)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct resource_allocator *res_alloc =
+		&priv->mfunc.master.res_tracker.res_alloc[RES_COUNTER];
+	int max_vfs_guarantee_counter = get_max_gauranteed_vfs_counter(dev);
+	int vf;
+
+	/* Reduce the sink counter */
+	res_alloc->res_free = dev->caps.max_counters - 1;
+	res_alloc->res_reserved = 0;
+
+	for (vf = 0; vf < dev->persist->num_vfs + 1; vf++)
+		init_counter_resource_tracker(dev, res_alloc, vf,
+					      max_vfs_guarantee_counter);
+}
+
 int mlx4_init_resource_tracker(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -601,18 +636,8 @@ int mlx4_init_resource_tracker(struct mlx4_dev *dev)
 				}
 				break;
 			case RES_COUNTER:
-				res_alloc->quota[t] = dev->caps.max_counters;
-				if (t == mlx4_master_func_num(dev))
-					res_alloc->guaranteed[t] =
-						MLX4_PF_COUNTERS_PER_PORT *
-						MLX4_MAX_PORTS;
-				else if (t <= max_vfs_guarantee_counter)
-					res_alloc->guaranteed[t] =
-						MLX4_VF_COUNTERS_PER_PORT *
-						MLX4_MAX_PORTS;
-				else
-					res_alloc->guaranteed[t] = 0;
-				res_alloc->res_free -= res_alloc->guaranteed[t];
+				init_counter_resource_tracker(dev, res_alloc, t,
+							      max_vfs_guarantee_counter);
 				break;
 			default:
 				break;
@@ -622,7 +647,7 @@ int mlx4_init_resource_tracker(struct mlx4_dev *dev)
 					if (test_bit(j, actv_ports.ports))
 						res_alloc->res_port_rsvd[j] +=
 							res_alloc->guaranteed[t];
-			} else {
+			} else if (i != RES_COUNTER) {
 				res_alloc->res_reserved += res_alloc->guaranteed[t];
 			}
 		}
@@ -1044,7 +1069,9 @@ static int handle_counter(struct mlx4_dev *dev, struct mlx4_qp_context *qpc,
 			  u8 slave, int port)
 {
 	if (PF_USES_EXT_COUNTERS(dev) &&
-	    qpc->pri_path.counter_index == MLX4_OLD_SINK_COUNTER_INDEX) {
+	    (qpc->pri_path.counter_index == MLX4_OLD_SINK_COUNTER_INDEX ||
+	     (!qpc->pri_path.counter_index && slave > 0 &&
+	      (dev->caps.port_type[port] == MLX4_PORT_TYPE_IB)))) {
 		qpc->pri_path.counter_index = MLX4_SINK_COUNTER_INDEX(dev);
 		mlx4_dbg(dev, "%s: modifying sink counter index to %d. slave=%d, port = %d\n",
 			 __func__, qpc->pri_path.counter_index, slave, port);
@@ -1060,7 +1087,7 @@ static struct res_common *alloc_qp_tr(int id)
 {
 	struct res_qp *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1078,7 +1105,7 @@ static struct res_common *alloc_mtt_tr(int id, int order)
 {
 	struct res_mtt *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1094,7 +1121,7 @@ static struct res_common *alloc_mpt_tr(int id, int key)
 {
 	struct res_mpt *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1109,7 +1136,7 @@ static struct res_common *alloc_eq_tr(int id)
 {
 	struct res_eq *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1123,7 +1150,7 @@ static struct res_common *alloc_cq_tr(int id)
 {
 	struct res_cq *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1138,7 +1165,7 @@ static struct res_common *alloc_srq_tr(int id)
 {
 	struct res_srq *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1153,7 +1180,7 @@ static struct res_common *alloc_counter_tr(int id, int port)
 {
 	struct res_counter *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1168,7 +1195,7 @@ static struct res_common *alloc_xrcdn_tr(int id)
 {
 	struct res_xrcdn *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1182,7 +1209,7 @@ static struct res_common *alloc_fs_rule_tr(u64 id, int qpn)
 {
 	struct res_fs_rule *ret;
 
-	ret = kzalloc(sizeof *ret, GFP_KERNEL);
+	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return NULL;
 
@@ -1294,7 +1321,7 @@ static int add_res_range(struct mlx4_dev *dev, int slave, u64 base, int count,
 	struct mlx4_resource_tracker *tracker = &priv->mfunc.master.res_tracker;
 	struct rb_root *root = &tracker->res_tree[type];
 
-	res_arr = kzalloc(count * sizeof *res_arr, GFP_KERNEL);
+	res_arr = kcalloc(count, sizeof(*res_arr), GFP_KERNEL);
 	if (!res_arr)
 		return -ENOMEM;
 
@@ -1457,7 +1484,7 @@ static int remove_ok(struct res_common *res, enum mlx4_resource type, int extra)
 	case RES_MTT:
 		return remove_mtt_ok((struct res_mtt *)res, extra);
 	case RES_MAC:
-		return -ENOSYS;
+		return -EOPNOTSUPP;
 	case RES_EQ:
 		return remove_eq_ok((struct res_eq *)res);
 	case RES_COUNTER:
@@ -1842,7 +1869,7 @@ static int qp_alloc_res(struct mlx4_dev *dev, int slave, int op, int cmd,
 			return err;
 
 		if (!fw_reserved(dev, qpn)) {
-			err = __mlx4_qp_alloc_icm(dev, qpn, GFP_KERNEL);
+			err = __mlx4_qp_alloc_icm(dev, qpn);
 			if (err) {
 				res_abort_move(dev, slave, RES_QP, qpn);
 				return err;
@@ -1929,7 +1956,7 @@ static int mpt_alloc_res(struct mlx4_dev *dev, int slave, int op, int cmd,
 		if (err)
 			return err;
 
-		err = __mlx4_mpt_alloc_icm(dev, mpt->key, GFP_KERNEL);
+		err = __mlx4_mpt_alloc_icm(dev, mpt->key);
 		if (err) {
 			res_abort_move(dev, slave, RES_MPT, id);
 			return err;
@@ -2047,7 +2074,7 @@ static int mac_add_to_slave(struct mlx4_dev *dev, int slave, u64 mac, int port, 
 
 	if (mlx4_grant_resource(dev, slave, RES_MAC, 1, port))
 		return -EINVAL;
-	res = kzalloc(sizeof *res, GFP_KERNEL);
+	res = kzalloc(sizeof(*res), GFP_KERNEL);
 	if (!res) {
 		mlx4_release_resource(dev, slave, RES_MAC, 1, port);
 		return -ENOMEM;
@@ -2801,7 +2828,7 @@ int mlx4_SW2HW_MPT_wrapper(struct mlx4_dev *dev, int slave,
 	int err;
 	int index = vhcr->in_modifier;
 	struct res_mtt *mtt;
-	struct res_mpt *mpt;
+	struct res_mpt *mpt = NULL;
 	int mtt_base = mr_get_mtt_addr(inbox->buf) / dev->caps.mtt_entry_sz;
 	int phys;
 	int id;
@@ -3009,7 +3036,7 @@ int mlx4_RST2INIT_QP_wrapper(struct mlx4_dev *dev, int slave,
 	u32 srqn = qp_get_srqn(qpc) & 0xffffff;
 	int use_srq = (qp_get_srqn(qpc) >> 24) & 1;
 	struct res_srq *srq;
-	int local_qpn = be32_to_cpu(qpc->local_qpn) & 0xffffff;
+	int local_qpn = vhcr->in_modifier & 0xffffff;
 
 	err = adjust_qp_sched_queue(dev, slave, qpc, inbox);
 	if (err)
@@ -3252,7 +3279,7 @@ static int verify_qp_parameters(struct mlx4_dev *dev,
 	qpn = vhcr->in_modifier & 0x7fffff;
 
 	if (slave != mlx4_master_func_num(dev)) {
-		qp_ctx->params2 &= ~MLX4_QP_BIT_FPP;
+		qp_ctx->params2 &= ~cpu_to_be32(MLX4_QP_BIT_FPP);
 		/* setting QP rate-limit is disallowed for VFs */
 		if (qp_ctx->rate_limit_params)
 			return -EPERM;
@@ -3986,14 +4013,6 @@ int mlx4_RTR2RTS_QP_wrapper(struct mlx4_dev *dev, int slave,
 	if (err)
 		return err;
 
-	if ((dev->caps.roce_mode == MLX4_ROCE_MODE_2) ||
-	    (dev->caps.roce_mode == MLX4_ROCE_MODE_1_PLUS_2)) {
-		int qpn = vhcr->in_modifier & 0x7fffff;
-
-		context->roce_entropy = cpu_to_be16(mlx4_qp_roce_entropy(dev,
-									 qpn));
-	}
-
 	update_pkey_index(dev, slave, inbox);
 	update_gid(dev, inbox, (u8)slave);
 	adjust_proxy_tun_qkey(dev, vhcr, context);
@@ -4015,6 +4034,14 @@ int mlx4_RTS2RTS_QP_wrapper(struct mlx4_dev *dev, int slave,
 	err = verify_qp_parameters(dev, vhcr, inbox, QP_TRANS_RTS2RTS, slave);
 	if (err)
 		return err;
+
+	if ((dev->caps.roce_mode == MLX4_ROCE_MODE_2) ||
+	    (dev->caps.roce_mode == MLX4_ROCE_MODE_1_PLUS_2)) {
+		int qpn = vhcr->in_modifier & 0x7fffff;
+
+		context->roce_entropy = cpu_to_be16(mlx4_qp_roce_entropy(dev,
+									 qpn));
+	}
 
 	update_pkey_index(dev, slave, inbox);
 	update_gid(dev, inbox, (u8)slave);
@@ -4131,7 +4158,7 @@ static int add_mcg_res(struct mlx4_dev *dev, int slave, struct res_qp *rqp,
 	struct res_gid *res;
 	int err;
 
-	res = kzalloc(sizeof *res, GFP_KERNEL);
+	res = kzalloc(sizeof(*res), GFP_KERNEL);
 	if (!res)
 		return -ENOMEM;
 
@@ -4464,7 +4491,7 @@ int mlx4_UPDATE_QP_wrapper(struct mlx4_dev *dev, int slave,
 		  MLX4_DEV_CAP_FLAG2_UPDATE_QP_SRC_CHECK_LB)) {
 		mlx4_warn(dev, "Src check LB for slave %d isn't supported\n",
 			  slave);
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 
 	/* Just change the smac for the QP */
@@ -4519,11 +4546,11 @@ static u32 qp_attach_mbox_size(void *mbox)
 static int mlx4_do_mirror_rule(struct mlx4_dev *dev, struct res_fs_rule *fs_rule);
 static int mlx4_undo_mirror_rule(struct mlx4_dev *dev, struct res_fs_rule *fs_rule);
 
-int validate_flow_steering_vf_spec(struct mlx4_dev *dev, int slave,
-				   struct _rule_hw  *rule_header,
-				   struct mlx4_vhcr *vhcr,
-				   struct mlx4_cmd_mailbox *inbox,
-				   int *chain_rule)
+static int validate_flow_steering_vf_spec(struct mlx4_dev *dev, int slave,
+					  struct _rule_hw  *rule_header,
+					  struct mlx4_vhcr *vhcr,
+					  struct mlx4_cmd_mailbox *inbox,
+					  int *chain_rule)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_resource_tracker *tracker = &priv->mfunc.master.res_tracker;
@@ -4538,7 +4565,8 @@ int validate_flow_steering_vf_spec(struct mlx4_dev *dev, int slave,
 		/* VF can't be in promiscuous mode */
 		rule_type = MLX4_FS_MC_DEFAULT;
 		ctrl->type = mlx4_map_sw_to_hw_steering_mode(dev, MLX4_FS_MC_DEFAULT);
-	} else if (rule_type != MLX4_FS_REGULAR && rule_type != MLX4_FS_MC_DEFAULT) {
+	} else if (slave != dev->caps.function &&
+		   rule_type != MLX4_FS_REGULAR && rule_type != MLX4_FS_MC_DEFAULT) {
 		return -EPERM;
 	}
 
@@ -4588,8 +4616,6 @@ static int mlx4_do_detach_rule(struct mlx4_dev *dev,
 	u64 mirr_reg_id;
 	struct res_fs_rule *mirr_rule;
 
-	mirr_reg_id = rrule->mirr_rule_id;
-
 	/* First detach chained rule if exists */
 	if (rrule->chained_rule_id) {
 		err = get_res(dev, slave, rrule->chained_rule_id,
@@ -4603,6 +4629,15 @@ static int mlx4_do_detach_rule(struct mlx4_dev *dev,
 			mlx4_err(dev, "Failed to remove chained rule\n");
 		rrule->chained_rule_id = 0;
 	}
+
+	if (!rrule->mirr_mbox) {
+		mlx4_err(dev, "Mirror rules cannot be removed explicitly\n");
+		put_res(dev, slave, rule_id, RES_FS_RULE);
+		return -EPERM;
+	}
+
+	mirr_reg_id = rrule->mirr_rule_id;
+	kfree(rrule->mirr_mbox);
 
 	/* Release the rule from busy state before removal */
 	put_res(dev, slave, rule_id, RES_FS_RULE);
@@ -4675,6 +4710,7 @@ static int mlx4_do_attach_rule(struct mlx4_dev *dev, int slave,
 		goto out;
 	}
 
+	atomic_inc(&rqp->ref_count);
 	err = get_res(dev, slave, vhcr->out_param, RES_FS_RULE, &rrule);
 	if (err)
 		goto out_detach;
@@ -4803,10 +4839,13 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 	if (header_id == MLX4_NET_TRANS_RULE_ID_ETH)
 		mlx4_handle_eth_header_mcast_prio(ctrl, rule_header);
 
-	err = validate_flow_steering_vf_spec(dev, slave, rule_header,
-					     vhcr, inbox, &chain_rule);
-	if (err)
-		goto err_put;
+	/* validate VF */
+	if (slave != dev->caps.function) {
+		err = validate_flow_steering_vf_spec(dev, slave, rule_header,
+						     vhcr, inbox, &chain_rule);
+		if (err)
+			goto err_put;
+	}
 
 	err = mlx4_do_attach_rule(dev, slave, vhcr, inbox,
 				  outbox, cmd, rqp, chain_rule);
@@ -4814,7 +4853,6 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 	if (err)
 		goto err_put;
 
-	atomic_inc(&rqp->ref_count);
 err_put:
 	put_res(dev, slave, qpn, RES_QP);
 	return err;
@@ -4839,20 +4877,12 @@ int mlx4_QP_FLOW_STEERING_DETACH_wrapper(struct mlx4_dev *dev, int slave,
 		return err;
 	}
 
-	if (!rrule->mirr_mbox) {
-		mlx4_err(dev, "Mirror rules cannot be removed explicitly\n");
-		put_res(dev, slave, vhcr->in_param, RES_FS_RULE);
-		return -EPERM;
-	}
-
 	/* Fail if somebody is trying to remove chained rule directly */
 	if (rrule->is_chained) {
 		mlx4_err(dev, "Can't remove chained rule directly\n");
 		put_res(dev, slave, vhcr->in_param, RES_FS_RULE);
 		return -EPERM;
 	}
-
-	kfree(rrule->mirr_mbox);
 
 	err = mlx4_do_detach_rule(dev, rrule, slave, vhcr->in_param);
 	if (err)
@@ -5499,6 +5529,7 @@ static void rem_slave_fs_rule(struct mlx4_dev *dev, int slave)
 						 &tracker->res_tree[RES_FS_RULE]);
 					list_del(&fs_rule->com.list);
 					spin_unlock_irq(mlx4_tlock(dev));
+					kfree(fs_rule->mirr_mbox);
 					kfree(fs_rule);
 					state = 0;
 					break;

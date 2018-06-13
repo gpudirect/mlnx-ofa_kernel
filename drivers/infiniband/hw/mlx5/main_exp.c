@@ -35,6 +35,9 @@
 #endif
 #include <linux/highmem.h>
 #include <rdma/ib_cache.h>
+#include <rdma/ib_umem.h>
+#include <rdma/ib_user_verbs.h>
+#include <rdma/ib_user_verbs_exp.h>
 #include "mlx5_ib.h"
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
@@ -42,9 +45,11 @@ static void copy_odp_exp_caps(struct ib_exp_odp_caps *exp_caps,
 			      struct ib_odp_caps *caps)
 {
 	exp_caps->general_odp_caps = caps->general_caps;
+	exp_caps->max_size = caps->max_size;
 	exp_caps->per_transport_caps.rc_odp_caps = caps->per_transport_caps.rc_odp_caps;
 	exp_caps->per_transport_caps.uc_odp_caps = caps->per_transport_caps.uc_odp_caps;
 	exp_caps->per_transport_caps.ud_odp_caps = caps->per_transport_caps.ud_odp_caps;
+	exp_caps->per_transport_caps.dc_odp_caps = caps->per_transport_caps.dc_odp_caps;
 }
 #endif
 
@@ -53,8 +58,26 @@ enum {
 };
 
 enum {
+	MLX5_DC_CNAK_SIZE		= 128,
+	MLX5_NUM_BUF_IN_PAGE		= PAGE_SIZE / MLX5_DC_CNAK_SIZE,
+	MLX5_CNAK_TX_CQ_SIGNAL_FACTOR	= 128,
+	MLX5_DC_CNAK_SL			= 0,
+	MLX5_DC_CNAK_VL			= 0,
+};
+
+static unsigned int dc_cnak_qp_depth = MLX5_DC_CONNECT_QP_DEPTH;
+module_param_named(dc_cnak_qp_depth, dc_cnak_qp_depth, uint, 0444);
+MODULE_PARM_DESC(dc_cnak_qp_depth, "DC CNAK QP depth");
+
+enum {
 	MLX5_STANDARD_ATOMIC_SIZE = 0x8,
 };
+
+static bool host_support_p9_atomic(void)
+{
+	/* We don't have a way to check it yet. */
+	return true;
+}
 
 void mlx5_ib_config_atomic_responder(struct mlx5_ib_dev *dev,
 				     struct ib_exp_device_attr *props)
@@ -82,7 +105,7 @@ void mlx5_ib_get_atomic_caps(struct mlx5_ib_dev *dev,
 	atomic_size_qp = MLX5_CAP_ATOMIC(dev->mdev, atomic_size_qp);
 	atomic_req_8B_endianness_mode =
 		MLX5_CAP_ATOMIC(dev->mdev,
-				atomic_req_8B_endianess_mode) ||
+				atomic_req_8B_endianness_mode) ||
 		!mlx5_host_is_le();
 
 	/* Check if HW supports 8 bytes standard atomic operations and capable
@@ -180,11 +203,73 @@ enum mlx5_addr_align {
 	MLX5_ADDR_ALIGN_128	= 128,
 };
 
+static void mlx5_update_ooo_cap(struct mlx5_ib_dev *dev,
+				struct ib_exp_device_attr *props)
+{
+	if (MLX5_CAP_GEN(dev->mdev, multipath_rc_qp))
+		props->ooo_caps.rc_caps |=
+			IB_EXP_DEVICE_OOO_RW_DATA_PLACEMENT;
+	if (MLX5_CAP_GEN(dev->mdev, multipath_xrc_qp))
+		props->ooo_caps.xrc_caps |=
+			IB_EXP_DEVICE_OOO_RW_DATA_PLACEMENT;
+	if (MLX5_CAP_GEN(dev->mdev, multipath_dc_qp))
+		props->ooo_caps.dc_caps |=
+			IB_EXP_DEVICE_OOO_RW_DATA_PLACEMENT;
+
+	if (MLX5_CAP_GEN(dev->mdev, multipath_rc_qp) ||
+	    MLX5_CAP_GEN(dev->mdev, multipath_xrc_qp) ||
+	    MLX5_CAP_GEN(dev->mdev, multipath_dc_qp))
+		props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_OOO_CAPS;
+}
+
+static void mlx5_update_tm_cap(struct mlx5_ib_dev *dev,
+			       struct ib_exp_device_attr *props)
+{
+	if (!MLX5_CAP_GEN(dev->mdev, tag_matching))
+		return;
+
+	if (MLX5_CAP_GEN(dev->mdev, rndv_offload_rc))
+		props->tm_caps.capability_flags |= IB_EXP_TM_CAP_RC;
+	if (MLX5_CAP_GEN(dev->mdev, rndv_offload_dc))
+		props->tm_caps.capability_flags |= IB_EXP_TM_CAP_DC;
+
+	if (!props->tm_caps.capability_flags)
+		return;
+
+	props->tm_caps.max_rndv_hdr_size = MLX5_TM_MAX_RNDV_MSG_SIZE;
+	props->tm_caps.max_num_tags =
+		(1 << MLX5_CAP_GEN(dev->mdev,
+				   log_tag_matching_list_sz)) - 1;
+	props->tm_caps.max_ops =
+		1 << MLX5_CAP_GEN(dev->mdev, log_max_qp_sz);
+	props->tm_caps.max_sge = MLX5_TM_MAX_SGE;
+	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_TM_CAPS;
+}
+
+static void mlx5_update_tunnel_offloads_caps(struct mlx5_ib_dev *dev,
+					     struct ib_exp_device_attr *props)
+{
+	props->tunnel_offloads_caps = 0;
+
+	if (MLX5_CAP_ETH(dev->mdev, tunnel_stateless_vxlan))
+		props->tunnel_offloads_caps |=
+			IBV_EXP_RAW_PACKET_CAP_TUNNELED_OFFLOAD_VXLAN;
+	if (MLX5_CAP_ETH(dev->mdev, tunnel_stateless_geneve_rx))
+		props->tunnel_offloads_caps |=
+			IBV_EXP_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GENEVE;
+	if (MLX5_CAP_ETH(dev->mdev, tunnel_stateless_gre))
+		props->tunnel_offloads_caps|=
+			IBV_EXP_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GRE;
+	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_TUNNEL_OFFLOADS_CAPS;
+}
+
 int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 			     struct ib_exp_device_attr *props,
 			     struct ib_udata *uhw)
 {
 	struct mlx5_ib_dev *dev = to_mdev(ibdev);
+	u32 def_tot_bfregs;
+	u32 uar_sz_shift;
 	u32 max_tso;
 	int ret;
 
@@ -198,9 +283,10 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MAX_CTX_RES_DOMAIN;
 	props->max_ctx_res_domain = MLX5_IB_MAX_CTX_DYNAMIC_UARS *
-		MLX5_NON_FP_BF_REGS_PER_PAGE;
+		MLX5_NON_FP_BFREGS_PER_UAR;
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_ODP;
+	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_ODP_MAX_SIZE;
 	props->device_cap_flags2 |= IB_EXP_DEVICE_ODP;
 	copy_odp_exp_caps(&props->odp_caps, &to_mdev(ibdev)->odp_caps);
 #endif
@@ -239,14 +325,6 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 	props->umr_caps.max_umr_stride_dimenson = 1;
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_UMR;
 
-	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MAX_DEVICE_CTX;
-	/*mlx5_core uses MLX5_NUM_DRIVER_UARS uar pages*/
-	/*For simplicity, assume one to one releation ship between uar pages and context*/
-	props->max_device_ctx =
-		(1 << (MLX5_CAP_GEN(dev->mdev, uar_sz) + 20 - PAGE_SHIFT))
-		/ (MLX5_DEF_TOT_UUARS / MLX5_NUM_UUARS_PER_PAGE)
-		- MLX5_NUM_DRIVER_UARS;
-
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_RX_HASH;
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MAX_WQ_TYPE_RQ;
 	if (MLX5_CAP_GEN(dev->mdev, port_type) == MLX5_CAP_PORT_TYPE_ETH) {
@@ -260,7 +338,8 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 			IB_RX_HASH_SRC_PORT_TCP |
 			IB_RX_HASH_DST_PORT_TCP |
 			IB_RX_HASH_SRC_PORT_UDP |
-			IB_RX_HASH_DST_PORT_UDP;
+			IB_RX_HASH_DST_PORT_UDP |
+			IB_RX_HASH_INNER;
 		props->rx_hash_caps.supported_qps = IB_QPT_RAW_PACKET;
 		props->max_wq_type_rq = 1 << MLX5_CAP_GEN(dev->mdev, log_max_rq);
 	} else {
@@ -268,15 +347,25 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 		props->max_wq_type_rq = 0;
 	}
 	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MP_RQ;
-	if (MLX5_CAP_GEN(dev->mdev, striding_rq)) {
+	props->mp_rq_caps.supported_qps = 0;
+	if (MLX5_CAP_GEN(dev->mdev, striding_rq) ||
+	    MLX5_CAP_GEN(dev->mdev, ib_striding_wq)) {
 		props->mp_rq_caps.allowed_shifts =  IB_MP_RQ_2BYTES_SHIFT;
-		props->mp_rq_caps.supported_qps = IB_EXP_QPT_RAW_PACKET;
+		if (MLX5_CAP_GEN(dev->mdev, striding_rq))
+			props->mp_rq_caps.supported_qps =
+				IB_EXP_MP_RQ_SUP_TYPE_WQ_RQ;
+		if (MLX5_CAP_GEN(dev->mdev, ib_striding_wq))
+			props->mp_rq_caps.supported_qps |=
+				IB_EXP_MP_RQ_SUP_TYPE_SRQ_TM;
 		props->mp_rq_caps.max_single_stride_log_num_of_bytes =  MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES;
 		props->mp_rq_caps.min_single_stride_log_num_of_bytes =  MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES;
 		props->mp_rq_caps.max_single_wqe_log_num_of_strides =  MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES;
-		props->mp_rq_caps.min_single_wqe_log_num_of_strides =  MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
-	} else {
-		props->mp_rq_caps.supported_qps = 0;
+		if (MLX5_CAP_GEN(dev->mdev, ext_stride_num_range))
+			props->mp_rq_caps.min_single_wqe_log_num_of_strides =
+				MLX5_EXT_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
+		else
+			props->mp_rq_caps.min_single_wqe_log_num_of_strides =
+				MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
 	}
 
 	props->vlan_offloads = 0;
@@ -295,6 +384,42 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 		if (MLX5_CAP_ETH(dev->mdev, scatter_fcs))
 			props->device_cap_flags2 |=
 				IB_EXP_DEVICE_SCATTER_FCS;
+
+		if (MLX5_CAP_ETH(dev->mdev, swp)) {
+			props->sw_parsing_caps.sw_parsing_offloads |=
+				IB_RAW_PACKET_QP_SW_PARSING;
+			props->sw_parsing_caps.supported_qpts |=
+				BIT(IB_QPT_RAW_PACKET);
+			props->exp_comp_mask |=
+				IB_EXP_DEVICE_ATTR_SW_PARSING_CAPS;
+		}
+
+		if (MLX5_CAP_ETH(dev->mdev, swp_csum)) {
+			props->sw_parsing_caps.sw_parsing_offloads |=
+				IB_RAW_PACKET_QP_SW_PARSING_CSUM;
+			props->sw_parsing_caps.supported_qpts |=
+				BIT(IB_QPT_RAW_PACKET);
+			props->exp_comp_mask |=
+				IB_EXP_DEVICE_ATTR_SW_PARSING_CAPS;
+		}
+
+		if (MLX5_CAP_ETH(dev->mdev, swp_lso)) {
+			props->sw_parsing_caps.sw_parsing_offloads |=
+				IB_RAW_PACKET_QP_SW_PARSING_LSO;
+			props->sw_parsing_caps.supported_qpts |=
+				BIT(IB_QPT_RAW_PACKET);
+			props->exp_comp_mask |=
+				IB_EXP_DEVICE_ATTR_SW_PARSING_CAPS;
+		}
+	}
+
+	if (MLX5_CAP_GEN(dev->mdev, ipoib_enhanced_offloads)) {
+		if (MLX5_CAP_IPOIB_ENHANCED(dev->mdev, csum_cap)) {
+			props->device_cap_flags2 |=
+				IB_EXP_DEVICE_RX_CSUM_IP_PKT |
+				IB_EXP_DEVICE_RX_CSUM_TCP_UDP_PKT |
+				IB_EXP_DEVICE_RX_TCP_UDP_PKT_TYPE;
+		}
 	}
 
 	props->rx_pad_end_addr_align = MLX5_ADDR_ALIGN_0;
@@ -341,10 +466,57 @@ int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 			MLX5_CAP_QOS(dev->mdev, packet_pacing_min_rate);
 		props->packet_pacing_caps.supported_qpts |=
 			1 << IB_QPT_RAW_PACKET;
+		if (MLX5_CAP_QOS(dev->mdev, packet_pacing_burst_bound) &&
+		    MLX5_CAP_QOS(dev->mdev, packet_pacing_typical_size))
+			props->packet_pacing_caps.cap_flags |=
+				IB_EXP_QP_SUPPORT_BURST;
 		props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_PACKET_PACING_CAPS;
 	}
 
 	props->device_cap_flags2 |= IB_EXP_DEVICE_NOP;
+
+	props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MAX_DEVICE_CTX;
+
+	if (MLX5_CAP_GEN(dev->mdev, uar_4k)) {
+		uar_sz_shift = MLX5_ADAPTER_PAGE_SHIFT;
+		def_tot_bfregs = 16 * MLX5_NUM_BFREGS_PER_UAR;
+	} else {
+		uar_sz_shift = PAGE_SHIFT;
+		def_tot_bfregs = 8 * MLX5_NUM_BFREGS_PER_UAR;
+	}
+
+	/* mlx5_core uses MLX5_NUM_DRIVER_UARS uar pages. In x86 each ucontext uses
+	 * 8 uars, and in PPC with 4k UAR each context uses 16 uars.
+	 * Note that the CAP's uar_sz is in MB unit.
+	 */
+	props->max_device_ctx =
+		(1 << (MLX5_CAP_GEN(dev->mdev, uar_sz) + 20 - uar_sz_shift))
+		/ (def_tot_bfregs / MLX5_NON_FP_BFREGS_PER_UAR)
+		- MLX5_NUM_DRIVER_UARS;
+
+	if (MLX5_CAP_GEN(dev->mdev, rq_delay_drop) &&
+	    MLX5_CAP_GEN(dev->mdev, general_notification_event))
+		props->device_cap_flags2 |= IB_EXP_DEVICE_DELAY_DROP;
+
+	mlx5_update_ooo_cap(dev, props);
+	mlx5_update_tm_cap(dev, props);
+	mlx5_update_tunnel_offloads_caps(dev, props);
+	if (MLX5_CAP_GEN(dev->mdev, capi))
+		props->device_cap_flags2 |= IB_EXP_DEVICE_CAPI;
+
+	props->device_cap_flags2 |= IB_EXP_DEVICE_PHYSICAL_RANGE_MR;
+
+	if (MLX5_CAP_DEVICE_MEM(dev->mdev, memic)) {
+		props->max_dm_size =
+			MLX5_CAP_DEVICE_MEM(dev->mdev, max_memic_size);
+		props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_MAX_DM_SIZE;
+	}
+
+	if (MLX5_CAP_GEN(dev->mdev, tunneled_atomic) &&
+	    host_support_p9_atomic()) {
+		props->tunneled_atomic_caps |= IB_EXP_TUNNELED_ATOMIC_SUPPORTED;
+		props->exp_comp_mask |= IB_EXP_DEVICE_ATTR_TUNNELED_ATOMIC;
+	}
 
 	return 0;
 }
@@ -451,14 +623,32 @@ int mlx5_ib_mmap_dc_info_page(struct mlx5_ib_dev *dev,
 	return 0;
 }
 
+int mlx5_ib_mmap_clock_info_page(struct mlx5_ib_dev *dev,
+			  struct vm_area_struct *vma)
+{
+	phys_addr_t pfn;
+	int err;
 
-enum {
-	MLX5_DC_CNAK_SIZE		= 128,
-	MLX5_NUM_BUF_IN_PAGE		= PAGE_SIZE / MLX5_DC_CNAK_SIZE,
-	MLX5_CNAK_TX_CQ_SIGNAL_FACTOR	= 128,
-	MLX5_DC_CNAK_SL			= 0,
-	MLX5_DC_CNAK_VL			= 0,
-};
+	if (vma->vm_end - vma->vm_start != PAGE_SIZE)
+		return -EINVAL;
+
+	if (vma->vm_flags & VM_WRITE)
+		return -EPERM;
+
+	if (!dev->mdev->clock_info_page) {
+		mlx5_ib_dbg(dev, "mlx5_ib_mmap no ptp page\n");
+		return -ENOMEM;
+	}
+
+	pfn = page_to_pfn(dev->mdev->clock_info_page);
+	err = remap_pfn_range(vma, vma->vm_start, pfn, PAGE_SIZE,
+			      vma->vm_page_prot);
+	if (err) {
+		mlx5_ib_err(dev, "mlx5_ib_mmap ptp remap_pfn_range failed\n");
+		return err;
+	}
+	return 0;
+}
 
 static void dump_buf(void *buf, int size)
 {
@@ -592,12 +782,16 @@ static int reduce_tx_pending(struct mlx5_dc_data *dcd, int num)
 			polled = send_completed - dcd->last_send_completed;
 			dcd->tx_pending = (unsigned int)(dcd->cur_send - send_completed);
 			num -= polled;
-			dcd->cnaks += polled;
 			dcd->last_send_completed = send_completed;
 		}
 	}
 
 	return 0;
+}
+
+static bool signal_wr(int wr_count, struct mlx5_dc_data *dcd)
+{
+	return !(wr_count % dcd->tx_signal_factor);
 }
 
 static int send_cnak(struct mlx5_dc_data *dcd, struct mlx5_send_wr *mlx_wr,
@@ -637,7 +831,7 @@ static int send_cnak(struct mlx5_dc_data *dcd, struct mlx5_send_wr *mlx_wr,
 	wr->opcode = IB_WR_SEND;
 	wr->num_sge = 1;
 	wr->wr_id = cur;
-	if (cur % MLX5_CNAK_TX_CQ_SIGNAL_FACTOR)
+	if (!signal_wr(cur, dcd))
 		wr->send_flags &= ~IB_SEND_SIGNALED;
 	else
 		wr->send_flags |= IB_SEND_SIGNALED;
@@ -653,6 +847,7 @@ static int send_cnak(struct mlx5_dc_data *dcd, struct mlx5_send_wr *mlx_wr,
 	if (likely(!err)) {
 		dcd->tx_pending++;
 		dcd->cur_send++;
+		atomic64_inc(&dcd->dev->dc_stats[dcd->port - 1].cnaks);
 	}
 
 	return err;
@@ -705,7 +900,8 @@ static void dc_cnack_rcv_comp_handler(struct ib_cq *cq, void *cq_context)
 	n = ib_poll_cq(cq, MLX5_CNAK_RX_POLL_CQ_QUOTA, wc);
 	if (unlikely(n < 0)) {
 		/* mlx5 never returns negative values but leave a message just in case */
-		mlx5_ib_warn(dev, "failed to poll cq (%d), aborting\n", n);
+		mlx5_ib_warn(dev, "DC cnak[%d]: failed to poll cq (%d), aborting\n",
+			     dcd->index, n);
 		return;
 	}
 	if (likely(n > 0)) {
@@ -714,24 +910,28 @@ static void dc_cnack_rcv_comp_handler(struct ib_cq *cq, void *cq_context)
 				return;
 
 			if (unlikely(wc[i].status != IB_WC_SUCCESS)) {
-				mlx5_ib_warn(dev, "DC cnak: completed with error, status = %d vendor_err = %d\n",
-					     wc[i].status, wc[i].vendor_err);
+				mlx5_ib_warn(dev, "DC cnak[%d]: completed with error, status = %d vendor_err = %d\n",
+					     wc[i].status, wc[i].vendor_err, dcd->index);
 			} else {
-				dcd->connects++;
+				atomic64_inc(&dcd->dev->dc_stats[dcd->port - 1].connects);
+				dev->dc_stats[dcd->port - 1].rx_scatter[dcd->index]++;
 				if (unlikely(send_cnak(dcd, &mlx_wr, wc[i].wr_id)))
-					mlx5_ib_warn(dev, "DC cnak: failed to allocate send buf - dropped\n");
+					mlx5_ib_warn(dev, "DC cnak[%d]: failed to allocate send buf - dropped\n",
+						     dcd->index);
 			}
 
 			if (unlikely(mlx5_post_one_rxdc(dcd, wc[i].wr_id))) {
-				dcd->discards++;
-				mlx5_ib_warn(dev, "DC cnak: repost rx failed, will leak rx queue\n");
+				atomic64_inc(&dcd->dev->dc_stats[dcd->port - 1].discards);
+				mlx5_ib_warn(dev, "DC cnak[%d]: repost rx failed, will leak rx queue\n",
+					     dcd->index);
 			}
 		}
 	}
 
 	err = ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
 	if (unlikely(err))
-		mlx5_ib_warn(dev, "DC cnak: failed to re-arm receive cq (%d)\n", err);
+		mlx5_ib_warn(dev, "DC cnak[%d]: failed to re-arm receive cq (%d)\n",
+			     dcd->index, err);
 }
 
 static int alloc_dc_buf(struct mlx5_dc_data *dcd, int rx)
@@ -823,45 +1023,116 @@ static void free_dc_tx_buf(struct mlx5_dc_data *dcd)
 
 struct dc_attribute {
 	struct attribute attr;
-	ssize_t (*show)(struct mlx5_dc_data *, struct dc_attribute *, char *buf);
-	ssize_t (*store)(struct mlx5_dc_data *, struct dc_attribute *,
+	ssize_t (*show)(struct mlx5_dc_stats *, struct dc_attribute *, char *buf);
+	ssize_t (*store)(struct mlx5_dc_stats *, struct dc_attribute *,
 			 const char *buf, size_t count);
 };
+
+static ssize_t qp_count_show(struct mlx5_dc_stats *dc_stats,
+			     struct dc_attribute *unused,
+			     char *buf)
+{
+	return sprintf(buf, "%u\n", dc_stats->dev->num_dc_cnak_qps);
+}
+
+static int init_driver_cnak(struct mlx5_ib_dev *dev, int port, int index);
+static ssize_t qp_count_store(struct mlx5_dc_stats *dc_stats,
+			      struct dc_attribute *unused,
+			      const char *buf, size_t count)
+{
+	struct mlx5_ib_dev *dev = dc_stats->dev;
+	int port = dc_stats->port;
+	unsigned long var;
+	int i;
+	int err = 0;
+	int qp_add = 0;
+
+	if (kstrtol(buf, 0, &var)) {
+		err = -EINVAL;
+		goto err;
+	}
+	if ((var > dev->max_dc_cnak_qps) ||
+	    (dev->num_dc_cnak_qps >= var)) {
+		err = -EINVAL;
+		goto err;
+	}
+
+	for (i = dev->num_dc_cnak_qps; i < var; i++) {
+		err = init_driver_cnak(dev, port, i);
+		if (err) {
+			mlx5_ib_warn(dev, "Fail to set %ld CNAK QPs. Only %d were added\n",
+				     var, qp_add);
+			break;
+		}
+		dev->num_dc_cnak_qps++;
+		qp_add++;
+	}
+err:
+
+	return err ? err : count;
+}
 
 #define DC_ATTR(_name, _mode, _show, _store) \
 struct dc_attribute dc_attr_##_name = __ATTR(_name, _mode, _show, _store)
 
-static ssize_t rx_connect_show(struct mlx5_dc_data *dcd,
+static DC_ATTR(qp_count, 0644, qp_count_show, qp_count_store);
+
+static ssize_t rx_connect_show(struct mlx5_dc_stats *dc_stats,
 			       struct dc_attribute *unused,
 			       char *buf)
 {
 	unsigned long num;
 
-	num = dcd->connects;
+	num = atomic64_read(&dc_stats->connects);
 
 	return sprintf(buf, "%lu\n", num);
 }
 
-static ssize_t tx_cnak_show(struct mlx5_dc_data *dcd,
+static ssize_t tx_cnak_show(struct mlx5_dc_stats *dc_stats,
 			    struct dc_attribute *unused,
 			    char *buf)
 {
 	unsigned long num;
 
-	num = dcd->cnaks;
+	num = atomic64_read(&dc_stats->cnaks);
 
 	return sprintf(buf, "%lu\n", num);
 }
 
-static ssize_t tx_discard_show(struct mlx5_dc_data *dcd,
+static ssize_t tx_discard_show(struct mlx5_dc_stats *dc_stats,
 			       struct dc_attribute *unused,
 			       char *buf)
 {
 	unsigned long num;
 
-	num = dcd->discards;
+	num = atomic64_read(&dc_stats->discards);
 
 	return sprintf(buf, "%lu\n", num);
+}
+
+static ssize_t rx_scatter_show(struct mlx5_dc_stats *dc_stats,
+			       struct dc_attribute *unused,
+			       char *buf)
+{
+	int i;
+	int ret;
+	int res = 0;
+
+	buf[0] = 0;
+
+	for (i = 0; i < dc_stats->dev->max_dc_cnak_qps ; i++) {
+		unsigned long num = dc_stats->rx_scatter[i];
+
+		if (!dc_stats->dev->dcd[dc_stats->port - 1][i].initialized)
+			continue;
+		ret = sprintf(buf + strlen(buf), "%d:%lu\n", i, num);
+		if (ret < 0) {
+			res = ret;
+			break;
+		}
+		res += ret;
+	}
+	return res;
 }
 
 #define DC_ATTR_RO(_name) \
@@ -870,11 +1141,14 @@ struct dc_attribute dc_attr_##_name = __ATTR_RO(_name)
 static DC_ATTR_RO(rx_connect);
 static DC_ATTR_RO(tx_cnak);
 static DC_ATTR_RO(tx_discard);
+static DC_ATTR_RO(rx_scatter);
 
 static struct attribute *dc_attrs[] = {
 	&dc_attr_rx_connect.attr,
 	&dc_attr_tx_cnak.attr,
 	&dc_attr_tx_discard.attr,
+	&dc_attr_rx_scatter.attr,
+	&dc_attr_qp_count.attr,
 	NULL
 };
 
@@ -882,7 +1156,7 @@ static ssize_t dc_attr_show(struct kobject *kobj,
 			    struct attribute *attr, char *buf)
 {
 	struct dc_attribute *dc_attr = container_of(attr, struct dc_attribute, attr);
-	struct mlx5_dc_data *d = container_of(kobj, struct mlx5_dc_data, kobj);
+	struct mlx5_dc_stats *d = container_of(kobj, struct mlx5_dc_stats, kobj);
 
 	if (!dc_attr->show)
 		return -EIO;
@@ -890,8 +1164,21 @@ static ssize_t dc_attr_show(struct kobject *kobj,
 	return dc_attr->show(d, dc_attr, buf);
 }
 
+static ssize_t dc_attr_store(struct kobject *kobj,
+			     struct attribute *attr, const char *buf, size_t size)
+{
+	struct dc_attribute *dc_attr = container_of(attr, struct dc_attribute, attr);
+	struct mlx5_dc_stats *d = container_of(kobj, struct mlx5_dc_stats, kobj);
+
+	if (!dc_attr->store)
+		return -EIO;
+
+	return dc_attr->store(d, dc_attr, buf, size);
+}
+
 static const struct sysfs_ops dc_sysfs_ops = {
-	.show = dc_attr_show
+	.show = dc_attr_show,
+	.store = dc_attr_store
 };
 
 static struct kobj_type dc_type = {
@@ -899,7 +1186,7 @@ static struct kobj_type dc_type = {
 	.default_attrs = dc_attrs
 };
 
-static int init_sysfs(struct mlx5_ib_dev *dev)
+static int init_dc_sysfs(struct mlx5_ib_dev *dev)
 {
 	struct device *device = &dev->ib_dev.dev;
 
@@ -912,7 +1199,7 @@ static int init_sysfs(struct mlx5_ib_dev *dev)
 	return 0;
 }
 
-static void cleanup_sysfs(struct mlx5_ib_dev *dev)
+static void cleanup_dc_sysfs(struct mlx5_ib_dev *dev)
 {
 	if (dev->dc_kobj) {
 		kobject_put(dev->dc_kobj);
@@ -920,20 +1207,37 @@ static void cleanup_sysfs(struct mlx5_ib_dev *dev)
 	}
 }
 
-static int init_port_sysfs(struct mlx5_dc_data *dcd)
+static int init_dc_port_sysfs(struct mlx5_dc_stats *dc_stats,
+			      struct mlx5_ib_dev *dev, int port)
 {
-	return kobject_init_and_add(&dcd->kobj, &dc_type, dcd->dev->dc_kobj,
-				    "%d", dcd->port);
+	int ret;
+
+	dc_stats->dev = dev;
+	dc_stats->port = port;
+	ret = kobject_init_and_add(&dc_stats->kobj, &dc_type,
+				   dc_stats->dev->dc_kobj, "%d", dc_stats->port);
+	if (!ret)
+		dc_stats->initialized = 1;
+	return ret;
 }
 
-static void cleanup_port_sysfs(struct mlx5_dc_data *dcd)
+static void cleanup_dc_port_sysfs(struct mlx5_dc_stats *dc_stats)
 {
-	kobject_put(&dcd->kobj);
+	if (!dc_stats->initialized)
+		return;
+	kobject_put(&dc_stats->kobj);
 }
 
-static int init_driver_cnak(struct mlx5_ib_dev *dev, int port)
+static int comp_vector(struct ib_device *dev, int port, int index)
 {
-	struct mlx5_dc_data *dcd = &dev->dcd[port - 1];
+	int comp_per_port = dev->num_comp_vectors / dev->phys_port_cnt;
+
+	return (port - 1) * comp_per_port + (index % comp_per_port);
+}
+
+static int init_driver_cnak(struct mlx5_ib_dev *dev, int port, int index)
+{
+	struct mlx5_dc_data *dcd = &dev->dcd[port - 1][index];
 	struct mlx5_ib_resources *devr = &dev->devr;
 	struct ib_cq_init_attr cq_attr = {};
 	struct ib_qp_init_attr init_attr;
@@ -946,6 +1250,7 @@ static int init_driver_cnak(struct mlx5_ib_dev *dev, int port)
 
 	dcd->dev = dev;
 	dcd->port = port;
+	dcd->index = index;
 	dcd->mr = pd->device->get_dma_mr(pd,  IB_ACCESS_LOCAL_WRITE);
 	if (IS_ERR(dcd->mr)) {
 		mlx5_ib_warn(dev, "failed to create dc DMA MR\n");
@@ -958,11 +1263,19 @@ static int init_driver_cnak(struct mlx5_ib_dev *dev, int port)
 	dcd->mr->uobject     = NULL;
 	dcd->mr->need_inval  = false;
 
-	ncqe = min_t(int, MLX5_DC_CONNECT_QP_DEPTH,
+	ncqe = min_t(int, dc_cnak_qp_depth,
 		     BIT(MLX5_CAP_GEN(dev->mdev, log_max_cq_sz)));
 	nwr = min_t(int, ncqe,
 		    BIT(MLX5_CAP_GEN(dev->mdev, log_max_qp_sz)));
+
+	if (dc_cnak_qp_depth > nwr) {
+		mlx5_ib_warn(dev, "Can't set DC CNAK QP size to %d. Set to default %d\n",
+			     dc_cnak_qp_depth, nwr);
+		dc_cnak_qp_depth = nwr;
+	}
+
 	cq_attr.cqe = ncqe;
+	cq_attr.comp_vector = comp_vector(&dev->ib_dev, port, index);
 	dcd->rcq = ib_create_cq(&dev->ib_dev, dc_cnack_rcv_comp_handler, NULL,
 				dcd, &cq_attr);
 	if (IS_ERR(dcd->rcq)) {
@@ -1047,11 +1360,8 @@ static int init_driver_cnak(struct mlx5_ib_dev *dev, int port)
 			goto error7;
 	}
 
-	err = init_port_sysfs(dcd);
-	if (err) {
-		mlx5_ib_warn(dev, "failed to initialize DC cnak sysfs\n");
-		goto error7;
-	}
+	dcd->tx_signal_factor = min_t(int, DIV_ROUND_UP(dcd->max_wqes, 2),
+				      MLX5_CNAK_TX_CQ_SIGNAL_FACTOR);
 
 	dcd->initialized = 1;
 	return 0;
@@ -1075,14 +1385,12 @@ error1:
 	return err;
 }
 
-static void cleanup_driver_cnak(struct mlx5_ib_dev *dev, int port)
+static void cleanup_driver_cnak(struct mlx5_ib_dev *dev, int port, int index)
 {
-	struct mlx5_dc_data *dcd = &dev->dcd[port - 1];
+	struct mlx5_dc_data *dcd = &dev->dcd[port - 1][index];
 
 	if (!dcd->initialized)
 		return;
-
-	cleanup_port_sysfs(dcd);
 
 	if (ib_destroy_qp(dcd->dcqp))
 		mlx5_ib_warn(dev, "destroy qp failed\n");
@@ -1103,6 +1411,10 @@ int mlx5_ib_init_dc_improvements(struct mlx5_ib_dev *dev)
 {
 	int port;
 	int err;
+	int i;
+	struct mlx5_core_dev *mdev = dev->mdev;
+	int max_dc_cnak_qps;
+	int ini_dc_cnak_qps;
 
 	if (!mlx5_core_is_pf(dev->mdev) ||
 	    !(MLX5_CAP_GEN(dev->mdev, dc_cnak_trace)))
@@ -1110,25 +1422,58 @@ int mlx5_ib_init_dc_improvements(struct mlx5_ib_dev *dev)
 
 	mlx5_ib_enable_dc_tracer(dev);
 
-	err = init_sysfs(dev);
-	if (err)
-		return err;
+	max_dc_cnak_qps = min_t(int, 1 << MLX5_CAP_GEN(mdev, log_max_dc_cnak_qps),
+			      dev->ib_dev.num_comp_vectors / MLX5_CAP_GEN(mdev, num_ports));
 
 	if (!MLX5_CAP_GEN(dev->mdev, dc_connect_qp))
 		return 0;
 
+	err = init_dc_sysfs(dev);
+	if (err)
+		return err;
+
+	/* start with 25% of maximum CNAK QPs */
+	ini_dc_cnak_qps = DIV_ROUND_UP(max_dc_cnak_qps, 4);
+
 	for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++) {
-		err = init_driver_cnak(dev, port);
-		if (err)
-			goto out;
+		dev->dcd[port - 1] =
+			kcalloc(max_dc_cnak_qps, sizeof(struct mlx5_dc_data), GFP_KERNEL);
+		if (!dev->dcd[port - 1]) {
+			err = -ENOMEM;
+			goto err;
+		}
+		dev->dc_stats[port - 1].rx_scatter =
+			kcalloc(max_dc_cnak_qps, sizeof(int), GFP_KERNEL);
+		if (!dev->dc_stats[port - 1].rx_scatter) {
+			err = -ENOMEM;
+			goto err;
+		}
+		for (i = 0; i < ini_dc_cnak_qps; i++) {
+			err = init_driver_cnak(dev, port, i);
+			if (err)
+				goto err;
+		}
+		err = init_dc_port_sysfs(&dev->dc_stats[port - 1], dev, port);
+		if (err) {
+			mlx5_ib_warn(dev, "failed to initialize DC cnak sysfs\n");
+			goto err;
+		}
 	}
+	dev->num_dc_cnak_qps = ini_dc_cnak_qps;
+	dev->max_dc_cnak_qps = max_dc_cnak_qps;
+
 
 	return 0;
 
-out:
-	for (port--; port >= 1; port--)
-		cleanup_driver_cnak(dev, port);
-	cleanup_sysfs(dev);
+err:
+	for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++) {
+		for (i = 0; i < ini_dc_cnak_qps; i++)
+			cleanup_driver_cnak(dev, port, i);
+		cleanup_dc_port_sysfs(&dev->dc_stats[port - 1]);
+		kfree(dev->dc_stats[port - 1].rx_scatter);
+		kfree(dev->dcd[port - 1]);
+	}
+	cleanup_dc_sysfs(dev);
 
 	return err;
 }
@@ -1136,22 +1481,158 @@ out:
 void mlx5_ib_cleanup_dc_improvements(struct mlx5_ib_dev *dev)
 {
 	int port;
+	int i;
 
-	for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++)
-		cleanup_driver_cnak(dev, port);
-	cleanup_sysfs(dev);
+	if (dev->num_dc_cnak_qps) {
+		for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++) {
+			for (i = 0; i < dev->num_dc_cnak_qps; i++)
+				cleanup_driver_cnak(dev, port, i);
+			cleanup_dc_port_sysfs(&dev->dc_stats[port - 1]);
+			kfree(dev->dc_stats[port - 1].rx_scatter);
+			kfree(dev->dcd[port - 1]);
+		}
+		cleanup_dc_sysfs(dev);
+	}
 
 	mlx5_ib_disable_dc_tracer(dev);
+}
+
+struct tc_attribute {
+	struct attribute attr;
+	ssize_t (*show)(struct mlx5_tc_data *, struct tc_attribute *, char *buf);
+	ssize_t (*store)(struct mlx5_tc_data *, struct tc_attribute *,
+			 const char *buf, size_t count);
+};
+
+#define TC_ATTR(_name, _mode, _show, _store) \
+struct tc_attribute tc_attr_##_name = __ATTR(_name, _mode, _show, _store)
+
+static ssize_t traffic_class_show(struct mlx5_tc_data *tcd, struct tc_attribute *unused, char *buf)
+{
+	return sprintf(buf, "%d\n", tcd->val);
+}
+
+static ssize_t traffic_class_store(struct mlx5_tc_data *tcd, struct tc_attribute *unused,
+				   const char *buf, size_t count)
+{
+	long var;
+
+	if (kstrtol(buf, 0, &var))
+		return -EINVAL;
+
+	if (var > 0xff)
+		return -EINVAL;
+
+	tcd->val = var;
+	return count;
+}
+
+static TC_ATTR(traffic_class, 0644, traffic_class_show, traffic_class_store);
+
+static struct attribute *tc_attrs[] = {
+	&tc_attr_traffic_class.attr,
+	NULL
+};
+
+static ssize_t tc_attr_show(struct kobject *kobj,
+			    struct attribute *attr, char *buf)
+{
+	struct tc_attribute *tc_attr = container_of(attr, struct tc_attribute, attr);
+	struct mlx5_tc_data *d = container_of(kobj, struct mlx5_tc_data, kobj);
+
+	if (!tc_attr->show)
+		return -EIO;
+
+	return tc_attr->show(d, tc_attr, buf);
+}
+
+static ssize_t tc_attr_store(struct kobject *kobj,
+			     struct attribute *attr, const char *buf, size_t count)
+{
+	struct tc_attribute *tc_attr = container_of(attr, struct tc_attribute, attr);
+	struct mlx5_tc_data *d = container_of(kobj, struct mlx5_tc_data, kobj);
+
+	if (!tc_attr->store)
+		return -EIO;
+
+	return tc_attr->store(d, tc_attr, buf, count);
+}
+
+static const struct sysfs_ops tc_sysfs_ops = {
+	.show = tc_attr_show,
+	.store = tc_attr_store
+};
+
+static struct kobj_type tc_type = {
+	.sysfs_ops     = &tc_sysfs_ops,
+	.default_attrs = tc_attrs
+};
+
+int init_tc_sysfs(struct mlx5_ib_dev *dev)
+{
+	struct device *device = &dev->ib_dev.dev;
+	int port;
+	int err;
+
+	dev->tc_kobj = kobject_create_and_add("tc", &device->kobj);
+	if (!dev->tc_kobj)
+		return -ENOMEM;
+	for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++) {
+		struct mlx5_tc_data *tcd = &dev->tcd[port - 1];
+
+		err = kobject_init_and_add(&tcd->kobj, &tc_type, dev->tc_kobj, "%d", port);
+		if (err)
+			goto err;
+		tcd->val = -1;
+		tcd->initialized = true;
+	}
+	return 0;
+err:
+	cleanup_tc_sysfs(dev);
+	return err;
+}
+
+void cleanup_tc_sysfs(struct mlx5_ib_dev *dev)
+{
+	if (dev->tc_kobj) {
+		int port;
+
+		kobject_put(dev->tc_kobj);
+		dev->tc_kobj = NULL;
+		for (port = 1; port <= MLX5_CAP_GEN(dev->mdev, num_ports); port++) {
+			struct mlx5_tc_data *tcd = &dev->tcd[port - 1];
+
+			if (tcd->initialized)
+				kobject_put(&tcd->kobj);
+		}
+	}
+}
+
+static phys_addr_t idx2pfn(struct mlx5_ib_dev *dev, int idx)
+{
+	int fw_uars_per_page = MLX5_CAP_GEN(dev->mdev, uar_4k) ? MLX5_UARS_IN_PAGE : 1;
+
+	return (pci_resource_start(dev->mdev->pdev, 0) >> PAGE_SHIFT) + idx /
+	       fw_uars_per_page;
 }
 
 int alloc_and_map_wc(struct mlx5_ib_dev *dev,
 		     struct mlx5_ib_ucontext *context, u32 indx,
 		     struct vm_area_struct *vma)
 {
+	int uars_per_page = get_uars_per_sys_page(dev,
+					          context->bfregi.lib_uar_4k);
+	u32 sys_page_idx = indx / uars_per_page;
 	phys_addr_t pfn;
 	u32 uar_index;
 	struct mlx5_ib_vma_private_data *vma_prv;
 	int err;
+
+	if (indx % uars_per_page) {
+		mlx5_ib_warn(dev, "invalid uar index %d, should be system page aligned and there are %d uars per page.\n",
+			     indx, uars_per_page);
+		return -EINVAL;
+	}
 
 #if defined(CONFIG_X86)
 	if (!pat_enabled()) {
@@ -1175,7 +1656,7 @@ int alloc_and_map_wc(struct mlx5_ib_dev *dev,
 	}
 
 	/* Fail if uar already allocated */
-	if (context->dynamic_wc_uar_index[indx] != MLX5_IB_INVALID_UAR_INDEX) {
+	if (context->dynamic_wc_uar_index[sys_page_idx] != MLX5_IB_INVALID_UAR_INDEX) {
 		mlx5_ib_warn(dev, "wrong offset, idx %d is busy\n", indx);
 		return -EINVAL;
 	}
@@ -1193,7 +1674,8 @@ int alloc_and_map_wc(struct mlx5_ib_dev *dev,
 	}
 
 	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
-	pfn = uar_index2pfn(dev, uar_index);
+	pfn = idx2pfn(dev, uar_index);
+
 	if (io_remap_pfn_range(vma, vma->vm_start, pfn,
 			       PAGE_SIZE, vma->vm_page_prot)) {
 		mlx5_ib_err(dev, "io remap failed\n");
@@ -1201,27 +1683,129 @@ int alloc_and_map_wc(struct mlx5_ib_dev *dev,
 		kfree(vma_prv);
 		return -EAGAIN;
 	}
-	context->dynamic_wc_uar_index[indx] = uar_index;
+	context->dynamic_wc_uar_index[sys_page_idx] = uar_index;
 
 	mlx5_ib_set_vma_data(vma, context, vma_prv);
 
 	return 0;
 }
 
-int mlx5_get_roce_gid_type(struct mlx5_ib_dev *dev, u8 port,
-			   int index, int *gid_type)
+struct ib_dm *mlx5_ib_exp_alloc_dm(struct ib_device *ibdev,
+				   struct ib_ucontext *context,
+				   u64 length, u64 uaddr,
+				   struct ib_udata *uhw)
 {
-	struct ib_gid_attr attr;
-	union ib_gid gid;
+	u32 map_size = DIV_ROUND_UP(length, PAGE_SIZE) * PAGE_SIZE;
+	phys_addr_t memic_addr, memic_pfn;
+	u64 act_size = roundup(length, 64);
+	struct vm_area_struct *vma;
+	struct mlx5_ib_dm *dm;
+	pgprot_t prot;
 	int ret;
 
-	ret = ib_get_cached_gid(&dev->ib_dev, port, index, &gid, &attr);
+	dm = kzalloc(sizeof(*dm), GFP_KERNEL);
+	if (!dm)
+		return ERR_PTR(-ENOMEM);
 
-	if (!ret)
-		*gid_type = attr.gid_type;
+	if (mlx5_core_alloc_memic(to_mdev(ibdev)->mdev, &memic_addr,
+				  act_size)) {
+		ret = -EFAULT;
+		goto err_free;
+	}
 
-	if (attr.ndev)
-		dev_put(attr.ndev);
+	if (context) {
+		down_read(&current->mm->mmap_sem);
+		vma = find_vma(current->mm, uaddr & PAGE_MASK);
+		if (!vma || (vma->vm_end - vma->vm_start < map_size)) {
+			ret = -EINVAL;
+			goto err_vma;
+		}
+
+		prot = pgprot_writecombine(vma->vm_page_prot);
+		vma->vm_page_prot = prot;
+		memic_pfn = memic_addr >> PAGE_SHIFT;
+		if (io_remap_pfn_range(vma, vma->vm_start,
+				       memic_pfn, map_size,
+				       vma->vm_page_prot)) {
+			ret = -EAGAIN;
+			goto err_vma;
+		}
+
+		up_read(&current->mm->mmap_sem);
+	} else {
+		dm->dm_base_addr = ioremap(memic_addr, length);
+		if (!dm->dm_base_addr) {
+			ret = -ENOMEM;
+			goto err_map;
+		}
+	}
+
+	dm->ibdm.dev_addr = memic_addr;
+
+	return &dm->ibdm;
+
+err_vma:
+	up_read(&current->mm->mmap_sem);
+
+err_map:
+	mlx5_core_dealloc_memic(to_mdev(ibdev)->mdev, memic_addr, act_size);
+
+err_free:
+	kfree(dm);
+
+	return ERR_PTR(ret);
+}
+
+int mlx5_ib_exp_free_dm(struct ib_dm *ibdm)
+{
+	struct mlx5_ib_dev *dev = to_mdev(ibdm->device);
+	struct mlx5_ib_dm *dm = to_mdm(ibdm);
+	int ret;
+
+	if (dm->dm_base_addr)
+		iounmap(dm->dm_base_addr);
+
+	ret = mlx5_core_dealloc_memic(dev->mdev, ibdm->dev_addr,
+				      roundup(ibdm->length, 64));
+
+	kfree(dm);
 
 	return ret;
+}
+
+int mlx5_ib_exp_memcpy_dm(struct ib_dm *ibdm,
+			  struct ib_exp_memcpy_dm_attr *attr)
+{
+	struct mlx5_ib_dm *dm = to_mdm(ibdm);
+	uint64_t dm_addr = (uint64_t)dm->dm_base_addr + attr->dm_offset;
+
+	if ((attr->dm_offset + attr->length > ibdm->length) || (dm_addr & 0x3))
+		return -EINVAL;
+
+	if (attr->memcpy_dir == IBV_EXP_DM_CPY_TO_DEVICE)
+		memcpy_toio((void *)dm_addr, attr->host_addr, attr->length);
+	else
+		memcpy_fromio(attr->host_addr, (void *)dm_addr, attr->length);
+
+	mb();
+
+	return 0;
+}
+
+int mlx5_ib_exp_set_context_attr(struct ib_device *device,
+				 struct ib_ucontext *context,
+				 struct ib_exp_context_attr *attr)
+{
+	int ret;
+
+	if (attr->comp_mask & IB_UVERBS_EXP_SET_CONTEXT_PEER_INFO) {
+		ret = ib_get_peer_private_data(context, attr->peer_id,
+					       attr->peer_name);
+		if (ret)
+			return ret;
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
 }

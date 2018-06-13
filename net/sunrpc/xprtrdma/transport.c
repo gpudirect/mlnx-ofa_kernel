@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2014-2017 Oracle.  All rights reserved.
  * Copyright (c) 2003-2007 Network Appliance, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -51,6 +52,7 @@
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/sunrpc/addr.h>
+#include <linux/smp.h>
 
 #include "xprt_rdma.h"
 
@@ -66,8 +68,8 @@ static unsigned int xprt_rdma_slot_table_entries = RPCRDMA_DEF_SLOT_TABLE;
 unsigned int xprt_rdma_max_inline_read = RPCRDMA_DEF_INLINE;
 static unsigned int xprt_rdma_max_inline_write = RPCRDMA_DEF_INLINE;
 static unsigned int xprt_rdma_inline_write_padding;
-static unsigned int xprt_rdma_memreg_strategy = RPCRDMA_FRMR;
-		int xprt_rdma_pad_optimize = 1;
+unsigned int xprt_rdma_memreg_strategy		= RPCRDMA_FRMR;
+int xprt_rdma_pad_optimize;
 
 #if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 
@@ -149,7 +151,7 @@ static struct ctl_table sunrpc_table[] = {
 
 #endif
 
-static struct rpc_xprt_ops xprt_rdma_procs;	/*forward reference */
+static const struct rpc_xprt_ops xprt_rdma_procs;
 
 static void
 xprt_rdma_format_addresses4(struct rpc_xprt *xprt, struct sockaddr *sap)
@@ -217,6 +219,34 @@ xprt_rdma_free_addresses(struct rpc_xprt *xprt)
 		default:
 			kfree(xprt->address_strings[i]);
 		}
+}
+
+void
+rpcrdma_conn_func(struct rpcrdma_ep *ep)
+{
+	schedule_delayed_work(&ep->rep_connect_worker, 0);
+}
+
+void
+rpcrdma_connect_worker(struct work_struct *work)
+{
+	struct rpcrdma_ep *ep =
+		container_of(work, struct rpcrdma_ep, rep_connect_worker.work);
+	struct rpcrdma_xprt *r_xprt =
+		container_of(ep, struct rpcrdma_xprt, rx_ep);
+	struct rpc_xprt *xprt = &r_xprt->rx_xprt;
+
+	spin_lock_bh(&xprt->transport_lock);
+	if (++xprt->connect_cookie == 0)	/* maintain a reserved value */
+		++xprt->connect_cookie;
+	if (ep->rep_connected > 0) {
+		if (!xprt_test_and_set_connected(xprt))
+			xprt_wake_pending_tasks(xprt, 0);
+	} else {
+		if (xprt_test_and_clear_connected(xprt))
+			xprt_wake_pending_tasks(xprt, -ENOTCONN);
+	}
+	spin_unlock_bh(&xprt->transport_lock);
 }
 
 static void
@@ -368,7 +398,7 @@ xprt_setup_rdma(struct xprt_create *args)
 
 	new_xprt = rpcx_to_rdmax(xprt);
 
-	rc = rpcrdma_ia_open(new_xprt, sap, xprt_rdma_memreg_strategy);
+	rc = rpcrdma_ia_open(new_xprt, sap);
 	if (rc)
 		goto out1;
 
@@ -429,19 +459,33 @@ out1:
 	return ERR_PTR(rc);
 }
 
-/*
- * Close a connection, during shutdown or timeout/reconnect
+/**
+ * xprt_rdma_close - Close down RDMA connection
+ * @xprt: generic transport to be closed
+ *
+ * Called during transport shutdown reconnect, or device
+ * removal. Caller holds the transport's write lock.
  */
 static void
 xprt_rdma_close(struct rpc_xprt *xprt)
 {
 	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
+	struct rpcrdma_ep *ep = &r_xprt->rx_ep;
+	struct rpcrdma_ia *ia = &r_xprt->rx_ia;
 
-	dprintk("RPC:       %s: closing\n", __func__);
-	if (r_xprt->rx_ep.rep_connected > 0)
+	dprintk("RPC:       %s: closing xprt %p\n", __func__, xprt);
+
+	if (test_and_clear_bit(RPCRDMA_IAF_REMOVING, &ia->ri_flags)) {
+		xprt_clear_connected(xprt);
+		rpcrdma_ia_remove(ia);
+		return;
+	}
+	if (ep->rep_connected == -ENODEV)
+		return;
+	if (ep->rep_connected > 0)
 		xprt->reestablish_timeout = 0;
 	xprt_disconnect_done(xprt);
-	rpcrdma_ep_disconnect(&r_xprt->rx_ep, &r_xprt->rx_ia);
+	rpcrdma_ep_disconnect(ep, ia);
 }
 
 static void
@@ -454,6 +498,27 @@ xprt_rdma_set_port(struct rpc_xprt *xprt, u16 port)
 	sap = (struct sockaddr_in *)&rpcx_to_rdmad(xprt).addr;
 	sap->sin_port = htons(port);
 	dprintk("RPC:       %s: %u\n", __func__, port);
+}
+
+/**
+ * xprt_rdma_timer - invoked when an RPC times out
+ * @xprt: controlling RPC transport
+ * @task: RPC task that timed out
+ *
+ * Invoked when the transport is still connected, but an RPC
+ * retransmit timeout occurs.
+ *
+ * Since RDMA connections don't have a keep-alive, forcibly
+ * disconnect and retry to connect. This drives full
+ * detection of the network path, and retransmissions of
+ * all pending RPCs.
+ */
+static void
+xprt_rdma_timer(struct rpc_xprt *xprt, struct rpc_task *task)
+{
+	dprintk("RPC: %5u %s: xprt = %p\n", task->tk_pid, __func__, xprt);
+
+	xprt_force_disconnect(xprt);
 }
 
 static void
@@ -496,6 +561,7 @@ rpcrdma_get_rdmabuf(struct rpcrdma_xprt *r_xprt, struct rpcrdma_req *req,
 
 	r_xprt->rx_stats.hardway_register_count += size;
 	req->rl_rdmabuf = rb;
+	xdr_buf_init(&req->rl_hdrbuf, rb->rg_base, rdmab_length(rb));
 	return true;
 }
 
@@ -591,6 +657,7 @@ xprt_rdma_allocate(struct rpc_task *task)
 		task->tk_pid, __func__, rqst->rq_callsize,
 		rqst->rq_rcvsize, req);
 
+	req->rl_cpu = smp_processor_id();
 	req->rl_connect_cookie = 0;	/* our reserved value */
 	rpcrdma_set_xprtdata(rqst, req);
 	rqst->rq_buffer = req->rl_sendbuf->rg_base;
@@ -614,21 +681,22 @@ xprt_rdma_free(struct rpc_task *task)
 	struct rpc_rqst *rqst = task->tk_rqstp;
 	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(rqst->rq_xprt);
 	struct rpcrdma_req *req = rpcr_to_rdmar(rqst);
-	struct rpcrdma_ia *ia = &r_xprt->rx_ia;
 
-	if (req->rl_backchannel)
+	if (test_bit(RPCRDMA_REQ_F_BACKCHANNEL, &req->rl_flags))
 		return;
 
 	dprintk("RPC:       %s: called on 0x%p\n", __func__, req->rl_reply);
 
-	ia->ri_ops->ro_unmap_safe(r_xprt, req, !RPC_IS_ASYNC(task));
-	rpcrdma_unmap_sges(ia, req);
+	if (test_bit(RPCRDMA_REQ_F_PENDING, &req->rl_flags))
+		rpcrdma_release_rqst(r_xprt, req);
 	rpcrdma_buffer_put(req);
 }
 
 /**
  * xprt_rdma_send_request - marshal and send an RPC request
  * @task: RPC task with an RPC message in rq_snd_buf
+ *
+ * Caller holds the transport's write lock.
  *
  * Return values:
  *        0:	The request has been sent
@@ -656,10 +724,15 @@ xprt_rdma_send_request(struct rpc_task *task)
 	struct rpcrdma_xprt *r_xprt = rpcx_to_rdmax(xprt);
 	int rc = 0;
 
-	/* On retransmit, remove any previously registered chunks */
-	r_xprt->rx_ia.ri_ops->ro_unmap_safe(r_xprt, req, false);
+	if (!xprt_connected(xprt))
+		goto drop_connection;
 
-	rc = rpcrdma_marshal_req(rqst);
+	/* On retransmit, remove any previously registered chunks */
+	if (unlikely(!list_empty(&req->rl_registered)))
+		r_xprt->rx_ia.ri_ops->ro_unmap_sync(r_xprt,
+						    &req->rl_registered);
+
+	rc = rpcrdma_marshal_req(r_xprt, rqst);
 	if (rc < 0)
 		goto failed_marshal;
 
@@ -671,6 +744,7 @@ xprt_rdma_send_request(struct rpc_task *task)
 		goto drop_connection;
 	req->rl_connect_cookie = xprt->connect_cookie;
 
+	set_bit(RPCRDMA_REQ_F_PENDING, &req->rl_flags);
 	if (rpcrdma_ep_post(&r_xprt->rx_ia, &r_xprt->rx_ep, req))
 		goto drop_connection;
 
@@ -679,10 +753,6 @@ xprt_rdma_send_request(struct rpc_task *task)
 	return 0;
 
 failed_marshal:
-	dprintk("RPC:       %s: rpcrdma_marshal_req failed, status %i\n",
-		__func__, rc);
-	if (rc == -EIO)
-		r_xprt->rx_stats.failed_marshal_count++;
 	if (rc != -ENOTCONN)
 		return rc;
 drop_connection:
@@ -722,11 +792,13 @@ void xprt_rdma_print_stats(struct rpc_xprt *xprt, struct seq_file *seq)
 		   r_xprt->rx_stats.failed_marshal_count,
 		   r_xprt->rx_stats.bad_reply_count,
 		   r_xprt->rx_stats.nomsg_call_count);
-	seq_printf(seq, "%lu %lu %lu %lu\n",
+	seq_printf(seq, "%lu %lu %lu %lu %lu %lu\n",
 		   r_xprt->rx_stats.mrs_recovered,
 		   r_xprt->rx_stats.mrs_orphaned,
 		   r_xprt->rx_stats.mrs_allocated,
-		   r_xprt->rx_stats.local_inv_needed);
+		   r_xprt->rx_stats.local_inv_needed,
+		   r_xprt->rx_stats.empty_sendctx_q,
+		   r_xprt->rx_stats.reply_waits_for_send);
 }
 
 static int
@@ -744,12 +816,13 @@ xprt_rdma_disable_swap(struct rpc_xprt *xprt)
  * Plumbing for rpc transport switch and kernel module
  */
 
-static struct rpc_xprt_ops xprt_rdma_procs = {
+static const struct rpc_xprt_ops xprt_rdma_procs = {
 	.reserve_xprt		= xprt_reserve_xprt_cong,
 	.release_xprt		= xprt_release_xprt_cong, /* sunrpc/xprt.c */
 	.alloc_slot		= xprt_alloc_slot,
 	.release_request	= xprt_release_rqst_cong,       /* ditto */
 	.set_retrans_timeout	= xprt_set_retrans_timeout_def, /* ditto */
+	.timer			= xprt_rdma_timer,
 	.rpcbind		= rpcb_getport_async,	/* sunrpc/rpcb_clnt.c */
 	.set_port		= xprt_rdma_set_port,
 	.connect		= xprt_rdma_connect,

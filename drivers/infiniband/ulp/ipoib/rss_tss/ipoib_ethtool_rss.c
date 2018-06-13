@@ -31,9 +31,9 @@
  */
 
 static int ipoib_set_coalesce_rss(struct net_device *dev,
-			 	  struct ethtool_coalesce *coal)
+				  struct ethtool_coalesce *coal)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int ret, i;
 
 	/*
@@ -45,9 +45,9 @@ static int ipoib_set_coalesce_rss(struct net_device *dev,
 		return -EINVAL;
 
 	for (i = 0; i < priv->num_rx_queues; i++) {
-		ret = ib_modify_cq(priv->recv_ring[i].recv_cq,
-				   coal->rx_max_coalesced_frames,
-				   coal->rx_coalesce_usecs);
+		ret = rdma_set_cq_moderation(priv->recv_ring[i].recv_cq,
+					     coal->rx_max_coalesced_frames,
+					     coal->rx_coalesce_usecs);
 		if (ret && ret != -ENOSYS) {
 			ipoib_warn(priv, "failed modifying CQ (%d)\n", ret);
 			return ret;
@@ -64,7 +64,7 @@ static void ipoib_get_ethtool_stats_rss(struct net_device *dev,
 					struct ethtool_stats __always_unused *stats,
 					u64 *data)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_recv_ring *recv_ring;
 	struct ipoib_send_ring *send_ring;
 	int index = 0;
@@ -78,6 +78,7 @@ static void ipoib_get_ethtool_stats_rss(struct net_device *dev,
 		data[index++] = rx_stats->rx_bytes;
 		data[index++] = rx_stats->rx_errors;
 		data[index++] = rx_stats->rx_dropped;
+		data[index++] = rx_stats->multicast;
 		recv_ring++;
 	}
 	send_ring = priv->send_ring;
@@ -97,7 +98,7 @@ static void ipoib_get_ethtool_stats_rss(struct net_device *dev,
 static void ipoib_get_strings_rss(struct net_device __always_unused *dev,
 				  u32 stringset, u8 *data)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int i, index = 0;
 
 	switch (stringset) {
@@ -111,6 +112,8 @@ static void ipoib_get_strings_rss(struct net_device __always_unused *dev,
 					"rx%d_errors", i);
 			sprintf(data + (index++) * ETH_GSTRING_LEN,
 					"rx%d_dropped", i);
+			sprintf(data + (index++) * ETH_GSTRING_LEN,
+					"multicast");
 		}
 		for (i = 0; i < priv->num_tx_queues; i++) {
 			sprintf(data + (index++) * ETH_GSTRING_LEN,
@@ -132,11 +135,11 @@ static void ipoib_get_strings_rss(struct net_device __always_unused *dev,
 static int ipoib_get_sset_count_rss(struct net_device __always_unused *dev,
 				    int sset)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	switch (sset) {
 	case ETH_SS_STATS:
-		return (priv->num_rx_queues + priv->num_tx_queues) * 4;
+		return ((priv->num_rx_queues * 5) + (priv->num_tx_queues * 4));
 	case ETH_SS_TEST:
 	default:
 		break;
@@ -147,7 +150,7 @@ static int ipoib_get_sset_count_rss(struct net_device __always_unused *dev,
 static void ipoib_get_channels(struct net_device *dev,
 			       struct ethtool_channels *channel)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	channel->max_rx = priv->max_rx_queues;
 	channel->max_tx = priv->max_tx_queues;
@@ -164,7 +167,7 @@ static void ipoib_get_channels(struct net_device *dev,
 static int ipoib_set_channels(struct net_device *dev,
 			struct ethtool_channels *channel)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	if (channel->other_count)
 		return -EINVAL;
@@ -218,17 +221,7 @@ static const struct ethtool_ops ipoib_ethtool_ops_rss = {
 	.get_ringparam		= ipoib_get_ring_param,
 };
 
-static const struct ethtool_ops *ipoib_ethtool_ops_select;
-
-void ipoib_select_ethtool_ops(struct ipoib_dev_priv *priv)
+void ipoib_set_ethtool_ops_rss(struct net_device *dev)
 {
-	if (priv->hca_caps_exp & IB_EXP_DEVICE_UD_RSS)
-		ipoib_ethtool_ops_select = &ipoib_ethtool_ops_rss;
-	else
-		ipoib_ethtool_ops_select = &ipoib_ethtool_ops;
-}
-
-const struct ethtool_ops *ipoib_get_ethtool_ops(void)
-{
-	return ipoib_ethtool_ops_select;
+	dev->ethtool_ops = &ipoib_ethtool_ops_rss;
 }

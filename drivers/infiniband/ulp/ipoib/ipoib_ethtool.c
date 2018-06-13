@@ -52,32 +52,16 @@ static const struct ipoib_stats ipoib_gstrings_stats[] = {
 	IPOIB_NETDEV_STAT(tx_bytes),
 	IPOIB_NETDEV_STAT(tx_errors),
 	IPOIB_NETDEV_STAT(rx_dropped),
-	IPOIB_NETDEV_STAT(tx_dropped)
+	IPOIB_NETDEV_STAT(tx_dropped),
+	IPOIB_NETDEV_STAT(multicast),
 };
 
 #define IPOIB_GLOBAL_STATS_LEN	ARRAY_SIZE(ipoib_gstrings_stats)
 
-static int ipoib_ethtool_dev_init(struct net_device *dev)
-{
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
-	int result = -ENOMEM;
-
-	ipoib_dbg(priv, "ethtool: initializing interface %s\n", dev->name);
-
-	result = priv->fp.ipoib_dev_init(priv->dev, priv->ca, priv->port);
-	if (result < 0) {
-		pr_warn("%s: failed to initialize port %d (ret = %d)\n",
-			dev->name, priv->port, result);
-		return -ENOMEM;
-	}
-
-	return 0;
-}
-
 static int ipoib_set_ring_param(struct net_device *dev,
 				struct ethtool_ringparam *ringparam)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	unsigned int new_recvq_size, new_sendq_size;
 	unsigned long priv_current_flags;
 	unsigned int dev_current_flags;
@@ -115,12 +99,12 @@ static int ipoib_set_ring_param(struct net_device *dev,
 		dev_current_flags = dev->flags;
 
 		dev_change_flags(dev, dev->flags & ~IFF_UP);
-		priv->fp.ipoib_dev_uninit(dev);
+		priv->rn_ops->ndo_uninit(dev);
 
 		do {
 			priv->recvq_size = new_recvq_size;
 			priv->sendq_size = new_sendq_size;
-			if (ipoib_ethtool_dev_init(dev)) {
+			if (priv->rn_ops->ndo_init(dev)) {
 				new_recvq_size >>= 1;
 				new_sendq_size >>= 1;
 				/* keep the values always legal */
@@ -135,8 +119,8 @@ static int ipoib_set_ring_param(struct net_device *dev,
 				init = true;
 			}
 		} while (!init &&
-			 !(new_recvq_size == IPOIB_MIN_QUEUE_SIZE &&
-			   new_sendq_size == IPOIB_MIN_QUEUE_SIZE));
+			 !(priv->recvq_size == IPOIB_MIN_QUEUE_SIZE &&
+			   priv->sendq_size == IPOIB_MIN_QUEUE_SIZE));
 
 		if (!init) {
 			pr_err("%s: Failed to init interface %s, removing it\n",
@@ -159,7 +143,7 @@ static int ipoib_set_ring_param(struct net_device *dev,
 static void ipoib_get_ring_param(struct net_device *dev,
 				 struct ethtool_ringparam *ringparam)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	ringparam->rx_max_pending = IPOIB_MAX_QUEUE_SIZE;
 	ringparam->tx_max_pending = IPOIB_MAX_QUEUE_SIZE;
@@ -174,12 +158,11 @@ static void ipoib_get_ring_param(struct net_device *dev,
 static void ipoib_get_drvinfo(struct net_device *netdev,
 			      struct ethtool_drvinfo *drvinfo)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(netdev);
+	struct ipoib_dev_priv *priv = ipoib_priv(netdev);
 
-	ib_get_device_fw_str(priv->ca, drvinfo->fw_version,
-			     sizeof(drvinfo->fw_version));
+	ib_get_device_fw_str(priv->ca, drvinfo->fw_version);
 
-	strlcpy(drvinfo->bus_info, dev_name(priv->ca->dma_device),
+	strlcpy(drvinfo->bus_info, dev_name(priv->ca->dev.parent),
 		sizeof(drvinfo->bus_info));
 
 	strlcpy(drvinfo->version, ipoib_driver_version,
@@ -191,7 +174,7 @@ static void ipoib_get_drvinfo(struct net_device *netdev,
 static int ipoib_get_coalesce(struct net_device *dev,
 			      struct ethtool_coalesce *coal)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	coal->rx_coalesce_usecs = priv->ethtool.coalesce_usecs;
 	coal->rx_max_coalesced_frames = priv->ethtool.max_coalesced_frames;
@@ -202,7 +185,7 @@ static int ipoib_get_coalesce(struct net_device *dev,
 static int ipoib_set_coalesce(struct net_device *dev,
 			      struct ethtool_coalesce *coal)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int ret;
 
 	/*
@@ -213,8 +196,9 @@ static int ipoib_set_coalesce(struct net_device *dev,
 	    coal->rx_max_coalesced_frames > 0xffff)
 		return -EINVAL;
 
-	ret = ib_modify_cq(priv->recv_cq, coal->rx_max_coalesced_frames,
-			   coal->rx_coalesce_usecs);
+	ret = rdma_set_cq_moderation(priv->recv_cq,
+				     coal->rx_max_coalesced_frames,
+				     coal->rx_coalesce_usecs);
 	if (ret && ret != -ENOSYS) {
 		ipoib_warn(priv, "failed modifying CQ (%d)\n", ret);
 		return ret;
@@ -228,7 +212,7 @@ static int ipoib_set_coalesce(struct net_device *dev,
 
 static int ipoib_get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_port_attr attr;
 	char *speed = "";
 	int rate;/* in deci-Gb/sec */
@@ -299,7 +283,66 @@ static int ipoib_get_sset_count(struct net_device __always_unused *dev,
 	return -EOPNOTSUPP;
 }
 
+/* Return lane speed in unit of 1e6 bit/sec */
+static inline int ib_speed_enum_to_int(int speed)
+{
+	switch (speed) {
+	case IB_SPEED_SDR:
+		return SPEED_2500;
+	case IB_SPEED_DDR:
+		return SPEED_5000;
+	case IB_SPEED_QDR:
+	case IB_SPEED_FDR10:
+		return SPEED_10000;
+	case IB_SPEED_FDR:
+		return SPEED_14000;
+	case IB_SPEED_EDR:
+		return SPEED_25000;
+	}
+
+	return SPEED_UNKNOWN;
+}
+
+static int ipoib_get_link_ksettings(struct net_device *netdev,
+				    struct ethtool_link_ksettings *cmd)
+{
+	struct ipoib_dev_priv *priv = ipoib_priv(netdev);
+	struct ib_port_attr attr;
+	int ret, speed, width;
+
+	if (!netif_carrier_ok(netdev)) {
+		cmd->base.speed = SPEED_UNKNOWN;
+		cmd->base.duplex = DUPLEX_UNKNOWN;
+		return 0;
+	}
+
+	ret = ib_query_port(priv->ca, priv->port, &attr);
+	if (ret < 0)
+		return -EINVAL;
+
+	speed = ib_speed_enum_to_int(attr.active_speed);
+	width = ib_width_enum_to_int(attr.active_width);
+
+	if (speed < 0 || width < 0)
+		return -EINVAL;
+
+	/* Except the following are set, the other members of
+	 * the struct ethtool_link_settings are initialized to
+	 * zero in the function __ethtool_get_link_ksettings.
+	 */
+	cmd->base.speed		 = speed * width;
+	cmd->base.duplex	 = DUPLEX_FULL;
+
+	cmd->base.phy_address	 = 0xFF;
+
+	cmd->base.autoneg	 = AUTONEG_ENABLE;
+	cmd->base.port		 = PORT_OTHER;
+
+	return 0;
+}
+
 static const struct ethtool_ops ipoib_ethtool_ops = {
+	.get_link_ksettings	= ipoib_get_link_ksettings,
 	.get_drvinfo		= ipoib_get_drvinfo,
 	.get_coalesce		= ipoib_get_coalesce,
 	.set_coalesce		= ipoib_set_coalesce,

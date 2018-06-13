@@ -33,6 +33,7 @@
 #ifndef MLX5_IB_EXP_H
 #define MLX5_IB_EXP_H
 
+#include <linux/mlx5/nvmf.h>
 #include <rdma/ib_verbs.h>
 
 struct mlx5_ib_dev;
@@ -42,9 +43,15 @@ struct mlx5_ib_qp;
 
 #define MLX5_DC_CONNECT_QP_DEPTH 8192
 #define MLX5_IB_QPT_SW_CNAK	IB_QPT_RESERVED3
+#define MLX5_DM_ALLOWED_ACCESS ( IB_ACCESS_LOCAL_WRITE  |\
+				 IB_ACCESS_REMOTE_WRITE |\
+				 IB_ACCESS_REMOTE_READ  |\
+				 IB_ACCESS_REMOTE_ATOMIC )
+
 
 enum mlx5_cap_flags {
-	MLX5_CAP_COMPACT_AV = 1 << 0,
+	MLX5_CAP_COMPACT_AV   = 1 << 0,
+	MLX5_CAP_ODP_IMPLICIT = 1 << 1,
 };
 
 enum {
@@ -74,6 +81,17 @@ struct mlx5_send_wr {
 	} sel;
 };
 
+struct mlx5_dc_stats {
+	struct kobject		kobj;
+	struct mlx5_ib_dev	*dev;
+	int			port;
+	atomic64_t		connects;
+	atomic64_t		cnaks;
+	atomic64_t		discards;
+	int			*rx_scatter;
+	int			initialized;
+};
+
 struct mlx5_dc_data {
 	struct ib_mr		*mr;
 	struct ib_qp		*dcqp;
@@ -90,11 +108,15 @@ struct mlx5_dc_data {
 	struct mlx5_ib_dev	*dev;
 	int			port;
 	int			initialized;
-	struct kobject		kobj;
-	unsigned long		connects;
-	unsigned long		cnaks;
-	unsigned long		discards;
+	int			index;
+	int			tx_signal_factor;
 	struct ib_wc		wc_tbl[MLX5_CNAK_RX_POLL_CQ_QUOTA];
+};
+
+struct mlx5_tc_data {
+	bool initialized;
+	int val;
+	struct kobject kobj;
 };
 
 struct mlx5_dc_tracer {
@@ -107,6 +129,11 @@ struct mlx5_dc_tracer {
 struct mlx5_ib_dct {
 	struct ib_dct		ibdct;
 	struct mlx5_core_dct	mdct;
+};
+
+struct mlx5_ib_dm {
+	struct ib_dm	ibdm;
+	void	       *dm_base_addr;
 };
 
 struct mlx5_ib_exp_odp_stats {
@@ -125,6 +152,11 @@ struct mlx5_ib_exp_odp_stats {
 	atomic_t                num_failed_resolutions;
 };
 
+static inline struct mlx5_ib_dm *to_mdm(struct ib_dm *ibdm)
+{
+	return container_of(ibdm, struct mlx5_ib_dm, ibdm);
+}
+
 static inline struct mlx5_ib_dct *to_mibdct(struct mlx5_core_dct *mdct)
 {
 	return container_of(mdct, struct mlx5_ib_dct, mdct);
@@ -135,6 +167,8 @@ static inline struct mlx5_ib_dct *to_mdct(struct ib_dct *ibdct)
 	return container_of(ibdct, struct mlx5_ib_dct, ibdct);
 }
 
+int init_tc_sysfs(struct mlx5_ib_dev *dev);
+void cleanup_tc_sysfs(struct mlx5_ib_dev *dev);
 struct ib_dct *mlx5_ib_create_dct(struct ib_pd *pd,
 				  struct ib_dct_init_attr *attr,
 				  struct ib_udata *udata);
@@ -148,6 +182,8 @@ int mlx5_ib_exp_modify_cq(struct ib_cq *cq, struct ib_cq_attr *cq_attr,
 int mlx5_ib_exp_query_device(struct ib_device *ibdev,
 			     struct ib_exp_device_attr *props,
 			     struct ib_udata *uhw);
+int mlx5_ib_exp_invalidate_range(struct ib_device *device, struct ib_mr *ibmr,
+				 u64 start, u64 length, u32 flags);
 
 int mlx5_ib_exp_is_scat_cqe_dci(struct mlx5_ib_dev *dev,
 				enum ib_sig_type sig_type,
@@ -164,11 +200,16 @@ void mlx5_ib_exp_get_hash_parameters(struct ib_qp_init_attr *init_attr,
 				     u8 *rx_key_len);
 bool mlx5_ib_exp_is_rss(struct ib_qp_init_attr *init_attr);
 
+int mlx5_ib_exp_set_context_attr(struct ib_device *device,
+				 struct ib_ucontext *context,
+				 struct ib_exp_context_attr *attr);
+
 enum {
 	MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES	= 13,
 	MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES	= 6,
 	MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES	= 16,
 	MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES	= 9,
+	MLX5_EXT_MIN_SINGLE_WQE_LOG_NUM_STRIDES	= 3,
 };
 
 enum mlx5_ib_exp_mmap_cmd {
@@ -177,14 +218,9 @@ enum mlx5_ib_exp_mmap_cmd {
 	MLX5_IB_EXP_MMAP_GET_CONTIGUOUS_PAGES_CPU_NUMA  = 0xFC,
 	MLX5_IB_EXP_MMAP_GET_CONTIGUOUS_PAGES_DEV_NUMA  = 0xFD,
 	MLX5_IB_EXP_ALLOC_N_MMAP_WC                     = 0xFE,
+	MLX5_IB_EXP_MMAP_CLOCK_INFO			= 0xFF,
 };
 
-struct ib_mr *mlx5_ib_exp_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
-				      u64 virt_addr, int access_flags,
-				      struct ib_udata *udata, int mr_id);
-struct ib_mr *mlx5_ib_reg_user_mr_wrp(struct ib_pd *pd, u64 start, u64 length,
-				      u64 virt_addr, int access_flags,
-				      struct ib_udata *udata);
 int get_pg_order(unsigned long offset);
 
 static inline int is_exp_contig_command(unsigned long command)
@@ -207,6 +243,9 @@ int mlx5_ib_mmap_dc_info_page(struct mlx5_ib_dev *dev,
 int mlx5_ib_init_dc_improvements(struct mlx5_ib_dev *dev);
 void mlx5_ib_cleanup_dc_improvements(struct mlx5_ib_dev *dev);
 
+int mlx5_ib_mmap_clock_info_page(struct mlx5_ib_dev *dev,
+			 struct vm_area_struct *vma);
+
 void mlx5_ib_set_mlx_seg(struct mlx5_mlx_seg *seg, struct mlx5_mlx_wr *wr);
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
@@ -228,19 +267,6 @@ u32 mlx5_ib_atomic_mode_qp(struct mlx5_ib_qp *qp);
 int mlx5_ib_exp_query_mkey(struct ib_mr *mr, u64 mkey_attr_mask,
 			   struct ib_mkey_attr *mkey_attr);
 
-struct mlx5_ib_ucontext;
-struct mlx5_ib_vma_private_data;
-
-int alloc_and_map_wc(struct mlx5_ib_dev *dev,
-		     struct mlx5_ib_ucontext *context, u32 indx,
-		     struct vm_area_struct *vma);
-
-phys_addr_t uar_index2pfn(struct mlx5_ib_dev *dev, int index);
-
-void mlx5_ib_set_vma_data(struct vm_area_struct *vma,
-			  struct mlx5_ib_ucontext *ctx,
-			  struct mlx5_ib_vma_private_data *vma_prv);
-
 void mlx5_ib_exp_set_rqc(void *rqc, struct mlx5_ib_rwq *rwq);
 
 void mlx5_ib_exp_set_rq_attr(struct mlx5_ib_create_wq_data *data,
@@ -250,8 +276,82 @@ int mlx5_ib_exp_get_cmd_data(struct mlx5_ib_dev *dev,
 			     struct ib_udata *udata,
 			     struct mlx5_ib_create_wq_data *data);
 
-int mlx5_get_roce_gid_type(struct mlx5_ib_dev *dev, u8 port,
-			   int index, int *gid_type);
+int mlx5_ib_exp_create_srq_user(struct mlx5_ib_dev *dev,
+				struct mlx5_srq_attr *in,
+				struct ib_udata *udata,
+				struct mlx5_ib_create_srq *ucmd);
 
+struct ib_mr *mlx5_ib_get_dma_mr_ex(struct ib_pd *pd, int acc,
+				    u64 start_addr, u64 length);
+
+struct ib_mr *mlx5_ib_exp_alloc_mr(struct ib_pd *pd, struct ib_mr_init_attr *attr);
+
+/* NVMEoF target offload */
+void mlx5_ib_internal_fill_nvmf_caps(struct mlx5_ib_dev *dev);
+int mlx5_ib_exp_set_nvmf_srq_attrs(struct mlx5_nvmf_attr *nvmf,
+				   struct ib_srq_init_attr *init_attr);
+
+struct mlx5_ib_nvmf_be_ctrl {
+	struct ib_nvmf_ctrl		ibctrl;
+	struct mlx5_core_nvmf_be_ctrl	mctrl;
+};
+
+struct mlx5_ib_nvmf_ns {
+	struct ib_nvmf_ns		ibns;
+	struct mlx5_core_nvmf_ns	mns;
+};
+
+static inline struct mlx5_ib_nvmf_be_ctrl *
+to_mibctrl(struct mlx5_core_nvmf_be_ctrl *mctrl)
+{
+	return container_of(mctrl, struct mlx5_ib_nvmf_be_ctrl, mctrl);
+}
+
+static inline struct mlx5_ib_nvmf_be_ctrl *to_mctrl(struct ib_nvmf_ctrl *ibctrl)
+{
+	return container_of(ibctrl, struct mlx5_ib_nvmf_be_ctrl, ibctrl);
+}
+
+static inline struct mlx5_ib_nvmf_ns *to_mns(struct ib_nvmf_ns *ibns)
+{
+	return container_of(ibns, struct mlx5_ib_nvmf_ns, ibns);
+}
+
+struct ib_dm *mlx5_ib_exp_alloc_dm(struct ib_device *ibdev,
+				   struct ib_ucontext *context,
+				   u64 length, u64 uaddr,
+				   struct ib_udata *uhw);
+
+int mlx5_ib_exp_free_dm(struct ib_dm *dm);
+
+int mlx5_ib_exp_memcpy_dm(struct ib_dm *dm,
+			  struct ib_exp_memcpy_dm_attr *attr);
+
+struct ib_nvmf_ctrl *mlx5_ib_create_nvmf_backend_ctrl(struct ib_srq *srq,
+		struct ib_nvmf_backend_ctrl_init_attr *init_attr);
+int mlx5_ib_destroy_nvmf_backend_ctrl(struct ib_nvmf_ctrl *ctrl);
+struct ib_nvmf_ns *mlx5_ib_attach_nvmf_ns(struct ib_nvmf_ctrl *ctrl,
+		struct ib_nvmf_ns_init_attr *init_attr);
+int mlx5_ib_detach_nvmf_ns(struct ib_nvmf_ns *ns);
+
+struct ib_mr *mlx5_ib_get_dm_mr(struct ib_pd *pd,
+			    struct ib_mr_init_attr *attr);
+
+struct mlx5_ib_ucontext;
+struct mlx5_ib_vma_private_data;
+
+int alloc_and_map_wc(struct mlx5_ib_dev *dev,
+		     struct mlx5_ib_ucontext *context, u32 indx,
+		     struct vm_area_struct *vma);
+
+phys_addr_t uar_index2pfn(struct mlx5_ib_dev *dev,
+			  struct mlx5_bfreg_info *bfregi, int idx);
+
+int mlx5_ib_set_qp_offload_type(struct mlx5_qp_context *context, struct ib_qp *qp,
+				enum ib_qp_offload_type offload_type);
+
+void mlx5_ib_set_vma_data(struct vm_area_struct *vma,
+			  struct mlx5_ib_ucontext *ctx,
+			  struct mlx5_ib_vma_private_data *vma_prv);
 
 #endif

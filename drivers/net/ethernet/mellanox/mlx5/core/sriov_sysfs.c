@@ -98,6 +98,7 @@ static ssize_t port_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			  const char *buf, size_t count)
 {
 	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_vf_context *vfs_ctx = dev->priv.sriov.vfs_ctx;
 	struct mlx5_hca_vport_context *in;
 	u64 guid = 0;
 	int err;
@@ -122,6 +123,8 @@ static ssize_t port_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	kfree(in);
 	if (err)
 		return err;
+
+	vfs_ctx[g->vf].port_guid = guid;
 
 	return count;
 }
@@ -193,6 +196,7 @@ static ssize_t node_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 static int modify_hca_node_guid(struct mlx5_core_dev *dev, u16 vf,
 				u64 node_guid)
 {
+	struct mlx5_vf_context *vfs_ctx = dev->priv.sriov.vfs_ctx;
 	struct mlx5_hca_vport_context *in;
 	int err;
 
@@ -203,6 +207,8 @@ static int modify_hca_node_guid(struct mlx5_core_dev *dev, u16 vf,
 	in->field_select = MLX5_HCA_VPORT_SEL_NODE_GUID;
 	in->node_guid = node_guid;
 	err = mlx5_core_modify_hca_vport_context(dev, 1, 1, vf + 1, in);
+	if (!err)
+		vfs_ctx[vf].node_guid = node_guid;
 	kfree(in);
 
 	return err;
@@ -250,10 +256,10 @@ static ssize_t node_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 static const char *policy_str(enum port_state_policy policy)
 {
 	switch (policy) {
-	case MLX5_POLICY_DOWN:		return "Down";
-	case MLX5_POLICY_UP:		return "Up";
-	case MLX5_POLICY_FOLLOW:	return "Follow";
-	default:			return "Invalid policy";
+	case MLX5_POLICY_DOWN:		return "Down\n";
+	case MLX5_POLICY_UP:		return "Up\n";
+	case MLX5_POLICY_FOLLOW:	return "Follow\n";
+	default:			return "Invalid policy\n";
 	}
 }
 
@@ -285,17 +291,17 @@ free:
 
 static int strpolicy(const char *buf, enum port_state_policy *policy)
 {
-	if (!strcmp(buf, "Down\n")) {
+	if (sysfs_streq(buf, "Down")) {
 		*policy = MLX5_POLICY_DOWN;
 		return 0;
 	}
 
-	if (!strcmp(buf, "Up\n")) {
+	if (sysfs_streq(buf, "Up")) {
 		*policy = MLX5_POLICY_UP;
 		return 0;
 	}
 
-	if (!strcmp(buf, "Follow\n")) {
+	if (sysfs_streq(buf, "Follow")) {
 		*policy = MLX5_POLICY_FOLLOW;
 		return 0;
 	}
@@ -306,6 +312,7 @@ static ssize_t policy_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			    const char *buf, size_t count)
 {
 	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_vf_context *vfs_ctx = dev->priv.sriov.vfs_ctx;
 	struct mlx5_hca_vport_context *in;
 	enum port_state_policy policy;
 	int err;
@@ -325,9 +332,12 @@ static ssize_t policy_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	if (err)
 		return err;
 
+	vfs_ctx[g->vf].policy = policy;
+
 	return count;
 }
 
+#ifdef CONFIG_MLX5_ESWITCH
 /* ETH SRIOV SYSFS */
 static ssize_t mac_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			char *buf)
@@ -348,8 +358,8 @@ static ssize_t mac_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	if (err == 6)
 		goto set_mac;
 
-	if (!strncmp(buf, "Random", 6))
-		random_ether_addr(mac);
+	if (sysfs_streq(buf, "Random"))
+		eth_random_addr(mac);
 	else
 		return -EINVAL;
 
@@ -362,23 +372,52 @@ static ssize_t vlan_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			 char *buf)
 {
 	return sprintf(buf,
-		       "usage: write <Vlan:Qos> to set VF Vlan and Qos\n");
+		       "usage: write <Vlan:Qos[:Proto]> to set VF Vlan,"
+		       " Qos, and optionally Vlan Protocol (default 802.1Q)\n");
 }
 
 static ssize_t vlan_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			  const char *buf, size_t count)
 {
 	struct mlx5_core_dev *dev = g->dev;
+	char vproto_ext[5] = {'\0'};
+	__be16 vlan_proto;
 	u16 vlan_id;
 	u8 qos;
 	int err;
 
-	err = sscanf(buf, "%hu:%hhu", &vlan_id, &qos);
-	if (err != 2)
-		return -EINVAL;
+	err = sscanf(buf, "%hu:%hhu:802.%4s", &vlan_id, &qos, vproto_ext);
+	if (err == 3) {
+		if ((strcmp(vproto_ext, "1AD") == 0) ||
+		    (strcmp(vproto_ext, "1ad") == 0))
+			vlan_proto = htons(ETH_P_8021AD);
+		else if ((strcmp(vproto_ext, "1Q") == 0) ||
+			 (strcmp(vproto_ext, "1q") == 0))
+			vlan_proto = htons(ETH_P_8021Q);
+		else
+			return -EINVAL;
+	} else {
+		err = sscanf(buf, "%hu:%hhu", &vlan_id, &qos);
+		if (err != 2)
+			return -EINVAL;
+		vlan_proto = htons(ETH_P_8021Q);
+	}
 
-	err = mlx5_eswitch_set_vport_vlan(dev->priv.eswitch, g->vf + 1, vlan_id, qos);
+	err = mlx5_eswitch_set_vport_vlan(dev->priv.eswitch, g->vf + 1,
+					  vlan_id, qos, vlan_proto);
 	return err ? err : count;
+}
+
+static const char *vlan_proto_str(u16 vlan, u8 qos, __be16 vlan_proto)
+{
+	if (!vlan && !qos)
+		return "N/A";
+
+	switch (vlan_proto) {
+	case htons(ETH_P_8021AD):	return "802.1ad";
+	case htons(ETH_P_8021Q):	return "802.1Q";
+	default:			return "Invalid vlan protocol";
+	}
 }
 
 static ssize_t spoofcheck_show(struct mlx5_sriov_vf *g,
@@ -399,9 +438,9 @@ static ssize_t spoofcheck_store(struct mlx5_sriov_vf *g,
 	bool settings;
 	int err;
 
-	if (!strncmp(buf, "ON", 2))
+	if (sysfs_streq(buf, "ON"))
 		settings = true;
-	else if (!strncmp(buf, "OFF", 3))
+	else if (sysfs_streq(buf, "OFF"))
 		settings = false;
 	else
 		return -EINVAL;
@@ -428,9 +467,9 @@ static ssize_t trust_store(struct mlx5_sriov_vf *g,
 	bool settings;
 	int err;
 
-	if (!strncmp(buf, "ON", 2))
+	if (sysfs_streq(buf, "ON"))
 		settings = true;
-	else if (!strncmp(buf, "OFF", 3))
+	else if (sysfs_streq(buf, "OFF"))
 		settings = false;
 	else
 		return -EINVAL;
@@ -524,9 +563,91 @@ static ssize_t min_tx_rate_store(struct mlx5_sriov_vf *g,
 					  max_tx_rate, min_tx_rate);
 	return err ? err : count;
 }
+
+static ssize_t min_pf_tx_rate_show(struct mlx5_sriov_vf *g,
+				   struct vf_attributes *oa,
+				   char *buf)
+{
+	return sprintf(buf,
+		       "usage: write <Rate (Mbit/s)> to set PF min rate\n");
+}
+
+static ssize_t min_pf_tx_rate_store(struct mlx5_sriov_vf *g,
+				    struct vf_attributes *oa,
+				    const char *buf, size_t count)
+{
+	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
+	u32 min_tx_rate;
+	u32 max_tx_rate;
+	int err;
+
+	mutex_lock(&esw->state_lock);
+	max_tx_rate = esw->vports[g->vf].info.max_rate;
+	mutex_unlock(&esw->state_lock);
+
+	err = sscanf(buf, "%u", &min_tx_rate);
+	if (err != 1)
+		return -EINVAL;
+
+	err = mlx5_eswitch_set_vport_rate(dev->priv.eswitch, g->vf,
+					  max_tx_rate, min_tx_rate);
+	return err ? err : count;
+}
+
 #define _sprintf(p, buf, format, arg...)				\
 	((PAGE_SIZE - (int)(p - buf)) <= 0 ? 0 :			\
 	scnprintf(p, PAGE_SIZE - (int)(p - buf), format, ## arg))
+
+static ssize_t trunk_show(struct mlx5_sriov_vf *g,
+			  struct vf_attributes *oa,
+			  char *buf)
+{
+	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
+	struct mlx5_vport *vport = &esw->vports[g->vf + 1];
+	u16 vlan_id = 0;
+	char *ret = buf;
+
+	mutex_lock(&esw->state_lock);
+	if (!!bitmap_weight(vport->info.vlan_trunk_8021q_bitmap, VLAN_N_VID)) {
+		ret += _sprintf(ret, buf, "Allowed 802.1Q VLANs:");
+		for_each_set_bit(vlan_id, vport->info.vlan_trunk_8021q_bitmap, VLAN_N_VID)
+			ret += _sprintf(ret, buf, " %d", vlan_id);
+		ret += _sprintf(ret, buf, "\n");
+	}
+	mutex_unlock(&esw->state_lock);
+
+	return (ssize_t)(ret - buf);
+}
+
+static ssize_t trunk_store(struct mlx5_sriov_vf *g,
+			   struct vf_attributes *oa,
+			   const char *buf,
+			   size_t count)
+{
+	struct mlx5_core_dev *dev = g->dev;
+	u16 start_vid, end_vid;
+	char op[5];
+	int err;
+
+	err = sscanf(buf, "%4s %hu %hu", op, &start_vid, &end_vid);
+	if (err != 3)
+		return -EINVAL;
+
+	if (!strcmp(op, "add"))
+		err = mlx5_eswitch_add_vport_trunk_range(dev->priv.eswitch,
+							 g->vf + 1,
+							 start_vid, end_vid);
+	else if (!strcmp(op, "rem"))
+		err = mlx5_eswitch_del_vport_trunk_range(dev->priv.eswitch,
+							 g->vf + 1,
+							 start_vid, end_vid);
+	else
+		return -EINVAL;
+
+	return err ? err : count;
+}
 
 static ssize_t config_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			   char *buf)
@@ -548,11 +669,16 @@ static ssize_t config_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	p += _sprintf(p, buf, "MAC        : %pM\n", ivi->mac);
 	p += _sprintf(p, buf, "VLAN       : %d\n", ivi->vlan);
 	p += _sprintf(p, buf, "QoS        : %d\n", ivi->qos);
+	p += _sprintf(p, buf, "VLAN Proto : %s\n",
+		      vlan_proto_str(ivi->vlan, ivi->qos, ivi->vlan_proto));
 	p += _sprintf(p, buf, "SpoofCheck : %s\n", ivi->spoofchk ? "ON" : "OFF");
 	p += _sprintf(p, buf, "Trust      : %s\n", ivi->trusted ? "ON" : "OFF");
-	p += _sprintf(p, buf, "LinkState  : %s\n", policy_str(ivi->link_state));
+	p += _sprintf(p, buf, "LinkState  : %s",   policy_str(ivi->link_state));
 	p += _sprintf(p, buf, "MinTxRate  : %d\n", ivi->min_rate);
 	p += _sprintf(p, buf, "MaxTxRate  : %d\n", ivi->max_rate);
+	p += _sprintf(p, buf, "VGT+       : %s\n",
+		      !!bitmap_weight(ivi->vlan_trunk_8021q_bitmap, VLAN_N_VID) ?
+		      "ON" : "OFF");
 	mutex_unlock(&esw->state_lock);
 
 	return (ssize_t)(p - buf);
@@ -570,6 +696,7 @@ static ssize_t stats_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 {
 	struct mlx5_core_dev *dev = g->dev;
 	struct ifla_vf_stats ifi;
+	struct mlx5_vport_drop_stats stats = {};
 	int err;
 	char *p = buf;
 
@@ -577,12 +704,19 @@ static ssize_t stats_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	if (err)
 		return -EINVAL;
 
+	err = mlx5_eswitch_query_vport_drop_stats(dev, g->vf + 1, &stats);
+	if (err)
+		return -EINVAL;
+
 	p += _sprintf(p, buf, "tx_packets    : %llu\n", ifi.tx_packets);
 	p += _sprintf(p, buf, "tx_bytes      : %llu\n", ifi.tx_bytes);
+	p += _sprintf(p, buf, "tx_dropped    : %llu\n", stats.tx_dropped);
 	p += _sprintf(p, buf, "rx_packets    : %llu\n", ifi.rx_packets);
 	p += _sprintf(p, buf, "rx_bytes      : %llu\n", ifi.rx_bytes);
 	p += _sprintf(p, buf, "rx_broadcast  : %llu\n", ifi.broadcast);
 	p += _sprintf(p, buf, "rx_multicast  : %llu\n", ifi.multicast);
+	p += _sprintf(p, buf, "rx_dropped    : %llu\n", stats.rx_dropped);
+
 	return (ssize_t)(p - buf);
 }
 
@@ -591,6 +725,7 @@ static ssize_t stats_store(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 {
 	return -ENOTSUPP;
 }
+#endif /* CONFIG_MLX5_ESWITCH */
 
 static ssize_t num_vf_store(struct device *device, struct device_attribute *attr,
 			    const char *buf, size_t count)
@@ -634,6 +769,7 @@ VF_ATTR(node);
 VF_ATTR(port);
 VF_ATTR(policy);
 
+#ifdef CONFIG_MLX5_ESWITCH
 VF_ATTR(mac);
 VF_ATTR(vlan);
 VF_ATTR(link_state);
@@ -642,14 +778,8 @@ VF_ATTR(trust);
 VF_ATTR(max_tx_rate);
 VF_ATTR(min_tx_rate);
 VF_ATTR(config);
+VF_ATTR(trunk);
 VF_ATTR(stats);
-
-static struct attribute *vf_ib_attrs[] = {
-	&vf_attr_node.attr,
-	&vf_attr_port.attr,
-	&vf_attr_policy.attr,
-	NULL
-};
 
 static struct attribute *vf_eth_attrs[] = {
 	&vf_attr_node.attr,
@@ -661,18 +791,40 @@ static struct attribute *vf_eth_attrs[] = {
 	&vf_attr_max_tx_rate.attr,
 	&vf_attr_min_tx_rate.attr,
 	&vf_attr_config.attr,
+	&vf_attr_trunk.attr,
 	&vf_attr_stats.attr,
+	NULL
+};
+
+static struct kobj_type vf_type_eth = {
+	.sysfs_ops     = &vf_sysfs_ops,
+	.default_attrs = vf_eth_attrs
+};
+
+static struct vf_attributes pf_attr_min_pf_tx_rate = \
+	__ATTR(min_tx_rate, 0644, min_pf_tx_rate_show, min_pf_tx_rate_store);
+
+static struct attribute *pf_eth_attrs[] = {
+	&pf_attr_min_pf_tx_rate.attr,
+	NULL,
+};
+
+static struct kobj_type pf_type_eth = {
+	.sysfs_ops     = &vf_sysfs_ops,
+	.default_attrs = pf_eth_attrs
+};
+#endif /* CONFIG_MLX5_ESWITCH */
+
+static struct attribute *vf_ib_attrs[] = {
+	&vf_attr_node.attr,
+	&vf_attr_port.attr,
+	&vf_attr_policy.attr,
 	NULL
 };
 
 static struct kobj_type vf_type_ib = {
 	.sysfs_ops     = &vf_sysfs_ops,
 	.default_attrs = vf_ib_attrs
-};
-
-static struct kobj_type vf_type_eth = {
-	.sysfs_ops     = &vf_sysfs_ops,
-	.default_attrs = vf_eth_attrs
 };
 
 static struct device_attribute *mlx5_class_attributes[] = {
@@ -725,12 +877,14 @@ int mlx5_create_vfs_sysfs(struct mlx5_core_dev *dev, int num_vfs)
 	int err;
 	int vf;
 
+#ifdef CONFIG_MLX5_ESWITCH
 	if (MLX5_CAP_GEN(dev, port_type) == MLX5_CAP_PORT_TYPE_ETH)
 		sysfs = &vf_type_eth;
 	else
+#endif
 		sysfs = &vf_type_ib;
 
-	sriov->vfs = kcalloc(num_vfs, sizeof(*sriov->vfs), GFP_KERNEL);
+	sriov->vfs = kcalloc(num_vfs + 1, sizeof(*sriov->vfs), GFP_KERNEL);
 	if (!sriov->vfs)
 		return -ENOMEM;
 
@@ -745,6 +899,21 @@ int mlx5_create_vfs_sysfs(struct mlx5_core_dev *dev, int num_vfs)
 
 		kobject_uevent(&tmp->kobj, KOBJ_ADD);
 	}
+#ifdef CONFIG_MLX5_ESWITCH
+	if (MLX5_CAP_GEN(dev, port_type) == MLX5_CAP_PORT_TYPE_ETH) {
+		tmp = &sriov->vfs[vf];
+		tmp->dev = dev;
+		tmp->vf = 0;
+		err = kobject_init_and_add(&tmp->kobj, &pf_type_eth,
+					   sriov->config, "%s", "pf");
+		if (err) {
+			--vf;
+			goto err_vf;
+		}
+
+		kobject_uevent(&tmp->kobj, KOBJ_ADD);
+	}
+#endif
 
 	return 0;
 
@@ -765,6 +934,13 @@ void mlx5_destroy_vfs_sysfs(struct mlx5_core_dev *dev)
 	struct mlx5_sriov_vf *tmp;
 	int vf;
 
+#ifdef CONFIG_MLX5_ESWITCH
+	if (MLX5_CAP_GEN(dev, port_type) == MLX5_CAP_PORT_TYPE_ETH &&
+	    sriov->num_vfs) {
+		tmp = &sriov->vfs[sriov->num_vfs];
+		kobject_put(&tmp->kobj);
+	}
+#endif
 	for (vf = 0; vf < sriov->num_vfs; vf++) {
 		tmp = &sriov->vfs[vf];
 		kobject_put(&tmp->kobj);
@@ -773,6 +949,3 @@ void mlx5_destroy_vfs_sysfs(struct mlx5_core_dev *dev)
 	kfree(sriov->vfs);
 	sriov->vfs = NULL;
 }
-
-
-

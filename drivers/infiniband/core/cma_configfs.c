@@ -153,9 +153,6 @@ static ssize_t default_roce_tos_show(struct config_item *item, char *buf)
 	tos = cma_get_default_roce_tos(cma_dev, group->port_num);
 	cma_configfs_params_put(cma_dev);
 
-	if (tos < 0)
-		return tos;
-
 	return sprintf(buf, "%u\n", tos);
 }
 
@@ -176,10 +173,9 @@ static ssize_t default_roce_tos_store(struct config_item *item,
 		return ret;
 
 	ret = cma_set_default_roce_tos(cma_dev, group->port_num, tos);
-
 	cma_configfs_params_put(cma_dev);
 
-	return !ret ? strnlen(buf, count) : ret;
+	return ret ? ret : strnlen(buf, count);
 }
 
 CONFIGFS_ATTR(, default_roce_tos);
@@ -190,7 +186,7 @@ static struct configfs_attribute *cma_configfs_attributes[] = {
 	NULL,
 };
 
-static struct config_item_type cma_port_group_type = {
+static const struct config_item_type cma_port_group_type = {
 	.ct_attrs	= cma_configfs_attributes,
 	.ct_owner	= THIS_MODULE
 };
@@ -267,7 +263,7 @@ static struct configfs_item_operations cma_ports_item_ops = {
 	.release = release_cma_ports_group
 };
 
-static struct config_item_type cma_ports_group_type = {
+static const struct config_item_type cma_ports_group_type = {
 	.ct_item_ops	= &cma_ports_item_ops,
 	.ct_owner	= THIS_MODULE
 };
@@ -276,7 +272,7 @@ static struct configfs_item_operations cma_device_item_ops = {
 	.release = release_cma_dev
 };
 
-static struct config_item_type cma_device_group_type = {
+static const struct config_item_type cma_device_group_type = {
 	.ct_item_ops	= &cma_device_item_ops,
 	.ct_owner	= THIS_MODULE
 };
@@ -341,7 +337,7 @@ static struct configfs_group_operations cma_subsys_group_ops = {
 	.drop_item	= drop_cma_dev,
 };
 
-static struct config_item_type cma_subsys_type = {
+static const struct config_item_type cma_subsys_type = {
 	.ct_group_ops	= &cma_subsys_group_ops,
 	.ct_owner	= THIS_MODULE,
 };

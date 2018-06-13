@@ -52,6 +52,10 @@ fi
 
 OS_IS_BOOTING=0
 last_bootID=$(cat /var/run/mlx_ifc-${i}.bootid 2>/dev/null)
+if [ "X$last_bootID" == "X" ] && [ -e /sys/class/net/${i}/parent ]; then
+    parent=$(cat /sys/class/net/${i}/parent)
+    last_bootID=$(cat /var/run/mlx_ifc-${parent}.bootid 2>/dev/null)
+fi
 bootID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | sed -e 's/-//g')
 echo $bootID > /var/run/mlx_ifc-${i}.bootid
 if [[ "X$last_bootID" == "X" || "X$last_bootID" != "X$bootID" ]]; then
@@ -77,7 +81,7 @@ if [ -f /etc/redhat-release ]; then
     NETWORK_CONF_DIR="/etc/sysconfig/network-scripts"
 elif [ -f /etc/rocks-release ]; then
     NETWORK_CONF_DIR="/etc/sysconfig/network-scripts"
-elif [ -f /etc/SuSE-release ]; then
+elif [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
     NETWORK_CONF_DIR="/etc/sysconfig/network"
 else
     if [ -d /etc/sysconfig/network-scripts ]; then
@@ -122,7 +126,7 @@ set_ipoib_cm()
         if [ $? -eq 0 ]; then
             log_msg "set_ipoib_cm: ${i} connection mode set to connected"
         else
-            log_msg "set_ipoib_cm: Failed to change connection mode for ${i} to connected"
+            log_msg "set_ipoib_cm: Failed to change connection mode for ${i} to connected; this mode might not be supported by this device, please refer to the User Manual."
             RC=1
         fi
     else
@@ -185,6 +189,35 @@ set_RPS_cpu()
     return 0
 }
 
+is_connected_mode_supported()
+{
+    local i=$1
+    shift
+    # Devices that support connected mode:
+    #  "4113", "Connect-IB"
+    #  "4114", "Connect-IBVF"
+    local hca_type=""
+    if [ -e /sys/class/net/${i}/device/infiniband ]; then
+        hca_type=$(cat /sys/class/net/${i}/device/infiniband/*/hca_type 2>/dev/null)
+    elif [ -e /sys/class/net/${i}/parent ]; then
+        # for Pkeys, check their parent
+        local parent=$(cat /sys/class/net/${i}/parent)
+        hca_type=$(cat /sys/class/net/${parent}/device/infiniband/*/hca_type 2>/dev/null)
+    fi
+    if (echo -e "${hca_type}" | grep -qE "4113|4114" 2>/dev/null); then
+        return 0
+    fi
+
+    # For other devices check the ipoib_enhanced module parameter value
+    if (grep -q "^0" /sys/module/ib_ipoib/parameters/ipoib_enhanced 2>/dev/null); then
+        # IPoIB enhanced is disabled, so we can use connected mode
+        return 0
+    fi
+
+    log_msg "INFO: ${i} does not support connected mode"
+    return 1
+}
+
 bring_up()
 {
     local i=$1
@@ -211,18 +244,39 @@ bring_up()
     local SET_CONNECTED_MODE=${CONNECTED_MODE:-$SET_IPOIB_CM}
 
     # relevant for IPoIB interfaces only
-    if (/sbin/ethtool -i ${i} 2>/dev/null | grep -q ib_ipoib); then
+    local is_ipoib_if=0
+    case "$(echo "${i}" | tr '[:upper:]' '[:lower:]')" in
+        *ib* | *infiniband*)
+        is_ipoib_if=1
+        ;;
+    esac
+    if (/sbin/ethtool -i ${i} 2>/dev/null | grep -q "ib_ipoib"); then
+        is_ipoib_if=1
+    fi
+    if [ $is_ipoib_if -eq 1 ]; then
         if [ "X${SET_CONNECTED_MODE}" == "Xyes" ]; then
+            # Ignore RC, just print a warning if we think CM is not supported by the current device.
+            is_connected_mode_supported ${i}
             set_ipoib_cm ${i} ${MTU}
             if [ $? -ne 0 ]; then
                 RC=1
             fi
         elif [ "X${SET_CONNECTED_MODE}" == "Xauto" ]; then
             # handle mlx5 interfaces, assumption: mlx5 interface will be with CM mode.
-            if [ "X$(basename `readlink -f /sys/class/net/${i}/device/driver/module 2>/dev/null` 2>/dev/null)" == "Xmlx5_core" ]; then
-                set_ipoib_cm ${i} ${MTU}
-                if [ $? -ne 0 ]; then
-                    RC=1
+            local drvname=""
+            if [ -e /sys/class/net/${i}/device/driver/module ]; then
+                drvname=$(basename `readlink -f /sys/class/net/${i}/device/driver/module 2>/dev/null` 2>/dev/null)
+            elif [ -e /sys/class/net/${i}/parent ]; then
+                # for Pkeys, check their parent
+                local parent=$(cat /sys/class/net/${i}/parent)
+                drvname=$(basename `readlink -f /sys/class/net/${parent}/device/driver/module 2>/dev/null` 2>/dev/null)
+            fi
+            if [ "X${drvname}" == "Xmlx5_core" ]; then
+                if is_connected_mode_supported ${i} ; then
+                    set_ipoib_cm ${i} ${MTU}
+                    if [ $? -ne 0 ]; then
+                        RC=1
+                    fi
                 fi
             fi
         fi
@@ -361,11 +415,9 @@ case "$(echo ${i} | tr '[:upper:]' '[:lower:]')" in
             done
             } > /dev/null 2>&1
         fi
-
-        bring_up $ch_i
-        if [ $? -eq 1 ]; then
-            log_msg "Couldn't fully configure ${ch_i}, review system logs and restart network service after fixing the issues."
-        fi
+        # Note: no need to call 'bring_up $ch_i' anymore.
+        # There is a new udev rule that calls this script to configure pkeys.
+        # This is needed so that the script can configure also manually created pkeys by users.
     done
     ############################ End of IPoIB (Pkeys) ####################################
     ;;
