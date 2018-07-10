@@ -239,16 +239,6 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 		(IB_ACCESS_LOCAL_WRITE   | IB_ACCESS_REMOTE_WRITE |
 		 IB_ACCESS_REMOTE_ATOMIC | IB_ACCESS_MW_BIND));
 
-	if (peer_mem_flags & IB_PEER_MEM_ALLOW) {
-		struct ib_peer_memory_client *peer_mem_client;
-
-		peer_mem_client =  ib_get_peer_client(context, addr, size, peer_mem_flags,
-					&umem->peer_mem_client_context);
-		if (peer_mem_client)
-			return peer_umem_get(peer_mem_client, umem, addr,
-					dmasync, peer_mem_flags);
-	}
-
 	if (access & IB_ACCESS_ON_DEMAND) {
 		put_pid(umem->pid);
 		ret = ib_umem_odp_get(context, umem, access);
@@ -287,8 +277,8 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 
 	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
-		pr_err("%s: requested to lock(%lu) while limit is(%lu)\n",
-		       __func__, locked, lock_limit);
+		pr_debug("%s: requested to lock(%lu) while limit is(%lu)\n",
+			 __func__, locked, lock_limit);
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -296,16 +286,16 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 	cur_base = addr & PAGE_MASK;
 
 	if (npages == 0 || npages > UINT_MAX) {
-		pr_err("%s: npages(%lu) isn't in the range 1..%u\n", __func__,
-		       npages, UINT_MAX);
+		pr_debug("%s: npages(%lu) isn't in the range 1..%u\n", __func__,
+			 npages, UINT_MAX);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	ret = sg_alloc_table(&umem->sg_head, npages, GFP_KERNEL);
 	if (ret) {
-		pr_err("%s: failed to allocate sg table, npages=%lu\n",
-		       __func__, npages);
+		pr_debug("%s: failed to allocate sg table, npages=%lu\n",
+			 __func__, npages);
 		goto out;
 	}
 
@@ -322,10 +312,10 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 				     gup_flags, page_list, vma_list);
 
 		if (ret < 0) {
-			pr_err("%s: failed to get user pages, nr_pages=%lu, flags=%u\n", __func__,
-			       min_t(unsigned long, npages,
-				     PAGE_SIZE / sizeof(struct page *)),
-			       gup_flags);
+			pr_debug("%s: failed to get user pages, nr_pages=%lu, flags=%u\n", __func__,
+				 min_t(unsigned long, npages,
+				       PAGE_SIZE / sizeof(struct page *)),
+				 gup_flags);
 			goto out;
 		}
 
@@ -363,8 +353,6 @@ out:
 	if (ret < 0) {
 		if (need_release)
 			__ib_umem_release(context->device, umem, 0);
-		put_pid(umem->pid);
-		kfree(umem);
 	} else
 		current->mm->pinned_vm = locked;
 
@@ -372,6 +360,27 @@ out:
 	if (vma_list)
 		free_page((unsigned long) vma_list);
 	free_page((unsigned long) page_list);
+
+	/*
+	 * If the address belongs to peer memory client, then the first
+	 * call to get_user_pages will fail. In this case, try to get
+	 * these pages from the peers.
+	 */
+	if (ret < 0) {
+		if (peer_mem_flags & IB_PEER_MEM_ALLOW) {
+			struct ib_peer_memory_client *peer_mem_client;
+
+			peer_mem_client =  ib_get_peer_client(context, addr, size, peer_mem_flags,
+					&umem->peer_mem_client_context);
+			if (peer_mem_client) {
+				umem->hugetlb = 0;
+				return peer_umem_get(peer_mem_client, umem, addr,
+						dmasync, peer_mem_flags);
+			}
+		}
+		put_pid(umem->pid);
+		kfree(umem)
+	}
 
 	return ret < 0 ? ERR_PTR(ret) : umem;
 }
