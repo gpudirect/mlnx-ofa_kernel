@@ -208,6 +208,19 @@
 	__memtrack_addr;							\
 })
 
+#define kvzalloc_node(sz, flgs, node) ({						\
+	void *__memtrack_addr = NULL;						\
+										\
+	if (memtrack_inject_error(THIS_MODULE, __FILE__, "kvzalloc_node", __func__, __LINE__)) \
+		MEMTRACK_ERROR_INJECTION_MESSAGE(THIS_MODULE, __FILE__, __LINE__, __func__, "kvzalloc_node"); \
+	else									\
+		__memtrack_addr = kvzalloc_node(sz, flgs, node);			\
+	if (__memtrack_addr) {							\
+		memtrack_alloc(MEMTRACK_KMALLOC, 0UL, (unsigned long)(__memtrack_addr), sz, 0UL, 0, __FILE__, __LINE__, flgs); \
+	}									\
+	__memtrack_addr;							\
+})
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 #define kmalloc_array(n, size, flags) kzalloc((n)*(size), flags)
 #else
@@ -733,7 +746,7 @@
 	if (page_addr && !is_non_trackable_alloc_func(__func__)) {		\
 		memtrack_alloc(MEMTRACK_PAGE_ALLOC, 0UL, (unsigned long)(page_addr), (unsigned long)(order), 0UL, 0, __FILE__, __LINE__, GFP_ATOMIC); \
 	}									\
-	page_addr;								\
+	(unsigned long)page_addr;						\
 })
 
 #define get_zeroed_page(gfp_mask) ({						\

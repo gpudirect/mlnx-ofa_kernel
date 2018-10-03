@@ -293,7 +293,6 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 	struct mlx5e_channels new_channels = {};
 	u32 rx_pending_wqes;
 	u32 min_rq_size;
-	u32 max_rq_size;
 	u8 log_rq_size;
 	u8 log_sq_size;
 	u32 num_mtts;
@@ -312,8 +311,6 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 
 	min_rq_size = mlx5e_rx_wqes_to_packets(priv, rq_wq_type,
 					       1 << mlx5_min_log_rq_size(rq_wq_type));
-	max_rq_size = mlx5e_rx_wqes_to_packets(priv, rq_wq_type,
-					       1 << mlx5_max_log_rq_size(rq_wq_type));
 	rx_pending_wqes = mlx5e_packets_to_rx_wqes(priv, rq_wq_type,
 						   param->rx_pending);
 
@@ -321,12 +318,6 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 		netdev_info(priv->netdev, "%s: rx_pending (%d) < min (%d)\n",
 			    __func__, param->rx_pending,
 			    min_rq_size);
-		return -EINVAL;
-	}
-	if (param->rx_pending > max_rq_size) {
-		netdev_info(priv->netdev, "%s: rx_pending (%d) > max (%d)\n",
-			    __func__, param->rx_pending,
-			    max_rq_size);
 		return -EINVAL;
 	}
 
@@ -342,12 +333,6 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 		netdev_info(priv->netdev, "%s: tx_pending (%d) < min (%d)\n",
 			    __func__, param->tx_pending,
 			    1 << MLX5E_PARAMS_MINIMUM_LOG_SQ_SIZE);
-		return -EINVAL;
-	}
-	if (param->tx_pending > (1 << MLX5E_PARAMS_MAXIMUM_LOG_SQ_SIZE)) {
-		netdev_info(priv->netdev, "%s: tx_pending (%d) > max (%d)\n",
-			    __func__, param->tx_pending,
-			    1 << MLX5E_PARAMS_MAXIMUM_LOG_SQ_SIZE);
 		return -EINVAL;
 	}
 
@@ -391,7 +376,7 @@ void mlx5e_ethtool_get_channels(struct mlx5e_priv *priv,
 	ch->max_combined   = priv->profile->max_nch(priv->mdev);
 	ch->combined_count = priv->channels.params.num_channels;
 #ifdef CONFIG_MLX5_EN_SPECIAL_SQ
-	ch->max_other      = MLX5E_MAX_RL_QUEUES;
+	ch->max_other      = priv->mdev->mlx5e_res.max_rl_queues;
 	ch->other_count    = priv->channels.params.num_rl_txqs;
 #endif
 }
@@ -432,9 +417,9 @@ int mlx5e_ethtool_set_channels(struct mlx5e_priv *priv,
 	}
 
 #ifdef CONFIG_MLX5_EN_SPECIAL_SQ
-	if (ch->other_count > MLX5E_MAX_RL_QUEUES) {
+	if (ch->other_count > priv->mdev->mlx5e_res.max_rl_queues) {
 		netdev_info(priv->netdev, "%s: other_count (%d) > max (%d)\n",
-			    __func__, ch->other_count, MLX5E_MAX_RL_QUEUES);
+			    __func__, ch->other_count, priv->mdev->mlx5e_res.max_rl_queues);
 		return -EINVAL;
 	}
 
@@ -494,14 +479,20 @@ static int mlx5e_set_channels(struct net_device *dev,
 int mlx5e_ethtool_get_coalesce(struct mlx5e_priv *priv,
 			       struct ethtool_coalesce *coal)
 {
+	struct net_dim_cq_moder *rx_moder, *tx_moder;
+
 	if (!MLX5_CAP_GEN(priv->mdev, cq_moderation))
 		return -EOPNOTSUPP;
 
-	coal->rx_coalesce_usecs       = priv->channels.params.rx_cq_moderation.usec;
-	coal->rx_max_coalesced_frames = priv->channels.params.rx_cq_moderation.pkts;
-	coal->tx_coalesce_usecs       = priv->channels.params.tx_cq_moderation.usec;
-	coal->tx_max_coalesced_frames = priv->channels.params.tx_cq_moderation.pkts;
-	coal->use_adaptive_rx_coalesce = priv->channels.params.rx_am_enabled;
+	rx_moder = &priv->channels.params.rx_cq_moderation;
+	coal->rx_coalesce_usecs		= rx_moder->usec;
+	coal->rx_max_coalesced_frames	= rx_moder->pkts;
+	coal->use_adaptive_rx_coalesce	= priv->channels.params.rx_dim_enabled;
+
+	tx_moder = &priv->channels.params.tx_cq_moderation;
+	coal->tx_coalesce_usecs		= tx_moder->usec;
+	coal->tx_max_coalesced_frames	= tx_moder->pkts;
+	coal->use_adaptive_tx_coalesce	= priv->channels.params.tx_dim_enabled;
 
 	return 0;
 }
@@ -540,6 +531,7 @@ mlx5e_set_priv_channels_coalesce(struct mlx5e_priv *priv, struct ethtool_coalesc
 int mlx5e_ethtool_set_coalesce(struct mlx5e_priv *priv,
 			       struct ethtool_coalesce *coal)
 {
+	struct net_dim_cq_moder *rx_moder, *tx_moder;
 	struct mlx5_core_dev *mdev = priv->mdev;
 	struct mlx5e_channels new_channels = {};
 	int err = 0;
@@ -551,11 +543,15 @@ int mlx5e_ethtool_set_coalesce(struct mlx5e_priv *priv,
 	mutex_lock(&priv->state_lock);
 	new_channels.params = priv->channels.params;
 
-	new_channels.params.tx_cq_moderation.usec = coal->tx_coalesce_usecs;
-	new_channels.params.tx_cq_moderation.pkts = coal->tx_max_coalesced_frames;
-	new_channels.params.rx_cq_moderation.usec = coal->rx_coalesce_usecs;
-	new_channels.params.rx_cq_moderation.pkts = coal->rx_max_coalesced_frames;
-	new_channels.params.rx_am_enabled         = !!coal->use_adaptive_rx_coalesce;
+	rx_moder          = &new_channels.params.rx_cq_moderation;
+	rx_moder->usec    = coal->rx_coalesce_usecs;
+	rx_moder->pkts    = coal->rx_max_coalesced_frames;
+	new_channels.params.rx_dim_enabled = !!coal->use_adaptive_rx_coalesce;
+
+	tx_moder          = &new_channels.params.tx_cq_moderation;
+	tx_moder->usec    = coal->tx_coalesce_usecs;
+	tx_moder->pkts    = coal->tx_max_coalesced_frames;
+	new_channels.params.tx_dim_enabled = !!coal->use_adaptive_tx_coalesce;
 
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
 		priv->channels.params = new_channels.params;
@@ -563,7 +559,9 @@ int mlx5e_ethtool_set_coalesce(struct mlx5e_priv *priv,
 	}
 	/* we are opened */
 
-	reset = !!coal->use_adaptive_rx_coalesce != priv->channels.params.rx_am_enabled;
+	reset = (!!coal->use_adaptive_rx_coalesce != priv->channels.params.rx_dim_enabled) ||
+		(!!coal->use_adaptive_tx_coalesce != priv->channels.params.tx_dim_enabled);
+
 	if (!reset) {
 		mlx5e_set_priv_channels_coalesce(priv, coal);
 		priv->channels.params = new_channels.params;

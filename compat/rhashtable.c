@@ -14,6 +14,8 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/rhashtable.h>
+
 #ifndef HAVE_RHLTABLE
 
 #include <linux/atomic.h>
@@ -26,7 +28,6 @@
 #include <linux/mm.h>
 #include <linux/jhash.h>
 #include <linux/random.h>
-#include <linux/rhashtable.h>
 #include <linux/err.h>
 #include <linux/export.h>
 
@@ -450,8 +451,10 @@ static void *rhashtable_lookup_one(struct rhashtable *ht,
 		if (!key ||
 		    (ht->p.obj_cmpfn ?
 		     ht->p.obj_cmpfn(&arg, rht_obj(ht, head)) :
-		     rhashtable_compare(&arg, rht_obj(ht, head))))
+		     rhashtable_compare(&arg, rht_obj(ht, head)))) {
+			pprev = &head->next;
 			continue;
+		}
 
 		if (!ht->rhlist)
 			return rht_obj(ht, head);

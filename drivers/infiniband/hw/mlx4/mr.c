@@ -346,7 +346,7 @@ int mlx4_ib_umem_calc_optimal_mtt_size(struct ib_umem *umem, u64 start_va,
 	/* Add to the first block the misalignment that it suffers from. */
 	total_len += (first_block_start & ((1ULL << block_shift) - 1ULL));
 	last_block_end = current_block_start + current_block_len;
-	last_block_aligned_end = round_up(last_block_end, 1 << block_shift);
+	last_block_aligned_end = round_up(last_block_end, 1ULL << block_shift);
 	total_len += (last_block_aligned_end - last_block_end);
 
 	if (total_len & ((1ULL << block_shift) - 1ULL))
@@ -466,6 +466,9 @@ struct ib_mr *mlx4_ib_reg_user_mr(struct ib_pd *pd,
 		goto err_mr;
 
 	mr->ibmr.rkey = mr->ibmr.lkey = mr->mmr.key;
+	mr->ibmr.length = length;
+	mr->ibmr.iova = virt_addr;
+	mr->ibmr.page_size = 1U << shift;
 
 	mr->live = 1;
 	mutex_unlock(&mr->lock);

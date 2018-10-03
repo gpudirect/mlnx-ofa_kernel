@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Mellanox Technologies. All rights reserved
+ * Copyright (c) 2018 Mellanox Technologies. All rights reserved
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -35,8 +35,6 @@
 #include <linux/if_link.h>
 #include <linux/etherdevice.h>
 #include <linux/jhash.h>
-
-const char eth_ipoib_driver_version[] = DRV_VERSION" ("DRV_RELDATE")";
 
 #define NEIGH_GC_TASK_TIME (30 * HZ)
 
@@ -197,23 +195,6 @@ int is_mac_info_contain_new_ip(struct parent *parent, u8 *mac, __be32 ip,
 	return found;
 }
 
-static inline int netdev_unset_parent_master(struct net_device *slave,
-					   struct net_device *master)
-{
-	int err = 0;
-
-	ASSERT_RTNL();
-
-	err = netdev_set_master(slave, NULL);
-	if (err)
-		return err;
-
-	slave->priv_flags &= ~(IFF_EIPOIB_VIF);
-	slave->flags &= ~(IFF_SLAVE);
-	return 0;
-}
-
-
 static inline int netdev_set_parent_master(struct net_device *slave,
 					   struct net_device *master)
 {
@@ -224,10 +205,15 @@ static inline int netdev_set_parent_master(struct net_device *slave,
 	err = netdev_set_master(slave, master);
 	if (err)
 		return err;
+	if (master) {
+			slave->priv_flags |= IFF_EIPOIB_VIF;
+			/* deny bonding from enslaving it. */;
+			slave->flags |= IFF_SLAVE;
+	} else {
+		slave->priv_flags &= ~(IFF_EIPOIB_VIF);
+		slave->flags &= ~(IFF_SLAVE);
+	}
 
-	slave->priv_flags |= IFF_EIPOIB_VIF;
-	/* deny bonding from enslaving it. */;
-	slave->flags |= IFF_SLAVE;
 	return 0;
 }
 
@@ -246,6 +232,17 @@ static inline int is_driver_owner(struct net_device *dev, char *name)
 	return 1;
 }
 
+struct net_device *master_upper_dev_get(struct net_device *dev)
+{
+	struct net_device *master;
+
+	rcu_read_lock();
+	master = netdev_master_upper_dev_get_rcu(dev);
+	rcu_read_unlock();
+
+	return (master) ? master : dev;
+}
+
 static inline int is_parent(struct net_device *dev)
 {
 	return is_driver_owner(dev, DRV_NAME);
@@ -258,7 +255,8 @@ static inline int is_parent_mac(struct net_device *dev, u8 *mac)
 
 static inline int __is_slave(struct net_device *dev)
 {
-	return dev->master && is_parent(dev->master);
+	struct net_device *master = master_upper_dev_get(dev);
+	return master && is_parent(master);
 }
 
 static inline int is_slave(struct net_device *dev)
@@ -523,7 +521,9 @@ static void eipoib_reap_neigh(struct work_struct *work)
 }
 
 /* enslave device <slave> to parent device <master> */
-int parent_enslave(struct net_device *parent_dev, struct net_device *slave_dev)
+int parent_enslave(struct net_device *parent_dev,
+		   struct net_device *slave_dev,
+		   struct netlink_ext_ack *extack)
 {
 	struct parent *parent = netdev_priv(parent_dev);
 	struct slave *new_slave = NULL;
@@ -648,7 +648,7 @@ err_close:
 	dev_close(slave_dev);
 
 err_unset_master:
-	netdev_unset_parent_master(slave_dev, parent_dev);
+	netdev_set_parent_master(slave_dev, NULL);
 
 err_free:
 	kfree(new_slave);
@@ -677,7 +677,7 @@ int parent_release_slave(struct net_device *parent_dev,
 
 	/* slave is not a slave or master is not master of this slave */
 	if (!(slave_dev->flags & IFF_SLAVE) ||
-	    (slave_dev->master != parent_dev)) {
+	    (master_upper_dev_get(slave_dev) != parent_dev)) {
 		pr_err("%s cannot release %s.\n",
 		       parent_dev->name, slave_dev->name);
 		return -EINVAL;
@@ -733,7 +733,7 @@ int parent_release_slave(struct net_device *parent_dev,
 
 	destroy_slave_symlinks(parent_dev, slave_dev);
 
-	netdev_unset_parent_master(slave_dev, parent_dev);
+	netdev_set_parent_master(slave_dev, NULL);
 
 	dev_close(slave_dev);
 
@@ -769,8 +769,8 @@ out:
 }
 
 /* -------------------------- Device entry points --------------------------- */
-static struct rtnl_link_stats64 *parent_get_stats(struct net_device *parent_dev,
-						  struct rtnl_link_stats64 *stats)
+void parent_get_stats(struct net_device *parent_dev,
+		      struct rtnl_link_stats64 *stats)
 {
 	struct parent *parent = netdev_priv(parent_dev);
 	struct slave *slave;
@@ -811,8 +811,6 @@ static struct rtnl_link_stats64 *parent_get_stats(struct net_device *parent_dev,
 	}
 
 	rcu_read_unlock_bh();
-
-	return stats;
 }
 
 /* ---------------------------- Main funcs ---------------------------------- */
@@ -1056,7 +1054,7 @@ struct neigh *eipoib_neigh_get(struct slave *slave, const u8 *emac)
 static int neigh_learn(struct slave *slave, struct sk_buff *skb, u8 *remac)
 {
 	struct net_device *dev = slave->dev;
-	struct net_device *parent_dev = dev->master;
+	struct net_device *parent_dev = master_upper_dev_get(dev);
 	struct parent *parent = netdev_priv(parent_dev);
 	int rc;
 	struct learn_neigh_info *learn_neigh;
@@ -1549,6 +1547,7 @@ static struct sk_buff *get_slave_skb_arp(struct slave *slave,
 					 sizeof(struct arphdr));
 	u8 t_addr[ETH_ALEN] = {0};
 	int err = 0;
+	struct net_device *master_dev = master_upper_dev_get(slave->dev);
 	/* mark regular packet handling */
 	*ret = 0;
 
@@ -1559,7 +1558,7 @@ static struct sk_buff *get_slave_skb_arp(struct slave *slave,
 	 * arp request for all these IP's.
 	 */
 	if (skb->protocol == htons(ETH_P_ARP))
-		err = add_emac_ip_info(slave->dev->master, arp_data->arp_sip,
+		err = add_emac_ip_info(master_dev, arp_data->arp_sip,
 				       arp_data->arp_sha, slave->vlan, GFP_ATOMIC);
 	if (err && err != -EINVAL)
 		pr_warn("%s: Failed creating: emac_ip_info for ip: %pI4 err: %d",
@@ -1573,14 +1572,14 @@ static struct sk_buff *get_slave_skb_arp(struct slave *slave,
 	 */
 	arp_data->arp_dha[0] = arp_data->arp_dha[0] & 0xFD;
 	if (htons(ARPOP_REPLY) == (arphdr->ar_op) &&
-	    !memcmp(arp_data->arp_dha, slave->dev->master->dev_addr, ETH_ALEN)) {
+	    !memcmp(arp_data->arp_dha, master_dev->dev_addr, ETH_ALEN)) {
 		/*
 		 * when the source is the parent interface, assumes
 		 * that we are in the middle of live migration process,
 		 * so, we will send gratuitous arp.
 		 */
 		pr_info("%s: Arp packet for parent: %s",
-			__func__, slave->dev->master->name);
+			__func__, master_dev->name);
 		/* create gratuitous ARP on behalf of the guest */
 		nskb = arp_create(ARPOP_REQUEST,
 				  be16_to_cpu(skb->protocol),
@@ -1617,9 +1616,10 @@ static void get_slave_skb_arp_by_ip(struct slave *slave,
 	struct sk_buff *nskb = NULL;
 	struct iphdr *iph = ip_hdr(skb);
 	struct ethhdr *ethh = (struct ethhdr *)(skb->data);
+	struct net_device *master_dev = master_upper_dev_get(slave->dev);
 	int ret;
 
-	pr_info("Sending arp on behalf of slave %s, from %pI4"
+	pr_debug("Sending arp on behalf of slave %s, from %pI4"
 		" to %pI4" , slave->dev->name, &(iph->saddr),
 		&(iph->daddr));
 
@@ -1638,8 +1638,8 @@ static void get_slave_skb_arp_by_ip(struct slave *slave,
 		       __func__, slave->dev->name);
 
 	/* add new source IP as served via the driver. */
-	ret = add_emac_ip_info(slave->dev->master, iph->saddr, ethh->h_source,
-			     slave->vlan, GFP_ATOMIC);
+	ret = add_emac_ip_info(master_dev, iph->saddr, ethh->h_source,
+			       slave->vlan, GFP_ATOMIC);
 	if (ret && ret != -EINVAL)
 		pr_warn("%s: Failed creating: emac_ip_info for ip: %pI4 mac: %pM",
 			__func__, &iph->saddr, ethh->h_source);
@@ -1742,7 +1742,7 @@ out:
 static struct sk_buff *get_slave_skb(struct slave *slave, struct sk_buff *skb)
 {
 	struct net_device *dev = slave->dev;
-	struct net_device *parent_dev = dev->master;
+	struct net_device *parent_dev = master_upper_dev_get(dev);
 	struct parent *parent = netdev_priv(parent_dev);
 	struct sk_buff *nskb = NULL;
 	struct ethhdr *ethh = (struct ethhdr *)(skb->data);
@@ -1816,8 +1816,8 @@ static struct sk_buff *get_slave_skb(struct slave *slave, struct sk_buff *skb)
 
 	if ((neigh && nskb == skb) ||
 	    (is_broadcast_ether_addr(ethh->h_dest) && nskb == skb)) {
-		/* ucast & bc for arp done already.*/
-		if (dev_hard_header(nskb, dev, ntohs(skb->protocol), rimac,
+		/* ucast & bc, arp done already, currently support only IPv4 */
+		if (dev_hard_header(nskb, dev, ETH_P_IP, rimac,
 				    dev->dev_addr, nskb->len) < 0) {
 			pr_warn("%s: dev_hard_header failed\n",
 				dev->name);
@@ -1855,9 +1855,10 @@ static struct sk_buff *get_parent_skb_arp(struct slave *slave,
 					  struct sk_buff *skb,
 					  u8 *remac)
 {
-	struct net_device *dev = slave->dev->master;
+	struct net_device *dev = master_upper_dev_get(slave->dev);
 	struct sk_buff *nskb;
 	struct arphdr *arphdr = (struct arphdr *)(skb->data);
+	struct net_device *master_dev = master_upper_dev_get(slave->dev);
 	struct ipoib_arp_data *arp_data = (struct ipoib_arp_data *)
 					(skb->data + sizeof(struct arphdr));
 	u8 *target_hw = slave->emac;
@@ -1868,9 +1869,9 @@ static struct sk_buff *get_parent_skb_arp(struct slave *slave,
 	if (!memcmp(arp_data->arp_sha, slave->dev->broadcast, INFINIBAND_ALEN) &&
 	    !memcmp(arp_data->arp_dha, slave->dev->broadcast, INFINIBAND_ALEN)) {
 		pr_info("%s: ARP with bcast src and dest send from src_hw: %pM\n",
-			__func__, slave->dev->master->dev_addr);
+			__func__, master_dev->dev_addr);
 		/* replace the src with the parent src: */
-		memcpy(local_eth_addr, slave->dev->master->dev_addr, ETH_ALEN);
+		memcpy(local_eth_addr, master_dev->dev_addr, ETH_ALEN);
 		/*
 		 * set local administrated bit,
 		 * that way the bridge will not throws it
@@ -1908,7 +1909,7 @@ static struct sk_buff *get_parent_skb_ip(struct slave *slave,
 static struct sk_buff *get_parent_skb(struct slave *slave,
 				      struct sk_buff *skb, u8 *remac)
 {
-	struct net_device *dev = slave->dev->master;
+	struct net_device *dev = master_upper_dev_get(slave->dev);
 	struct sk_buff *nskb = NULL;
 	struct ethhdr *ethh;
 
@@ -1975,7 +1976,7 @@ int add_vlan_and_send(struct parent *parent, int vlan_tag,
 	int rc;
 
 	if (vlan_tag) {
-		__vlan_hwaccel_put_tag(skb, vlan_tag);
+		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan_tag);
 		++parent->port_stats.rx_vlan;
 	}
 
@@ -1989,7 +1990,8 @@ int add_vlan_and_send(struct parent *parent, int vlan_tag,
 
 static int parent_rx(struct sk_buff *skb, struct slave *slave)
 {
-	struct net_device *parent_dev = skb->dev->master;
+	struct net_device *slave_dev = skb->dev;
+	struct net_device *parent_dev = master_upper_dev_get(slave_dev);
 	struct parent *parent = netdev_priv(parent_dev);
 	struct eipoib_cb_data *data = IPOIB_HANDLER_CB(skb);
 	struct napi_struct *napi =  data->rx.napi;
@@ -2076,7 +2078,7 @@ static void prepare_802_1Q_skb(struct sk_buff *skb)
 	memmove(skb->data + VLAN_HLEN, ethh, ETH_ALEN * 2);
 	skb_pull(skb, VLAN_HLEN);
 	ethh = (struct ethhdr *)skb->data;
-	__vlan_hwaccel_put_tag(skb, vlan);
+	__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan);
 	ethh->h_proto = proto;
 	skb->protocol = proto;
 }
@@ -2291,7 +2293,8 @@ static void parent_set_dev_addr(struct net_device *ibd,
 	memcpy(parent->gid.raw, gid.raw, GID_LEN);
 }
 
-static u16 parent_select_q(struct net_device *dev, struct sk_buff *skb)
+static u16 parent_select_q(struct net_device *dev, struct sk_buff *skb,
+			   void *accel_priv, select_queue_fallback_t fallback)
 {
 	return skb_tx_hash(dev, skb);
 }
@@ -2395,6 +2398,7 @@ static void parent_setup(struct net_device *parent_dev)
 	/* Initialize the device entry points */
 	ether_setup(parent_dev);
 	/* parent_dev->hard_header_len is adjusted later */
+	parent_dev->needed_headroom = INFINIBAND_ALEN;
 	parent_dev->netdev_ops = &parent_netdev_ops;
 	parent_set_ethtool_ops(parent_dev);
 
@@ -2426,6 +2430,7 @@ static struct parent *parent_create(struct net_device *ibd)
 	num_queues = roundup_pow_of_two(num_queues);
 
 	parent_dev = alloc_netdev_mq(sizeof(struct parent), "",
+				     NET_NAME_UNKNOWN,
 				     parent_setup, num_queues);
 	if (!parent_dev) {
 		pr_err("%s failed to alloc netdev!\n", ibd->name);
@@ -2499,13 +2504,12 @@ static void parent_free_all(void)
 /* netdev events handlers */
 static inline int is_ipoib_pif_intf(struct net_device *dev)
 {
-	struct sysfs_dirent *child_sd;
-
+	struct kernfs_node *child_sd;
 	if (ARPHRD_INFINIBAND != dev->type || !dev->dev.kobj.sd)
 		return 0;
 
 	/* if there is the "create_child directory", indicates parent */
-	child_sd = sysfs_get_dirent(dev->dev.kobj.sd, NULL, "create_child");
+	child_sd = sysfs_get_dirent(dev->dev.kobj.sd, "create_child");
 	if (child_sd)
 		return 1;
 
@@ -2543,7 +2547,7 @@ static int parent_master_netdev_event(unsigned long event,
 static int parent_slave_netdev_event(unsigned long event,
 				     struct net_device *slave_dev)
 {
-	struct net_device *parent_dev = slave_dev->master;
+	struct net_device *parent_dev = master_upper_dev_get(slave_dev);
 	struct parent *parent = netdev_priv(parent_dev);
 
 	if (!parent_dev) {
@@ -2682,6 +2686,9 @@ static void __exit mod_exit(void)
 module_init(mod_init);
 module_exit(mod_exit);
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION(DRV_VERSION" ("DRV_RELDATE")");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
+MODULE_VERSION(DRV_VERSION);
 MODULE_DESCRIPTION(DRV_DESCRIPTION ", v" DRV_VERSION);
 MODULE_AUTHOR("Ali Ayoub && Erez Shitrit");

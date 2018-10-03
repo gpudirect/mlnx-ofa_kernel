@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Mellanox Technologies. All rights reserved
+ * Copyright (c) 2018 Mellanox Technologies. All rights reserved
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -300,7 +300,7 @@ static ssize_t parent_store_slaves(struct device *d,
 		pr_info("%s: adding slave %s\n",
 			parent->dev->name, ifname);
 
-		res = parent_enslave(parent->dev, dev);
+		res = parent_enslave(parent->dev, dev, NULL);
 		if (res)
 			ret = res;
 
@@ -472,16 +472,6 @@ static struct attribute *per_parent_attrs[] = {
 	NULL,
 };
 
-/* name spcase  support */
-static const void *eipoib_namespace(struct class *cls,
-				    const struct class_attribute *attr)
-{
-	const struct eipoib_net *eipoib_n =
-		container_of(attr,
-			     struct eipoib_net, class_attr_eipoib_interfaces);
-	return eipoib_n->net;
-}
-
 static struct attribute_group parent_group = {
 	/* per parent sysfs files under: /sys/class/net/<IF>/eth/.. */
 	.name = "eth",
@@ -522,7 +512,6 @@ static struct class_attribute class_attr_eth_ipoib_interfaces = {
 		.mode = S_IWUSR | S_IRUGO,
 	},
 	.show = show_parents,
-	.namespace = eipoib_namespace,
 };
 
 /* per module sysfs file under: /sys/class/net/eth_ipoib_interfaces */
@@ -535,7 +524,8 @@ int mod_create_sysfs(struct eipoib_net *eipoib_n)
 
 	sysfs_attr_init(&eipoib_n->class_attr_eipoib_interfaces.attr);
 
-	rc = netdev_class_create_file(&eipoib_n->class_attr_eipoib_interfaces);
+	rc = netdev_class_create_file_ns(
+		&eipoib_n->class_attr_eipoib_interfaces, eipoib_n->net);
 	if (rc)
 		pr_err("%s failed to create sysfs (rc %d)\n",
 		       eipoib_n->class_attr_eipoib_interfaces.attr.name, rc);
@@ -545,7 +535,8 @@ int mod_create_sysfs(struct eipoib_net *eipoib_n)
 
 void mod_destroy_sysfs(struct eipoib_net *eipoib_n)
 {
-	netdev_class_remove_file(&eipoib_n->class_attr_eipoib_interfaces);
+	netdev_class_remove_file_ns(&eipoib_n->class_attr_eipoib_interfaces,
+				    eipoib_n->net);
 }
 
 int parent_create_sysfs_entry(struct parent *parent)

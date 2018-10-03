@@ -48,5 +48,7 @@
 #define IOCTL_FPGA_IMAGE_SEL _IOW('m', 0x83, enum mlx5_fpga_image)
 /* Query selected and running images */
 #define IOCTL_FPGA_QUERY     _IOR('m', 0x84, struct mlx5_fpga_query *)
+/* Get FPGA cap mailbox */
+#define IOCTL_FPGA_CAP       _IOR('m', 0x85, u32 *)
 
 #endif /* MLX5_UAPI_FPGA_TOOLS_H */

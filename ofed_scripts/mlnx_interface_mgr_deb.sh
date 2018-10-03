@@ -111,6 +111,11 @@ if (grep -w source /etc/network/interfaces 2>/dev/null | grep -qvE "^\s*#" 2>/de
         done
     done
 fi
+use_netplan=0
+if [ ! -x  /sbin/ifup -a -x /usr/sbin/netplan ]; then
+    use_netplan=1
+    conf_files=""
+fi
 
 log_msg()
 {
@@ -153,10 +158,13 @@ set_ipoib_cm()
         log_msg "set_ipoib_cm: cannot write to /sys/class/net/${i}/mode"
         RC=1
     fi
-    /sbin/ip link set ${i} mtu ${mtu}
-    if [ $? -ne 0 ]; then
-        log_msg "set_ipoib_cm: Failed to set mtu for ${i}"
-        RC=1
+
+    if [ $RC -eq 0 ] ; then
+        /sbin/ip link set ${i} mtu ${mtu}
+        if [ $? -ne 0 ]; then
+            log_msg "set_ipoib_cm: Failed to set mtu for ${i}"
+            RC=1
+        fi
     fi
 
     #if the intf was up returns it to
@@ -258,8 +266,6 @@ bring_up()
     fi
     if [ $is_ipoib_if -eq 1 ]; then
         if [ "X${SET_IPOIB_CM}" == "Xyes" ]; then
-            # Ignore RC, just print a warning if we think CM is not supported by the current device.
-            is_connected_mode_supported ${i}
             set_ipoib_cm ${i} ${MTU}
             if [ $? -ne 0 ]; then
                 RC=1
@@ -291,6 +297,12 @@ bring_up()
                 RC=1
             fi
         fi
+    fi
+
+    if [ "$use_netplan" = 1 ]; then
+        # System does not use ifupdown. No use in manually
+        # starting interface.
+        return 0
     fi
 
     if ! (grep -wh ${i} $conf_files 2>/dev/null | grep -qvE "^\s*#" 2>/dev/null); then
@@ -386,12 +398,20 @@ if [ $? -eq 1 ]; then
     log_msg "Couldn't fully configure ${i}, review system logs and restart network service after fixing the issues."
 fi
 
+# call mlnx_conf_mgr.sh for IB interfaces
+case "$(echo "$i" | tr '[:upper:]' '[:lower:]')" in
+    *ib* | *infiniband*)
+    log_msg "Running: /bin/mlnx_conf_mgr.sh ${i}"
+    /bin/mlnx_conf_mgr.sh ${i}
+    ;;
+esac
+
 # Bring up child interfaces if configured.
 for file in $conf_files
 do
     while read _line
     do
-        if [[ ! "$_line" =~ ^# && "$_line" =~ $i\.[0-9]* && "$_line" =~ "iface" ]]
+        if [[ ! "$_line" =~ ^# && "$_line" =~ $i\.[0-9a-fA-F]* && "$_line" =~ "iface" ]]
         then
             ifname=$(echo $_line | cut -f2 -d" ")
 
@@ -429,3 +449,5 @@ do
         fi
     done < "$file"
 done
+
+# vi:ts=4 sts=4 sw=0 expandtab:

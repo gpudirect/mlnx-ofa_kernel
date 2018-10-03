@@ -36,9 +36,9 @@
 
 struct eipoib_cb_data {
 	/*
-	* extra care taken not to collide with the usage done
-	* by the qdisc layer in struct skb cb data.
-	*/
+	 * extra care taken not to collide with the usage done
+	 * by the qdisc layer in struct skb cb data.
+	 */
 	struct qdisc_skb_cb     qdisc_cb;
 	struct { /* must be <= 20 bytes */
 		u32 sqpn;

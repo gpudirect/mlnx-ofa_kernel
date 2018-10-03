@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Mellanox Technologies. All rights reserved
+ * Copyright (c) 2018 Mellanox Technologies. All rights reserved
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -47,10 +47,8 @@
 #include <rdma/e_ipoib.h>
 
 /* macros and definitions */
-#define DRV_VERSION	"3.4-1.0.0"
-#define DRV_RELDATE	"25 Sep 2016"
-extern const char eth_ipoib_driver_version[];
-
+#define DRV_VERSION	"4.4-2.0.7"
+#define DRV_RELDATE	"09 Aug 2018"
 #define DRV_NAME		"eth_ipoib"
 #define SDRV_NAME		"ipoib"
 #define DRV_DESCRIPTION		"IP-over-InfiniBand Para Virtualized Driver"
@@ -247,6 +245,7 @@ extern int eipoib_net_id;
 extern struct list_head parent_dev_list;
 
 /* functions prototypes */
+struct net_device *master_upper_dev_get(struct net_device *dev);
 int mod_create_sysfs(struct eipoib_net *eipoib_n);
 void mod_destroy_sysfs(struct eipoib_net *eipoib_n);
 void parent_destroy_sysfs_entry(struct parent *parent);
@@ -256,7 +255,8 @@ int create_slave_symlinks(struct net_device *master,
 void destroy_slave_symlinks(struct net_device *master,
 			    struct net_device *slave);
 int parent_enslave(struct net_device *parent_dev,
-		   struct net_device *slave_dev);
+		   struct net_device *slave_dev,
+		   struct netlink_ext_ack *extack);
 int parent_release_slave(struct net_device *parent_dev,
 			 struct net_device *slave_dev);
 struct slave *parent_get_vif_cmd(char op, char *ifname, u8 *lemac);

@@ -18,7 +18,7 @@ ib_core-y :=			packer.o ud_header.o verbs.o cq.o rw.o sysfs.o verbs_exp.o \
 				device.o fmr_pool.o cache.o netlink.o peer_mem.o \
 				roce_gid_mgmt.o mr_pool.o addr.o sa_query.o \
 				multicast.o mad.o smi.o agent.o mad_rmpp.o \
-				security.o nldev.o sync_mem.o
+				security.o nldev.o restrack.o sync_mem.o
 
 ib_core-$(CONFIG_INFINIBAND_USER_MEM) += umem.o cmem.o
 ib_core-$(CONFIG_INFINIBAND_ON_DEMAND_PAGING) += umem_odp.o umem_odp_exp.o

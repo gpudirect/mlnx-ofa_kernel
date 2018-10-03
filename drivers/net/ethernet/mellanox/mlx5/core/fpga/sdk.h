@@ -367,4 +367,14 @@ void mlx5_fpga_device_query(struct mlx5_fpga_device *fdev,
  */
 struct device *mlx5_fpga_dev(struct mlx5_fpga_device *fdev);
 
+/**
+ * mlx5_fpga_get_cap() - Returns the FPGA cap mailbox from FW without parsing.
+ * @fdev: The FPGA device
+ * @fpga_caps: Is an array with a length of according to the size of
+ * 			   mlx5_ifc_fpga_cap_bits/32
+ *
+ * Returns a copy of the FPGA caps mailbox and returns it in fpga_caps
+ */
+void mlx5_fpga_get_cap(struct mlx5_fpga_device *fdev, u32 *fpga_caps);
+
 #endif /* MLX5_FPGA_SDK_H */

@@ -8,7 +8,8 @@ mlx5_core-y :=	main.o cmd.o debugfs.o fw.o eq.o uar.o pagealloc.o \
 		fs_counters.o rl.o lag.o dev.o wq.o lib/gid.o lib/clock.o \
 		diag/fs_tracepoint.o qp_exp.o fw_exp.o sriov_sysfs.o mst_dump.o \
 		en_diag.o params.o fs_debugfs.o nvmf.o crdump.o \
-		icmd.o capi.o diag/tracer.o
+		icmd.o capi.o diag/fw_tracer.o diag/diag_cnt.o \
+		eswitch_devlink_compat.o
 
 mlx5_core-$(CONFIG_MLX5_ACCEL) += accel/ipsec.o
 
@@ -16,13 +17,12 @@ mlx5_core-$(CONFIG_MLX5_FPGA) += fpga/cmd.o fpga/core.o fpga/conn.o fpga/sdk.o \
 		fpga/ipsec.o fpga/trans.o fpga/xfer.o
 
 mlx5_core-$(CONFIG_MLX5_CORE_EN) += en_main.o en_common.o en_fs.o en_ethtool.o \
-		en_tx.o en_rx.o en_rx_am.o en_txrx.o en_stats.o vxlan.o en_sysfs.o en_ecn.o \
+		en_tx.o en_rx.o en_dim.o en_txrx.o en_stats.o vxlan.o en_sysfs.o en_ecn.o \
 		en_arfs.o en_fs_ethtool.o en_selftest.o en_debugfs.o en_sniffer.o
 
 mlx5_core-$(CONFIG_MLX5_MPFS) += lib/mpfs.o
 
-mlx5_core-$(CONFIG_MLX5_ESWITCH) += eswitch.o eswitch_offloads.o en_rep.o en_tc.o \
-		eswitch_devlink_compat.o
+mlx5_core-$(CONFIG_MLX5_ESWITCH) += eswitch.o eswitch_offloads.o en_rep.o en_tc.o
 
 mlx5_core-$(CONFIG_MLX5_CORE_EN_DCB) +=  en_dcbnl.o en_port_buffer.o
 

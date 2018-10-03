@@ -218,6 +218,7 @@ enum mlx4_ib_qp_flags {
 	MLX4_IB_QP_MANAGED_SEND = IB_QP_CREATE_MANAGED_SEND,
 	MLX4_IB_QP_MANAGED_RECV = IB_QP_CREATE_MANAGED_RECV,
 	MLX4_IB_QP_NETIF = IB_QP_CREATE_NETIF_QP,
+	MLX4_IB_QP_SCATTER_FCS = IB_QP_CREATE_SCATTER_FCS,
 
 	/* Mellanox specific flags start from IB_QP_CREATE_RESERVED_START */
 	MLX4_IB_ROCE_V2_GSI_QP = MLX4_IB_QP_CREATE_ROCE_V2_GSI,
@@ -696,12 +697,22 @@ struct mlx4_ib_rss_caps {
 	__u8 reserved[7];
 };
 
+struct mlx4_ib_tso_caps {
+	__u32 max_tso; /* Maximum tso payload size in bytes */
+	/* Corresponding bit will be set if qp type from
+	 * 'enum ib_qp_type' is supported.
+	 */
+	__u32 supported_qpts;
+};
+
 struct mlx4_uverbs_ex_query_device_resp {
 	__u32			comp_mask;
 	__u32			response_length;
 	__u64			hca_core_clock_offset;
 	__u32			max_inl_recv_sz;
+	__u32			reserved;
 	struct mlx4_ib_rss_caps	rss_caps;
+	struct mlx4_ib_tso_caps tso_caps;
 };
 
 static inline struct mlx4_ib_dev *to_mdev(struct ib_device *ibdev)
@@ -967,7 +978,7 @@ int mlx4_ib_rereg_user_mr(struct ib_mr *mr, int flags,
 			  int mr_access_flags, struct ib_pd *pd,
 			  struct ib_udata *udata);
 int mlx4_ib_gid_index_to_real_index(struct mlx4_ib_dev *ibdev,
-				    u8 port_num, int index);
+				    const struct ib_gid_attr *attr);
 
 void mlx4_sched_ib_sl2vl_update_work(struct mlx4_ib_dev *ibdev,
 				     int port);

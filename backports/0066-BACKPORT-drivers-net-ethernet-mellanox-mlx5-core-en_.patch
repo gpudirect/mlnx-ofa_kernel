@@ -3,8 +3,8 @@ Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/en_sysfs.c
 
 Change-Id: I8eaf0d3483101825b78752e2daba24e10b6e21ac
 ---
- drivers/net/ethernet/mellanox/mlx5/core/en_sysfs.c | 25 ++++++++++++++++++++--
- 1 file changed, 23 insertions(+), 2 deletions(-)
+ drivers/net/ethernet/mellanox/mlx5/core/en_sysfs.c | 29 ++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
 
 --- a/drivers/net/ethernet/mellanox/mlx5/core/en_sysfs.c
 +++ b/drivers/net/ethernet/mellanox/mlx5/core/en_sysfs.c
@@ -35,7 +35,7 @@ Change-Id: I8eaf0d3483101825b78752e2daba24e10b6e21ac
  {
  	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
  	struct net_device *netdev = priv->netdev;
-+#ifdef HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE
++#if defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) || defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
  	struct tc_mqprio_qopt mqprio = { 0 };
 +#endif
  	int tc_num;
@@ -45,7 +45,7 @@ Change-Id: I8eaf0d3483101825b78752e2daba24e10b6e21ac
  		return -EINVAL;
  
  	rtnl_lock();
-+#ifdef HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE
++#if defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) || defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
  	mqprio.num_tc = tc_num;
  	mlx5e_setup_tc_mqprio(netdev, &mqprio);
 +#else
@@ -121,16 +121,34 @@ Change-Id: I8eaf0d3483101825b78752e2daba24e10b6e21ac
  
  	return err;
  }
-@@ -1087,7 +1108,7 @@ void mlx5e_sysfs_remove(struct net_devic
+@@ -1050,6 +1071,8 @@ int mlx5e_sysfs_create(struct net_device
+ 	if (err)
+ 		goto remove_debug_group;
+ 
++	mlx5_eswitch_compat_sysfs_init(dev);
++
+ 	return 0;
+ 
+ remove_debug_group:
+@@ -1074,6 +1097,8 @@ void mlx5e_sysfs_remove(struct net_devic
+ 	struct mlx5e_priv *priv = netdev_priv(dev);
+ 	int i;
+ 
++	mlx5_eswitch_compat_sysfs_cleanup(dev);
++
+ 	sysfs_remove_group(&dev->dev.kobj, &qos_group);
+ 	sysfs_remove_group(&dev->dev.kobj, &debug_group);
+ 	sysfs_remove_group(&dev->dev.kobj, &settings_group);
+@@ -1087,7 +1112,7 @@ void mlx5e_sysfs_remove(struct net_devic
  	kobject_put(priv->ecn_root_kobj);
  }
  
 -#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
-+#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && defined(HAVE_NDO_SET_TX_MAXRATE)
++#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && (defined(HAVE_NDO_SET_TX_MAXRATE) || defined(HAVE_NDO_SET_TX_MAXRATE_EXTENDED))
  enum {
  	ATTR_DST_IP,
  	ATTR_DST_PORT,
-@@ -1245,4 +1266,4 @@ void mlx5e_rl_remove_sysfs(struct mlx5e_
+@@ -1245,4 +1270,4 @@ void mlx5e_rl_remove_sysfs(struct mlx5e_
  		sysfs_remove_group(&txq->kobj, &mlx5e_txmap_attr);
  	}
  }

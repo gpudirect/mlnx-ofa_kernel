@@ -230,7 +230,7 @@ EXPORT_SYMBOL(rdma_port_get_link_layer);
  * memory operations.
  */
 struct ib_pd *__ib_alloc_pd(struct ib_device *device, unsigned int flags,
-		const char *caller)
+			    const char *caller, bool skip_tracking)
 {
 	struct ib_pd *pd;
 	int mr_access_flags = 0;
@@ -254,6 +254,14 @@ struct ib_pd *__ib_alloc_pd(struct ib_device *device, unsigned int flags,
 		pr_warn("%s: enabling unsafe global rkey\n", caller);
 		mr_access_flags |= IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE;
 	}
+
+	pd->res.type = RDMA_RESTRACK_PD;
+	pd->res.kern_name = caller;
+
+	if (skip_tracking)
+		rdma_restrack_dontrack(&pd->res);
+	else
+		rdma_restrack_add(&pd->res);
 
 	if (mr_access_flags) {
 		struct ib_mr *mr;
@@ -304,6 +312,7 @@ void ib_dealloc_pd(struct ib_pd *pd)
 	   requires the caller to guarantee we can't race here. */
 	WARN_ON(atomic_read(&pd->usecnt));
 
+	rdma_restrack_del(&pd->res);
 	/* Making delalloc_pd a void return is a WIP, no driver should return
 	   an error here. */
 	ret = pd->device->dealloc_pd(pd);
@@ -312,6 +321,152 @@ void ib_dealloc_pd(struct ib_pd *pd)
 EXPORT_SYMBOL(ib_dealloc_pd);
 
 /* Address handles */
+
+/**
+ * rdma_copy_ah_attr - Copy rdma ah attribute from source to destination.
+ * @dest:       Pointer to destination ah_attr. Contents of the destination
+ *              pointer is assumed to be invalid and attribute are overwritten.
+ * @src:        Pointer to source ah_attr.
+ */
+void rdma_copy_ah_attr(struct rdma_ah_attr *dest,
+		       const struct rdma_ah_attr *src)
+{
+	*dest = *src;
+	if (dest->grh.sgid_attr)
+		rdma_hold_gid_attr(dest->grh.sgid_attr);
+}
+EXPORT_SYMBOL(rdma_copy_ah_attr);
+
+/**
+ * rdma_replace_ah_attr - Replace valid ah_attr with new new one.
+ * @old:        Pointer to existing ah_attr which needs to be replaced.
+ *              old is assumed to be valid or zero'd
+ * @new:        Pointer to the new ah_attr.
+ *
+ * rdma_replace_ah_attr() first releases any reference in the old ah_attr if
+ * old the ah_attr is valid; after that it copies the new attribute and holds
+ * the reference to the replaced ah_attr.
+ */
+void rdma_replace_ah_attr(struct rdma_ah_attr *old,
+			  const struct rdma_ah_attr *new)
+{
+	rdma_destroy_ah_attr(old);
+	*old = *new;
+	if (old->grh.sgid_attr)
+		rdma_hold_gid_attr(old->grh.sgid_attr);
+}
+EXPORT_SYMBOL(rdma_replace_ah_attr);
+
+/**
+ * rdma_move_ah_attr - Move ah_attr pointed by source to destination.
+ * @dest:       Pointer to destination ah_attr to copy to.
+ *              dest is assumed to be valid or zero'd
+ * @src:        Pointer to the new ah_attr.
+ *
+ * rdma_move_ah_attr() first releases any reference in the destination ah_attr
+ * if it is valid. This also transfers ownership of internal references from
+ * src to dest, making src invalid in the process. No new reference of the src
+ * ah_attr is taken.
+ */
+void rdma_move_ah_attr(struct rdma_ah_attr *dest, struct rdma_ah_attr *src)
+{
+	rdma_destroy_ah_attr(dest);
+	*dest = *src;
+	src->grh.sgid_attr = NULL;
+}
+EXPORT_SYMBOL(rdma_move_ah_attr);
+
+/*
+ * Validate that the rdma_ah_attr is valid for the device before passing it
+ * off to the driver.
+ */
+static int rdma_check_ah_attr(struct ib_device *device,
+			      struct rdma_ah_attr *ah_attr)
+{
+	if (!rdma_is_port_valid(device, ah_attr->port_num))
+		return -EINVAL;
+
+	if (ah_attr->type == RDMA_AH_ATTR_TYPE_ROCE &&
+	    !(ah_attr->ah_flags & IB_AH_GRH))
+		return -EINVAL;
+
+	if (ah_attr->grh.sgid_attr) {
+		/*
+		 * Make sure the passed sgid_attr is consistent with the
+		 * parameters
+		 */
+		if (ah_attr->grh.sgid_attr->index != ah_attr->grh.sgid_index ||
+		    ah_attr->grh.sgid_attr->port_num != ah_attr->port_num)
+			return -EINVAL;
+	}
+	return 0;
+}
+
+/*
+ * If the ah requires a GRH then ensure that sgid_attr pointer is filled in.
+ * On success the caller is responsible to call rdma_unfill_sgid_attr().
+ */
+static int rdma_fill_sgid_attr(struct ib_device *device,
+			       struct rdma_ah_attr *ah_attr,
+			       const struct ib_gid_attr **old_sgid_attr)
+{
+	const struct ib_gid_attr *sgid_attr;
+	struct ib_global_route *grh;
+	int ret;
+
+	*old_sgid_attr = ah_attr->grh.sgid_attr;
+
+	ret = rdma_check_ah_attr(device, ah_attr);
+	if (ret)
+		return ret;
+
+	if (!(ah_attr->ah_flags & IB_AH_GRH))
+		return 0;
+
+	grh = rdma_ah_retrieve_grh(ah_attr);
+	if (grh->sgid_attr)
+		return 0;
+
+	sgid_attr =
+		rdma_get_gid_attr(device, ah_attr->port_num, grh->sgid_index);
+	if (IS_ERR(sgid_attr))
+		return PTR_ERR(sgid_attr);
+
+	/* Move ownerhip of the kref into the ah_attr */
+	grh->sgid_attr = sgid_attr;
+	return 0;
+}
+
+static void rdma_unfill_sgid_attr(struct rdma_ah_attr *ah_attr,
+				  const struct ib_gid_attr *old_sgid_attr)
+{
+	/*
+	 * Fill didn't change anything, the caller retains ownership of
+	 * whatever it passed
+	 */
+	if (ah_attr->grh.sgid_attr == old_sgid_attr)
+		return;
+
+	/*
+	 * Otherwise, we need to undo what rdma_fill_sgid_attr so the caller
+	 * doesn't see any change in the rdma_ah_attr. If we get here
+	 * old_sgid_attr is NULL.
+	 */
+	rdma_destroy_ah_attr(ah_attr);
+}
+
+static const struct ib_gid_attr *
+rdma_update_sgid_attr(struct rdma_ah_attr *ah_attr,
+		      const struct ib_gid_attr *old_attr)
+{
+	if (old_attr)
+		rdma_put_gid_attr(old_attr);
+	if (ah_attr->ah_flags & IB_AH_GRH) {
+		rdma_hold_gid_attr(ah_attr->grh.sgid_attr);
+		return ah_attr->grh.sgid_attr;
+	}
+	return NULL;
+}
 
 static struct ib_ah *_rdma_create_ah(struct ib_pd *pd,
 				     struct rdma_ah_attr *ah_attr,
@@ -326,15 +481,38 @@ static struct ib_ah *_rdma_create_ah(struct ib_pd *pd,
 		ah->pd      = pd;
 		ah->uobject = NULL;
 		ah->type    = ah_attr->type;
+		ah->sgid_attr = rdma_update_sgid_attr(ah_attr, NULL);
+
 		atomic_inc(&pd->usecnt);
 	}
 
 	return ah;
 }
 
+/**
+ * rdma_create_ah - Creates an address handle for the
+ * given address vector.
+ * @pd: The protection domain associated with the address handle.
+ * @ah_attr: The attributes of the address vector.
+ *
+ * It returns 0 on success and returns appropriate error code on error.
+ * The address handle is used to reference a local or global destination
+ * in all UD QP post sends.
+ */
 struct ib_ah *rdma_create_ah(struct ib_pd *pd, struct rdma_ah_attr *ah_attr)
 {
-	return _rdma_create_ah(pd, ah_attr, NULL);
+	const struct ib_gid_attr *old_sgid_attr;
+	struct ib_ah *ah;
+	int ret;
+
+	ret = rdma_fill_sgid_attr(pd->device, ah_attr, &old_sgid_attr);
+	if (ret)
+		return ERR_PTR(ret);
+
+	ah = _rdma_create_ah(pd, ah_attr, NULL);
+
+	rdma_unfill_sgid_attr(ah_attr, old_sgid_attr);
+	return ah;
 }
 EXPORT_SYMBOL(rdma_create_ah);
 
@@ -355,15 +533,27 @@ struct ib_ah *rdma_create_user_ah(struct ib_pd *pd,
 				  struct rdma_ah_attr *ah_attr,
 				  struct ib_udata *udata)
 {
+	const struct ib_gid_attr *old_sgid_attr;
+	struct ib_ah *ah;
 	int err;
+
+	err = rdma_fill_sgid_attr(pd->device, ah_attr, &old_sgid_attr);
+	if (err)
+		return ERR_PTR(err);
 
 	if (ah_attr->type == RDMA_AH_ATTR_TYPE_ROCE) {
 		err = ib_resolve_eth_dmac(pd->device, ah_attr);
-		if (err)
-			return ERR_PTR(err);
+		if (err) {
+			ah = ERR_PTR(err);
+			goto out;
+		}
 	}
 
-	return _rdma_create_ah(pd, ah_attr, udata);
+	ah = _rdma_create_ah(pd, ah_attr, udata);
+
+out:
+	rdma_unfill_sgid_attr(ah_attr, old_sgid_attr);
+	return ah;
 }
 EXPORT_SYMBOL(rdma_create_user_ah);
 
@@ -429,8 +619,7 @@ static bool find_gid_index(const union ib_gid *gid,
 			   const struct ib_gid_attr *gid_attr,
 			   void *context)
 {
-	struct find_gid_index_context *ctx =
-		(struct find_gid_index_context *)context;
+	struct find_gid_index_context *ctx = context;
 
 	if (ctx->gid_type != gid_attr->gid_type)
 		return false;
@@ -443,16 +632,16 @@ static bool find_gid_index(const union ib_gid *gid,
 	return true;
 }
 
-static int get_sgid_index_from_eth(struct ib_device *device, u8 port_num,
-				   u16 vlan_id, const union ib_gid *sgid,
-				   enum ib_gid_type gid_type,
-				   u16 *gid_index)
+static const struct ib_gid_attr *
+get_sgid_attr_from_eth(struct ib_device *device, u8 port_num,
+		       u16 vlan_id, const union ib_gid *sgid,
+		       enum ib_gid_type gid_type)
 {
 	struct find_gid_index_context context = {.vlan_id = vlan_id,
 						 .gid_type = gid_type};
 
-	return ib_find_gid_by_filter(device, sgid, port_num, find_gid_index,
-				     &context, gid_index);
+	return rdma_find_gid_by_filter(device, sgid, port_num, find_gid_index,
+				       &context);
 }
 
 int ib_get_gids_from_rdma_hdr(const union rdma_network_hdr *hdr,
@@ -496,46 +685,31 @@ EXPORT_SYMBOL(ib_get_gids_from_rdma_hdr);
 static int ib_resolve_unicast_gid_dmac(struct ib_device *device,
 				       struct rdma_ah_attr *ah_attr)
 {
-	struct ib_gid_attr sgid_attr;
-	struct ib_global_route *grh;
+	struct ib_global_route *grh = rdma_ah_retrieve_grh(ah_attr);
+	const struct ib_gid_attr *sgid_attr = grh->sgid_attr;
 	int hop_limit = 0xff;
-	union ib_gid sgid;
-	int ret;
-
-	grh = rdma_ah_retrieve_grh(ah_attr);
-
-	ret = ib_query_gid(device,
-			   rdma_ah_get_port_num(ah_attr),
-			   grh->sgid_index,
-			   &sgid, &sgid_attr);
-	if (ret || !sgid_attr.ndev) {
-		if (!ret)
-			ret = -ENXIO;
-		return ret;
-	}
+	int ret = 0;
 
 	/* If destination is link local and source GID is RoCEv1,
 	 * IP stack is not used.
 	 */
 	if (rdma_link_local_addr((struct in6_addr *)grh->dgid.raw) &&
-	    sgid_attr.gid_type == IB_GID_TYPE_ROCE) {
+	    sgid_attr->gid_type == IB_GID_TYPE_ROCE) {
 		rdma_get_ll_mac((struct in6_addr *)grh->dgid.raw,
 				ah_attr->roce.dmac);
-		goto done;
+		return ret;
 	}
 
-	ret = rdma_addr_find_l2_eth_by_grh(&sgid, &grh->dgid,
+	ret = rdma_addr_find_l2_eth_by_grh(&sgid_attr->gid, &grh->dgid,
 					   ah_attr->roce.dmac,
-					   sgid_attr.ndev, &hop_limit);
-done:
-	dev_put(sgid_attr.ndev);
+					   sgid_attr, &hop_limit);
 
 	grh->hop_limit = hop_limit;
 	return ret;
 }
 
 /*
- * This function creates ah from the incoming packet.
+ * This function initializes address handle attributes from the incoming packet.
  * Incoming packet has dgid of the receiver node on which this code is
  * getting executed and, sgid contains the GID of the sender.
  *
@@ -543,16 +717,18 @@ done:
  * as sgid and, sgid is used as dgid because sgid contains destinations
  * GID whom to respond to.
  *
+ * On success the caller is responsible to call rdma_destroy_ah_attr on the
+ * attr.
  */
-int ib_init_ah_from_wc(struct ib_device *device, u8 port_num,
-		       const struct ib_wc *wc, const struct ib_grh *grh,
-		       struct rdma_ah_attr *ah_attr)
+int ib_init_ah_attr_from_wc(struct ib_device *device, u8 port_num,
+			    const struct ib_wc *wc, const struct ib_grh *grh,
+			    struct rdma_ah_attr *ah_attr)
 {
 	u32 flow_class;
-	u16 gid_index;
 	int ret;
 	enum rdma_network_type net_type = RDMA_NETWORK_IB;
 	enum ib_gid_type gid_type = IB_GID_TYPE_IB;
+	const struct ib_gid_attr *sgid_attr;
 	int hoplimit = 0xff;
 	union ib_gid dgid;
 	union ib_gid sgid;
@@ -584,82 +760,153 @@ int ib_init_ah_from_wc(struct ib_device *device, u8 port_num,
 		if (!(wc->wc_flags & IB_WC_GRH))
 			return -EPROTOTYPE;
 
-		ret = get_sgid_index_from_eth(device, port_num, vlan_id,
-					      &dgid, gid_type, &gid_index);
-		if (ret)
-			return ret;
+		sgid_attr = get_sgid_attr_from_eth(device, port_num,
+						   vlan_id, &dgid,
+						   gid_type);
+		if (IS_ERR(sgid_attr))
+			return PTR_ERR(sgid_attr);
 
 		flow_class = be32_to_cpu(grh->version_tclass_flow);
 		if (ll_dest_addr && wc->wc_flags & IB_WC_WITH_VLAN &&
 		    wc->wc_flags & IB_WC_WITH_SMAC) {
 			memcpy(ah_attr->roce.dmac, wc->smac, ETH_ALEN);
 			hoplimit = 1;
-			rdma_ah_set_grh(ah_attr, &sgid,
-					flow_class & 0xFFFFF,
-					(u8)gid_index, hoplimit,
-					(flow_class >> 20) & 0xFF);
+			rdma_move_grh_sgid_attr(ah_attr,
+						&sgid,
+						flow_class & 0xFFFFF,
+						hoplimit,
+						(flow_class >> 20) & 0xFF,
+						sgid_attr);
 			return 0;
 		} else {
-			rdma_ah_set_grh(ah_attr, &sgid,
-					flow_class & 0xFFFFF,
-					(u8)gid_index, hoplimit,
-					(flow_class >> 20) & 0xFF);
-			return ib_resolve_unicast_gid_dmac(device, ah_attr);
+			rdma_move_grh_sgid_attr(ah_attr,
+						&sgid,
+						flow_class & 0xFFFFF,
+						hoplimit,
+						(flow_class >> 20) & 0xFF,
+						sgid_attr);
+
+			ret = ib_resolve_unicast_gid_dmac(device, ah_attr);
+			if (ret)
+				rdma_destroy_ah_attr(ah_attr);
+
+			return ret;
 		}
 	} else {
 		rdma_ah_set_dlid(ah_attr, wc->slid);
 		rdma_ah_set_path_bits(ah_attr, wc->dlid_path_bits);
 
-		if (wc->wc_flags & IB_WC_GRH) {
-			if (dgid.global.interface_id != cpu_to_be64(IB_SA_WELL_KNOWN_GUID)) {
-				ret = ib_find_cached_gid_by_port(device, &dgid,
-								 IB_GID_TYPE_IB,
-								 port_num, NULL,
-								 &gid_index);
-				if (ret)
-					return ret;
-			} else {
-				gid_index = 0;
-			}
+		if ((wc->wc_flags & IB_WC_GRH) == 0)
+			return 0;
+		if (dgid.global.interface_id !=
+					cpu_to_be64(IB_SA_WELL_KNOWN_GUID)) {
+			sgid_attr = rdma_find_gid_by_port(
+				device, &dgid, IB_GID_TYPE_IB, port_num, NULL);
+		} else
+			sgid_attr = rdma_get_gid_attr(device, port_num, 0);
 
-			flow_class = be32_to_cpu(grh->version_tclass_flow);
-			rdma_ah_set_grh(ah_attr, &sgid,
+		if (IS_ERR(sgid_attr))
+			return PTR_ERR(sgid_attr);
+
+		flow_class = be32_to_cpu(grh->version_tclass_flow);
+		rdma_move_grh_sgid_attr(ah_attr,
+					&sgid,
 					flow_class & 0xFFFFF,
-					(u8)gid_index, hoplimit,
-					(flow_class >> 20) & 0xFF);
-		}
+					hoplimit,
+					(flow_class >> 20) & 0xFF,
+					sgid_attr);
 		return 0;
 	}
 }
-EXPORT_SYMBOL(ib_init_ah_from_wc);
+EXPORT_SYMBOL(ib_init_ah_attr_from_wc);
+
+/**
+ * rdma_move_grh_sgid_attr - Sets the sgid attribute of GRH, taking ownership
+ * of the reference
+ *
+ * @attr:	Pointer to AH attribute structure
+ * @dgid:	Destination GID
+ * @flow_label:	Flow label
+ * @hop_limit:	Hop limit
+ * @traffic_class: traffic class
+ * @sgid_attr:	Pointer to SGID attribute
+ *
+ * This takes ownership of the sgid_attr reference. The caller must ensure
+ * rdma_destroy_ah_attr() is called before destroying the rdma_ah_attr after
+ * calling this function.
+ */
+void rdma_move_grh_sgid_attr(struct rdma_ah_attr *attr, union ib_gid *dgid,
+			     u32 flow_label, u8 hop_limit, u8 traffic_class,
+			     const struct ib_gid_attr *sgid_attr)
+{
+	rdma_ah_set_grh(attr, dgid, flow_label, sgid_attr->index, hop_limit,
+			traffic_class);
+	attr->grh.sgid_attr = sgid_attr;
+}
+EXPORT_SYMBOL(rdma_move_grh_sgid_attr);
+
+/**
+ * rdma_destroy_ah_attr - Release reference to SGID attribute of
+ * ah attribute.
+ * @ah_attr: Pointer to ah attribute
+ *
+ * Release reference to the SGID attribute of the ah attribute if it is
+ * non NULL. It is safe to call this multiple times, and safe to call it on
+ * a zero initialized ah_attr.
+ */
+void rdma_destroy_ah_attr(struct rdma_ah_attr *ah_attr)
+{
+	if (ah_attr->grh.sgid_attr) {
+		rdma_put_gid_attr(ah_attr->grh.sgid_attr);
+		ah_attr->grh.sgid_attr = NULL;
+	}
+}
+EXPORT_SYMBOL(rdma_destroy_ah_attr);
 
 struct ib_ah *ib_create_ah_from_wc(struct ib_pd *pd, const struct ib_wc *wc,
 				   const struct ib_grh *grh, u8 port_num)
 {
 	struct rdma_ah_attr ah_attr;
+	struct ib_ah *ah;
 	int ret;
 
-	ret = ib_init_ah_from_wc(pd->device, port_num, wc, grh, &ah_attr);
+	ret = ib_init_ah_attr_from_wc(pd->device, port_num, wc, grh, &ah_attr);
 	if (ret)
 		return ERR_PTR(ret);
 
-	return rdma_create_ah(pd, &ah_attr);
+	ah = rdma_create_ah(pd, &ah_attr);
+
+	rdma_destroy_ah_attr(&ah_attr);
+	return ah;
 }
 EXPORT_SYMBOL(ib_create_ah_from_wc);
 
 int rdma_modify_ah(struct ib_ah *ah, struct rdma_ah_attr *ah_attr)
 {
+	const struct ib_gid_attr *old_sgid_attr;
+	int ret;
+
 	if (ah->type != ah_attr->type)
 		return -EINVAL;
 
-	return ah->device->modify_ah ?
+	ret = rdma_fill_sgid_attr(ah->device, ah_attr, &old_sgid_attr);
+	if (ret)
+		return ret;
+
+	ret = ah->device->modify_ah ?
 		ah->device->modify_ah(ah, ah_attr) :
 		-ENOSYS;
+
+	ah->sgid_attr = rdma_update_sgid_attr(ah_attr, ah->sgid_attr);
+	rdma_unfill_sgid_attr(ah_attr, old_sgid_attr);
+	return ret;
 }
 EXPORT_SYMBOL(rdma_modify_ah);
 
 int rdma_query_ah(struct ib_ah *ah, struct rdma_ah_attr *ah_attr)
 {
+	ah_attr->grh.sgid_attr = NULL;
+
 	return ah->device->query_ah ?
 		ah->device->query_ah(ah, ah_attr) :
 		-ENOSYS;
@@ -668,13 +915,17 @@ EXPORT_SYMBOL(rdma_query_ah);
 
 int rdma_destroy_ah(struct ib_ah *ah)
 {
+	const struct ib_gid_attr *sgid_attr = ah->sgid_attr;
 	struct ib_pd *pd;
 	int ret;
 
 	pd = ah->pd;
 	ret = ah->device->destroy_ah(ah);
-	if (!ret)
+	if (!ret) {
 		atomic_dec(&pd->usecnt);
+		if (sgid_attr)
+			rdma_put_gid_attr(sgid_attr);
+	}
 
 	return ret;
 }
@@ -886,7 +1137,7 @@ struct ib_qp *ib_create_qp(struct ib_pd *pd,
 	if (qp_init_attr->cap.max_rdma_ctxs)
 		rdma_rw_init_qp(device, qp_init_attr);
 
-	qp = device->create_qp(pd, qp_init_attr, NULL);
+	qp = _ib_create_qp(device, pd, qp_init_attr, NULL, NULL);
 	if (IS_ERR(qp))
 		return qp;
 
@@ -896,9 +1147,7 @@ struct ib_qp *ib_create_qp(struct ib_pd *pd,
 		return ERR_PTR(ret);
 	}
 
-	qp->device     = device;
 	qp->real_qp    = qp;
-	qp->uobject    = NULL;
 	qp->qp_type    = qp_init_attr->qp_type;
 	qp->rwq_ind_tbl = qp_init_attr->rwq_ind_tbl;
 
@@ -926,7 +1175,6 @@ struct ib_qp *ib_create_qp(struct ib_pd *pd,
 			atomic_inc(&qp_init_attr->srq->usecnt);
 	}
 
-	qp->pd	    = pd;
 	qp->send_cq = qp_init_attr->send_cq;
 	qp->xrcd    = NULL;
 
@@ -1337,19 +1585,22 @@ int ib_modify_qp_is_ok(enum ib_qp_state cur_state, enum ib_qp_state next_state,
 }
 EXPORT_SYMBOL(ib_modify_qp_is_ok);
 
+/**
+ * ib_resolve_eth_dmac - Resolve destination mac address
+ * @device:		Device to consider
+ * @ah_attr:		address handle attribute which describes the
+ *			source and destination parameters
+ * ib_resolve_eth_dmac() resolves destination mac address and L3 hop limit It
+ * returns 0 on success or appropriate error code. It initializes the
+ * necessary ah_attr fields when call is successful.
+ */
 static int ib_resolve_eth_dmac(struct ib_device *device,
 			       struct rdma_ah_attr *ah_attr)
 {
-	int           ret = 0;
-	struct ib_global_route *grh;
+	int ret = 0;
 
-	if (!rdma_is_port_valid(device, rdma_ah_get_port_num(ah_attr)))
-		return -EINVAL;
-
-	if (ah_attr->type != RDMA_AH_ATTR_TYPE_ROCE)
-		return 0;
-
-	grh = rdma_ah_retrieve_grh(ah_attr);
+	if (!rdma_check_gid_user_access(ah_attr->grh.sgid_attr))
+		return -ENODEV;
 
 	if (rdma_is_multicast_addr((struct in6_addr *)ah_attr->grh.dgid.raw)) {
 		if (ipv6_addr_v4mapped((struct in6_addr *)ah_attr->grh.dgid.raw)) {
@@ -1367,9 +1618,105 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
 	return ret;
 }
 
+static bool is_qp_type_connected(const struct ib_qp *qp)
+{
+	return (qp->qp_type == IB_QPT_UC ||
+		qp->qp_type == IB_QPT_RC ||
+		qp->qp_type == IB_QPT_XRC_INI ||
+		qp->qp_type == IB_QPT_XRC_TGT);
+}
+
+/**
+ * IB core internal function to perform QP attributes modification.
+ */
+static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
+			 int attr_mask, struct ib_udata *udata)
+{
+	u8 port = attr_mask & IB_QP_PORT ? attr->port_num : qp->port;
+	const struct ib_gid_attr *old_sgid_attr_av;
+	const struct ib_gid_attr *old_sgid_attr_alt_av;
+	int ret;
+
+	/*
+	 * Today the core code can only handle alternate paths and APM for IB
+	 * ban them in roce mode.
+	 */
+	if (attr_mask & IB_QP_ALT_PATH &&
+	    !rdma_protocol_ib(qp->device, attr->alt_ah_attr.port_num))
+		return -EINVAL;
+
+	if (attr_mask & IB_QP_AV) {
+		ret = rdma_fill_sgid_attr(qp->device, &attr->ah_attr,
+					  &old_sgid_attr_av);
+		if (ret)
+			return ret;
+	}
+	if (attr_mask & IB_QP_ALT_PATH) {
+		/*
+		 * FIXME: This does not track the migration state, so if the
+		 * user loads a new alternate path after the HW has migrated
+		 * from primary->alternate we will keep the wrong
+		 * references. This is OK for IB because the reference
+		 * counting does not serve any functional purpose.
+		 */
+		ret = rdma_fill_sgid_attr(qp->device, &attr->alt_ah_attr,
+					  &old_sgid_attr_alt_av);
+		if (ret)
+			goto out_av;
+	}
+
+	/*
+	 * If the user provided the qp_attr then we have to resolve it. Kernel
+	 * users have to provide already resolved rdma_ah_attr's
+	 */
+	if (udata && (attr_mask & IB_QP_AV) &&
+	    attr->ah_attr.type == RDMA_AH_ATTR_TYPE_ROCE &&
+	    is_qp_type_connected(qp) &&
+	    (qp->qp_type != IB_EXP_QPT_DC_INI)) {
+		ret = ib_resolve_eth_dmac(qp->device, &attr->ah_attr);
+		if (ret)
+			goto out;
+	}
+
+	if (rdma_ib_or_roce(qp->device, port)) {
+		if (attr_mask & IB_QP_RQ_PSN && attr->rq_psn & ~0xffffff) {
+			pr_warn("%s: %s rq_psn overflow, masking to 24 bits\n",
+				__func__, qp->device->name);
+			attr->rq_psn &= 0xffffff;
+		}
+
+		if (attr_mask & IB_QP_SQ_PSN && attr->sq_psn & ~0xffffff) {
+			pr_warn("%s: %s sq_psn overflow, masking to 24 bits\n",
+				__func__, qp->device->name);
+			attr->sq_psn &= 0xffffff;
+		}
+	}
+
+	ret = ib_security_modify_qp(qp, attr, attr_mask, udata);
+	if (ret)
+		goto out;
+
+	if (attr_mask & IB_QP_PORT)
+		qp->port = attr->port_num;
+	if (attr_mask & IB_QP_AV)
+		qp->av_sgid_attr =
+			rdma_update_sgid_attr(&attr->ah_attr, qp->av_sgid_attr);
+	if (attr_mask & IB_QP_ALT_PATH)
+		qp->alt_path_sgid_attr = rdma_update_sgid_attr(
+			&attr->alt_ah_attr, qp->alt_path_sgid_attr);
+
+out:
+	if (attr_mask & IB_QP_ALT_PATH)
+		rdma_unfill_sgid_attr(&attr->alt_ah_attr, old_sgid_attr_alt_av);
+out_av:
+	if (attr_mask & IB_QP_AV)
+		rdma_unfill_sgid_attr(&attr->ah_attr, old_sgid_attr_av);
+	return ret;
+}
+
 /**
  * ib_modify_qp_with_udata - Modifies the attributes for the specified QP.
- * @qp: The QP to modify.
+ * @ib_qp: The QP to modify.
  * @attr: On input, specifies the QP attributes to modify.  On output,
  *   the current values of selected QP attributes are returned.
  * @attr_mask: A bit-mask used to specify which attributes of the QP
@@ -1378,21 +1725,10 @@ static int ib_resolve_eth_dmac(struct ib_device *device,
  *   are being modified.
  * It returns 0 on success and returns appropriate error code on error.
  */
-int ib_modify_qp_with_udata(struct ib_qp *qp, struct ib_qp_attr *attr,
+int ib_modify_qp_with_udata(struct ib_qp *ib_qp, struct ib_qp_attr *attr,
 			    int attr_mask, struct ib_udata *udata)
 {
-	int ret;
-
-	if ((qp->qp_type != IB_EXP_QPT_DC_INI) && (attr_mask & IB_QP_AV)) {
-		ret = ib_resolve_eth_dmac(qp->device, &attr->ah_attr);
-		if (ret)
-			return ret;
-	}
-	ret = ib_security_modify_qp(qp, attr, attr_mask, udata);
-	if (!ret && (attr_mask & IB_QP_PORT))
-		qp->port = attr->port_num;
-
-	return ret;
+	return _ib_modify_qp(ib_qp->real_qp, attr, attr_mask, udata);
 }
 EXPORT_SYMBOL(ib_modify_qp_with_udata);
 
@@ -1455,7 +1791,7 @@ int ib_modify_qp(struct ib_qp *qp,
 		 struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask)
 {
-	return ib_modify_qp_with_udata(qp, qp_attr, qp_attr_mask, NULL);
+	return _ib_modify_qp(qp->real_qp, qp_attr, qp_attr_mask, NULL);
 }
 EXPORT_SYMBOL(ib_modify_qp);
 
@@ -1464,6 +1800,9 @@ int ib_query_qp(struct ib_qp *qp,
 		int qp_attr_mask,
 		struct ib_qp_init_attr *qp_init_attr)
 {
+	qp_attr->ah_attr.grh.sgid_attr = NULL;
+	qp_attr->alt_ah_attr.grh.sgid_attr = NULL;
+
 	return qp->device->query_qp ?
 		qp->device->query_qp(qp->real_qp, qp_attr, qp_attr_mask, qp_init_attr) :
 		-ENOSYS;
@@ -1522,6 +1861,8 @@ static int __ib_destroy_shared_qp(struct ib_qp *qp)
 
 int ib_destroy_qp(struct ib_qp *qp)
 {
+	const struct ib_gid_attr *alt_path_sgid_attr = qp->alt_path_sgid_attr;
+	const struct ib_gid_attr *av_sgid_attr = qp->av_sgid_attr;
 	struct ib_pd *pd;
 	struct ib_cq *scq, *rcq;
 	struct ib_srq *srq;
@@ -1549,8 +1890,13 @@ int ib_destroy_qp(struct ib_qp *qp)
 	if (!qp->uobject)
 		rdma_rw_cleanup_mrs(qp);
 
+	rdma_restrack_del(&qp->res);
 	ret = qp->device->destroy_qp(qp);
 	if (!ret) {
+		if (alt_path_sgid_attr)
+			rdma_put_gid_attr(alt_path_sgid_attr);
+		if (av_sgid_attr)
+			rdma_put_gid_attr(av_sgid_attr);
 		if (pd)
 			atomic_dec(&pd->usecnt);
 		if (scq)
@@ -1591,6 +1937,8 @@ struct ib_cq *ib_create_cq(struct ib_device *device,
 		cq->event_handler = event_handler;
 		cq->cq_context    = cq_context;
 		atomic_set(&cq->usecnt, 0);
+		cq->res.type = RDMA_RESTRACK_CQ;
+		rdma_restrack_add(&cq->res);
 	}
 
 	return cq;
@@ -1609,6 +1957,7 @@ int ib_destroy_cq(struct ib_cq *cq)
 	if (atomic_read(&cq->usecnt))
 		return -EBUSY;
 
+	rdma_restrack_del(&cq->res);
 	return cq->device->destroy_cq(cq);
 }
 EXPORT_SYMBOL(ib_destroy_cq);
@@ -1628,6 +1977,7 @@ int ib_dereg_mr(struct ib_mr *mr)
 	struct ib_dm *dm = mr->dm;
 	int ret;
 
+	rdma_restrack_del(&mr->res);
 	ret = mr->device->dereg_mr(mr);
 	if (!ret) {
 		atomic_dec(&pd->usecnt);
@@ -1668,6 +2018,8 @@ struct ib_mr *ib_alloc_mr(struct ib_pd *pd,
 		mr->uobject = NULL;
 		atomic_inc(&pd->usecnt);
 		mr->need_inval = false;
+		mr->res.type = RDMA_RESTRACK_MR;
+		rdma_restrack_add(&mr->res);
 	}
 
 	return mr;
@@ -1806,7 +2158,7 @@ int ib_detach_mcast(struct ib_qp *qp, union ib_gid *gid, u16 lid)
 }
 EXPORT_SYMBOL(ib_detach_mcast);
 
-struct ib_xrcd *ib_alloc_xrcd(struct ib_device *device)
+struct ib_xrcd *__ib_alloc_xrcd(struct ib_device *device, const char *caller)
 {
 	struct ib_xrcd *xrcd;
 
@@ -1824,7 +2176,7 @@ struct ib_xrcd *ib_alloc_xrcd(struct ib_device *device)
 
 	return xrcd;
 }
-EXPORT_SYMBOL(ib_alloc_xrcd);
+EXPORT_SYMBOL(__ib_alloc_xrcd);
 
 int ib_dealloc_xrcd(struct ib_xrcd *xrcd)
 {

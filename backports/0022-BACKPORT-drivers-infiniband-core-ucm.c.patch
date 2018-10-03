@@ -8,7 +8,7 @@ Change-Id: I5cde0db27c1ac397c274e23a4652020df567cca8
 
 --- a/drivers/infiniband/core/ucm.c
 +++ b/drivers/infiniband/core/ucm.c
-@@ -182,6 +182,9 @@ static void ib_ucm_cleanup_events(struct
+@@ -185,6 +185,9 @@ static void ib_ucm_cleanup_events(struct
  static struct ib_ucm_context *ib_ucm_ctx_alloc(struct ib_ucm_file *file)
  {
  	struct ib_ucm_context *ctx;
@@ -18,7 +18,7 @@ Change-Id: I5cde0db27c1ac397c274e23a4652020df567cca8
  
  	ctx = kzalloc(sizeof *ctx, GFP_KERNEL);
  	if (!ctx)
-@@ -192,11 +195,26 @@ static struct ib_ucm_context *ib_ucm_ctx
+@@ -195,11 +198,26 @@ static struct ib_ucm_context *ib_ucm_ctx
  	ctx->file = file;
  	INIT_LIST_HEAD(&ctx->events);
  

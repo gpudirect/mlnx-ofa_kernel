@@ -176,8 +176,8 @@ static void nvmet_execute_write_zeroes(struct nvmet_req *req)
 
 	sector = le64_to_cpu(write_zeroes->slba) <<
 		(req->ns->blksize_shift - 9);
-	nr_sector = (((sector_t)le16_to_cpu(write_zeroes->length)) <<
-		(req->ns->blksize_shift - 9)) + 1;
+	nr_sector = (((sector_t)le16_to_cpu(write_zeroes->length) + 1) <<
+		(req->ns->blksize_shift - 9));
 
 	if (__blkdev_issue_zeroout(req->ns->bdev, sector, nr_sector,
 				GFP_KERNEL, &bio, 0))
@@ -198,10 +198,8 @@ u16 nvmet_parse_io_cmd(struct nvmet_req *req)
 	u16 ret;
 
 	ret = nvmet_check_ctrl_status(req, cmd);
-	if (unlikely(ret)) {
-		req->ns = NULL;
+	if (unlikely(ret))
 		return ret;
-	}
 
 	req->ns = nvmet_find_namespace(req->sq->ctrl, cmd->rw.nsid);
 	if (unlikely(!req->ns))

@@ -9,6 +9,15 @@ EXTRA_CFLAGS += $(OPENIB_KERNEL_EXTRA_CFLAGS) \
 		-I$(CWD)/drivers/infiniband/hw/mlx4 \
 		-I$(CWD)/drivers/infiniband/hw/mlx5 \
 
+ifneq (,$(CFLAGS_RETPOLINE))
+# This is x86 and kernel has no retpoline support.
+# Now we need to check for gcc support
+ifneq (,$(shell $(CC) --target-help 2>/dev/null | grep -- -mindirect-branch=))
+# The compiler supports it. Set the proper flags (inline or extern):
+subdir-ccflags-y += $(CFLAGS_RETPOLINE)
+endif
+endif
+
 obj-y := compat$(CONFIG_COMPAT_VERSION)/
 obj-$(CONFIG_INFINIBAND)        += drivers/infiniband/
 obj-$(CONFIG_INFINIBAND_IPATH)  += drivers/infiniband/hw/ipath/
@@ -20,6 +29,7 @@ obj-$(CONFIG_MLX4_CORE)         += drivers/net/ethernet/mellanox/mlx4/
 obj-$(CONFIG_MLX5_CORE)         += drivers/net/ethernet/mellanox/mlx5/core/
 obj-$(CONFIG_MLX5_FPGA_TOOLS)   += drivers/net/ethernet/mellanox/mlx5/fpga/
 obj-$(CONFIG_MLXFW)             += drivers/net/ethernet/mellanox/mlxfw/
+obj-$(CONFIG_E_IPOIB)           += drivers/net/eipoib/
 obj-$(CONFIG_RDS)               += net/rds/
 obj-$(CONFIG_MEMTRACK)          += drivers/infiniband/debug/
 obj-$(CONFIG_SUNRPC_XPRT_RDMA)  += net/sunrpc/xprtrdma/
@@ -46,3 +56,9 @@ obj-$(CONFIG_NVME_TARGET_DUMMY) += drivers/nvme/target/
 obj-$(CONFIG_RDMA_RXE_DUMMY)	+= drivers/infiniband/sw/rxe/
 obj-$(CONFIG_SMC)		+= net/smc/
 obj-$(CONFIG_SMC_DIAG)		+= net/smc/
+
+ifneq ($(CONFIG_MLX5_ESWITCH),)
+	obj-$(CONFIG_COMPAT_CLS_FLOWER_MOD)     += net/sched/cls_flower.o
+	obj-$(CONFIG_COMPAT_TCF_TUNNEL_KEY_MOD) += net/sched/act_tunnel_key.o
+	obj-$(CONFIG_COMPAT_TCF_VLAN_MOD)       += net/sched/act_vlan.o
+endif

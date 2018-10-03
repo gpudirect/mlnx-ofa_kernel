@@ -147,7 +147,7 @@ struct sk_buff *gen_igmp_v2_query(struct slave *slave)
 	struct ethhdr  *ethhdr;
 	struct iphdr   *iph;
 	struct igmphdr *igmph;
-	struct net_device *dev = slave->dev->master;
+	struct net_device *dev = master_upper_dev_get(slave->dev);
 	u8 *p_options;
 	int size;
 

@@ -3,8 +3,8 @@ Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
 
 Change-Id: I5fa7a01c2f0825ecbec1b565df557b1efa38f3fe
 ---
- drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c | 32 +++++++++++++++++++++++
- 1 file changed, 32 insertions(+)
+ drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
 
 --- a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
 +++ b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
@@ -34,20 +34,9 @@ Change-Id: I5fa7a01c2f0825ecbec1b565df557b1efa38f3fe
  }
 +#endif
  
- int mlx5e_napi_poll(struct napi_struct *napi, int budget)
+ static void mlx5e_handle_tx_dim(struct mlx5e_txqsq *sq)
  {
-@@ -52,6 +60,10 @@ int mlx5e_napi_poll(struct napi_struct *
- 	int work_done = 0;
- 	int i;
- 
-+#ifndef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
-+	clear_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags);
-+#endif
-+
- 	for (i = 0; i < c->num_tc; i++)
- 		busy |= mlx5e_poll_tx_cq(&c->sq[i].cq, budget);
- 
-@@ -60,8 +72,10 @@ int mlx5e_napi_poll(struct napi_struct *
+@@ -84,8 +92,10 @@ int mlx5e_napi_poll(struct napi_struct *
  		busy |= mlx5e_poll_tx_cq(&c->special_sq[i].cq, budget);
  #endif
  
@@ -58,7 +47,7 @@ Change-Id: I5fa7a01c2f0825ecbec1b565df557b1efa38f3fe
  
  	if (likely(budget)) { /* budget=0 means: don't poll rx rings */
  		work_done = mlx5e_poll_rx_cq(&c->rq.cq, budget);
-@@ -70,15 +84,30 @@ int mlx5e_napi_poll(struct napi_struct *
+@@ -94,12 +104,17 @@ int mlx5e_napi_poll(struct napi_struct *
  
  	busy |= c->rq.post_wqes(&c->rq);
  
@@ -74,28 +63,5 @@ Change-Id: I5fa7a01c2f0825ecbec1b565df557b1efa38f3fe
 +		return budget;
 +#endif
  
-+#ifdef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
- 	if (unlikely(!napi_complete_done(napi, work_done)))
- 		return work_done;
-+#else
-+	napi_complete_done(napi, work_done);
-+
-+	/* avoid losing completion event during/after polling cqs */
-+	if (test_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags)) {
-+		 napi_schedule(napi);
-+		 return work_done;
-+	}
-+#endif
- 
- 	for (i = 0; i < c->num_tc; i++)
- 		mlx5e_cq_arm(&c->sq[i].cq);
-@@ -102,6 +131,9 @@ void mlx5e_completion_event(struct mlx5_
- 	struct mlx5e_cq *cq = container_of(mcq, struct mlx5e_cq, mcq);
- 
- 	cq->event_ctr++;
-+#ifndef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
-+	set_bit(MLX5E_CHANNEL_NAPI_SCHED, &cq->channel->flags);
-+#endif
- 	napi_schedule(cq->napi);
- }
+ 	napi_complete_done(napi, work_done);
  

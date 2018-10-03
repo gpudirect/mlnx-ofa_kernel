@@ -69,6 +69,10 @@ KCFLAGS += -Wno-date-time
 export KCFLAGS
 endif
 
+# Pass CFLAGS_RETPOLINE to the kernel's build system. Even if it was
+# not defined: we test there if it is empty
+export CFLAGS_RETPOLINE
+
 CPP_MAJOR := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f1)
 CPP_MINOR := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f2)
 CPP_PATCH := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f3)

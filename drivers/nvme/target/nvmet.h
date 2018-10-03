@@ -32,6 +32,21 @@
 #define NVMET_ASYNC_EVENTS		4
 #define NVMET_ERROR_LOG_SLOTS		128
 
+
+/*
+ * Supported optional AENs:
+ */
+#define NVMET_AEN_CFG_OPTIONAL \
+	NVME_AEN_CFG_NS_ATTR
+
+/*
+ * Plus mandatory SMART AENs (we'll never send them, but allow enabling them):
+ */
+#define NVMET_AEN_CFG_ALL \
+	(NVME_SMART_CRIT_SPARE | NVME_SMART_CRIT_TEMPERATURE | \
+	 NVME_SMART_CRIT_RELIABILITY | NVME_SMART_CRIT_MEDIA | \
+	 NVME_SMART_CRIT_VOLATILE_MEMORY | NVMET_AEN_CFG_OPTIONAL)
+
 /* Helper Macros when NVMe error is NVME_SC_CONNECT_INVALID_PARAM
  * The 16 bit shift is to set IATTR bit to 1, which means offending
  * offset starts in the data section of connect()
@@ -85,7 +100,7 @@ struct nvmet_sq {
 /**
  * struct nvmet_port -	Common structure to keep port
  *				information for the target.
- * @entry:		List head for holding a list of these elements.
+ * @entry:		Entry into referrals or transport list.
  * @disc_addr:		Address information is stored in a format defined
  *				for a discovery log page entry.
  * @group:		ConfigFS group for this element's folder.
@@ -101,6 +116,7 @@ struct nvmet_port {
 	struct list_head		referrals;
 	void				*priv;
 	bool				enabled;
+	const struct nvmet_fabrics_ops	*ops;
 	bool				offload;
 };
 
@@ -125,6 +141,7 @@ struct nvmet_ctrl {
 	u16			cntlid;
 	u32			kato;
 
+	u32			aen_enabled;
 	struct nvmet_req	*async_event_cmds[NVMET_ASYNC_EVENTS];
 	unsigned int		nr_async_event_cmds;
 	struct list_head	async_events;
@@ -135,7 +152,10 @@ struct nvmet_ctrl {
 	struct delayed_work	ka_work;
 	struct work_struct	fatal_err_work;
 
-	struct nvmet_fabrics_ops *ops;
+	const struct nvmet_fabrics_ops *ops;
+
+	__le32			*changed_ns_list;
+	u32			nr_changed_ns;
 
 	char			subsysnqn[NVMF_NQN_FIELD_LEN];
 	char			hostnqn[NVMF_NQN_FIELD_LEN];
@@ -172,6 +192,15 @@ struct nvmet_subsys {
 
 	bool			offloadble;
 	unsigned int		num_ports;
+	u64 (*offload_subsys_unknown_ns_cmds)(struct nvmet_subsys *subsys);
+	u64 (*offload_ns_read_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_read_blocks)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_blocks)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_inline_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_flush_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_error_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_backend_error_cmds)(struct nvmet_ns *ns);
 };
 
 static inline struct nvmet_subsys *to_subsys(struct config_item *item)
@@ -221,6 +250,9 @@ struct nvmet_fabrics_ops {
 	int (*add_port)(struct nvmet_port *port);
 	void (*remove_port)(struct nvmet_port *port);
 	void (*delete_ctrl)(struct nvmet_ctrl *ctrl);
+	void (*disc_traddr)(struct nvmet_req *req,
+			struct nvmet_port *port, char *traddr);
+	bool (*is_port_active)(struct nvmet_port *port);
 	bool (*peer_to_peer_capable)(struct nvmet_port *port);
 	int (*install_offload_queue)(struct nvmet_ctrl *ctrl,
 				     struct nvmet_req *req);
@@ -230,6 +262,15 @@ struct nvmet_fabrics_ops {
 	void (*disable_offload_ns)(struct nvmet_ctrl *ctrl);
 	unsigned int (*peer_to_peer_sqe_inline_size)(struct nvmet_ctrl *ctrl);
 	u8 (*peer_to_peer_mdts)(struct nvmet_port *port);
+	u64 (*offload_subsys_unknown_ns_cmds)(struct nvmet_subsys *subsys);
+	u64 (*offload_ns_read_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_read_blocks)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_blocks)(struct nvmet_ns *ns);
+	u64 (*offload_ns_write_inline_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_flush_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_error_cmds)(struct nvmet_ns *ns);
+	u64 (*offload_ns_backend_error_cmds)(struct nvmet_ns *ns);
 };
 
 #define NVMET_MAX_INLINE_BIOVEC	8
@@ -252,7 +293,7 @@ struct nvmet_req {
 	struct nvmet_port	*port;
 
 	void (*execute)(struct nvmet_req *req);
-	struct nvmet_fabrics_ops *ops;
+	const struct nvmet_fabrics_ops *ops;
 };
 
 static inline void nvmet_set_status(struct nvmet_req *req, u16 status)
@@ -288,7 +329,7 @@ u16 nvmet_parse_discovery_cmd(struct nvmet_req *req);
 u16 nvmet_parse_fabrics_cmd(struct nvmet_req *req);
 
 bool nvmet_req_init(struct nvmet_req *req, struct nvmet_cq *cq,
-		struct nvmet_sq *sq, struct nvmet_fabrics_ops *ops);
+		struct nvmet_sq *sq, const struct nvmet_fabrics_ops *ops);
 void nvmet_req_uninit(struct nvmet_req *req);
 void nvmet_req_execute(struct nvmet_req *req);
 void nvmet_req_complete(struct nvmet_req *req, u16 status);
@@ -322,11 +363,16 @@ void nvmet_ns_disable(struct nvmet_ns *ns);
 struct nvmet_ns *nvmet_ns_alloc(struct nvmet_subsys *subsys, u32 nsid);
 void nvmet_ns_free(struct nvmet_ns *ns);
 
-int nvmet_register_transport(struct nvmet_fabrics_ops *ops);
-void nvmet_unregister_transport(struct nvmet_fabrics_ops *ops);
+int nvmet_register_transport(const struct nvmet_fabrics_ops *ops);
+void nvmet_unregister_transport(const struct nvmet_fabrics_ops *ops);
 
 int nvmet_enable_port(struct nvmet_port *port, bool offloadble);
 void nvmet_disable_port(struct nvmet_port *port);
+bool nvmet_is_port_active(struct nvmet_port *port);
+
+void nvmet_init_offload_subsystem_port_attrs(struct nvmet_port *port,
+					     struct nvmet_subsys *subsys);
+void nvmet_uninit_offload_subsystem_port_attrs(struct nvmet_subsys *subsys);
 
 void nvmet_referral_enable(struct nvmet_port *parent, struct nvmet_port *port);
 void nvmet_referral_disable(struct nvmet_port *port);
@@ -335,6 +381,7 @@ u16 nvmet_copy_to_sgl(struct nvmet_req *req, off_t off, const void *buf,
 		size_t len);
 u16 nvmet_copy_from_sgl(struct nvmet_req *req, off_t off, void *buf,
 		size_t len);
+u16 nvmet_zero_sgl(struct nvmet_req *req, off_t off, size_t len);
 
 u32 nvmet_get_log_page_len(struct nvme_command *cmd);
 

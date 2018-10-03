@@ -109,7 +109,7 @@ static struct mlx5_fpga_device *mlx5_fpga_device_alloc(void)
 
 	spin_lock_init(&fdev->state_lock);
 	init_completion(&fdev->load_event);
-	fdev->state = MLX5_FPGA_STATUS_NONE;
+	fdev->fdev_state = MLX5_FDEV_STATE_NONE;
 	INIT_LIST_HEAD(&fdev->client_data_list);
 	return fdev;
 }
@@ -126,20 +126,21 @@ static const char *mlx5_fpga_image_name(enum mlx5_fpga_image image)
 	}
 }
 
-static const char *mlx5_fpga_device_name(u32 device)
+static const char *mlx5_fpga_name(u32 fpga_id)
 {
-	switch (device) {
-	case MLX5_FPGA_DEVICE_KU040:
-		return "ku040";
-	case MLX5_FPGA_DEVICE_KU060:
-		return "ku060";
-	case MLX5_FPGA_DEVICE_KU060_2:
-		return "ku060_2";
-	case MLX5_FPGA_DEVICE_UNKNOWN:
-		return "unknown";
-	default:
-		return "unknown";
+	static char ret[32];
+
+	switch (fpga_id) {
+	case MLX5_FPGA_NEWTON:
+		return "Newton";
+	case MLX5_FPGA_EDISON:
+		return "Edison";
+	case MLX5_FPGA_MORSE:
+		return "Morse";
 	}
+
+	snprintf(ret, sizeof(ret), "Unknown %d", fpga_id);
+	return ret;
 }
 
 static int mlx5_fpga_device_load_check(struct mlx5_fpga_device *fdev)
@@ -155,14 +156,19 @@ static int mlx5_fpga_device_load_check(struct mlx5_fpga_device *fdev)
 
 	fdev->last_admin_image = query.admin_image;
 	fdev->last_oper_image = query.oper_image;
+	fdev->image_status = query.image_status;
 
-	mlx5_fpga_dbg(fdev, "Status %u; Admin image %u; Oper image %u\n",
-		      query.status, query.admin_image, query.oper_image);
+	mlx5_fpga_info(fdev, "Status %u; Admin image %u; Oper image %u\n",
+		       query.image_status, query.admin_image, query.oper_image);
 
-	if (query.status != MLX5_FPGA_STATUS_SUCCESS) {
+	/* For Morse project FPGA has no influence to network functionality */
+	if (MLX5_CAP_FPGA(fdev->mdev, fpga_id) == MLX5_FPGA_MORSE)
+		return 0;
+
+	if (query.image_status != MLX5_FPGA_STATUS_SUCCESS) {
 		mlx5_fpga_err(fdev, "%s image failed to load; status %u\n",
 			      mlx5_fpga_image_name(fdev->last_oper_image),
-			      query.status);
+			      query.image_status);
 		return -EIO;
 	}
 
@@ -200,7 +206,7 @@ int mlx5_fpga_device_start(struct mlx5_core_dev *mdev)
 	struct mlx5_fpga_conn *conn;
 	unsigned int max_num_qps;
 	unsigned long flags;
-	u32 fpga_device_id;
+	u32 fpga_id;
 	u32 vid;
 	u16 pid;
 	int err;
@@ -208,18 +214,23 @@ int mlx5_fpga_device_start(struct mlx5_core_dev *mdev)
 	if (!fdev)
 		return 0;
 
-	err = mlx5_fpga_device_load_check(fdev);
-	if (err)
-		goto out;
-
 	err = mlx5_fpga_caps(fdev->mdev);
 	if (err)
 		goto out;
 
-	fpga_device_id = MLX5_CAP_FPGA(fdev->mdev, fpga_device);
-	mlx5_fpga_info(fdev, "%s; %s image, version %u; SBU %06x:%04x version %d\n",
-		       mlx5_fpga_device_name(fpga_device_id),
+	err = mlx5_fpga_device_load_check(fdev);
+	if (err)
+		goto out;
+
+	fpga_id = MLX5_CAP_FPGA(fdev->mdev, fpga_id);
+	mlx5_fpga_info(fdev, "FPGA card %s\n", mlx5_fpga_name(fpga_id));
+
+	if (fpga_id == MLX5_FPGA_MORSE)
+		goto out;
+
+	mlx5_fpga_info(fdev, "%s(%d) image, version %u; SBU %06x:%04x version %d\n",
 		       mlx5_fpga_image_name(fdev->last_oper_image),
+		       fdev->last_oper_image,
 		       MLX5_CAP_FPGA(fdev->mdev, image_version),
 		       MLX5_CAP_FPGA(fdev->mdev, ieee_vendor_id),
 		       MLX5_CAP_FPGA(fdev->mdev, sandbox_product_id),
@@ -289,7 +300,7 @@ err_rsvd_gid:
 	mlx5_core_unreserve_gids(mdev, max_num_qps);
 out:
 	spin_lock_irqsave(&fdev->state_lock, flags);
-	fdev->state = err ? MLX5_FPGA_STATUS_FAILURE : MLX5_FPGA_STATUS_SUCCESS;
+	fdev->fdev_state = err ? MLX5_FDEV_STATE_FAILURE : MLX5_FDEV_STATE_SUCCESS;
 	spin_unlock_irqrestore(&fdev->state_lock, flags);
 	return err;
 }
@@ -334,12 +345,15 @@ void mlx5_fpga_device_stop(struct mlx5_core_dev *mdev)
 	if (!fdev)
 		return;
 
+	if (MLX5_CAP_FPGA(mdev, fpga_id) == MLX5_FPGA_MORSE)
+		return;
+
 	spin_lock_irqsave(&fdev->state_lock, flags);
-	if (fdev->state != MLX5_FPGA_STATUS_SUCCESS) {
+	if (fdev->fdev_state != MLX5_FDEV_STATE_SUCCESS) {
 		spin_unlock_irqrestore(&fdev->state_lock, flags);
 		return;
 	}
-	fdev->state = MLX5_FPGA_STATUS_NONE;
+	fdev->fdev_state = MLX5_FDEV_STATE_NONE;
 	spin_unlock_irqrestore(&fdev->state_lock, flags);
 
 	if (fdev->last_oper_image == MLX5_FPGA_IMAGE_USER) {
@@ -432,12 +446,12 @@ void mlx5_fpga_event(struct mlx5_core_dev *mdev, u8 event, void *data)
 	}
 
 	spin_lock_irqsave(&fdev->state_lock, flags);
-	switch (fdev->state) {
-	case MLX5_FPGA_STATUS_SUCCESS:
+	switch (fdev->fdev_state) {
+	case MLX5_FDEV_STATE_SUCCESS:
 		mlx5_fpga_warn(fdev, "Error %u: %s\n", syndrome, event_name);
 		teardown = true;
 		break;
-	case MLX5_FPGA_STATUS_IN_PROGRESS:
+	case MLX5_FDEV_STATE_IN_PROGRESS:
 		if (syndrome != MLX5_FPGA_ERROR_EVENT_SYNDROME_IMAGE_CHANGED)
 			mlx5_fpga_warn(fdev, "Error while loading %u: %s\n",
 				       syndrome, event_name);
@@ -479,7 +493,7 @@ void mlx5_fpga_client_register(struct mlx5_fpga_client *client)
 			continue;
 
 		spin_lock_irqsave(&fdev->state_lock, flags);
-		call_add = (fdev->state == MLX5_FPGA_STATUS_SUCCESS);
+		call_add = (fdev->fdev_state == MLX5_FDEV_STATE_SUCCESS);
 		spin_unlock_irqrestore(&fdev->state_lock, flags);
 
 		if (call_add) {

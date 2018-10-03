@@ -30,15 +30,16 @@ from optparse import OptionParser
 import libxml2
 import signal
 
-VERSION = "4.0-2.0.0"
+VERSION = "4.4-2.0.7"
 
 # Global parameters
 logger = None
 SCRIPT = os.path.basename(sys.argv[0])
-DESC = "Run daemon for Child nics managment."
+DESC = "Run daemon for Child nics management."
 XEN_MANAGEMENT = "/usr/bin/xenstore"
 VIRSH_MANAGEMENT = "/usr/bin/virsh"
-OVS_MANAGEMENT = "/usr/bin/ovs-vsctl"
+OVS_MANAGEMENT = "/etc/init.d/openvswitch"
+OVS_MANAGEMENT_UBUNTU = "/etc/init.d/openvswitch-switch"
 FORMAT = '%(asctime)s :[%(name)s] %(levelname)s: %(message)s'
 
 NONE_ENV= 0
@@ -140,12 +141,7 @@ def get_mac_by_name(name, namespace = None):
 		cmd = "ip netns list"
 		(rc, out) = commands.getstatusoutput(cmd)
 		if rc == 0 and len(out) != 0:
-		#In RH7.2 and iproute-3.10.0-54.el7_2.1.x86_64 the ip netns list output changed
-		#It is qdhcp-af23ce2f-5d09-4786-a878-0bd8748e034d (id: 0)
-		#we need to remove the (id: 0)
-			all_ns=[]
-			for line in out.splitlines():
-				all_ns.append(line.split()[0])
+			all_ns = out.strip().split()
 			logger.debug("No nic in global space for peer_idx %s, will seek in all namespacess: %s \n" % (name, all_ns))
 			for ns in all_ns:
 				sub_cmd = "/sbin/ip netns exec %s" %ns
@@ -159,7 +155,7 @@ def get_mac_by_name(name, namespace = None):
 		else:
 			logger.warning("Failed to run cmd: %s" % (cmd))
 		return None
-	return out.splitlines()[0].strip().lower()
+	return out.strip().lower()
 
 ################################################################################
 #Abstract metaclass
@@ -435,7 +431,7 @@ class EipoibParent(Parent):
 	def update_files (self, op, update_element, file_name):
 		cmd = "/bin/echo %s%s > %s" % (op, update_element, file_name)
 		self.logger.info("Update %s file" % file_name)
-		self.logger.debug("Runing cmd:%s\n" % cmd)
+		self.logger.debug("Running cmd:%s\n" % cmd)
 		rc = os.system(cmd)
 		if rc:
 			self.logger.warning("cmd failed! (%s)" % cmd)
@@ -515,10 +511,9 @@ class NicObserver(Observer):
 
 	def create_child (self, new_child):
 		cmd = "/bin/echo %s > %s" % (new_child, "/sys/class/net/" + self.parent.physical_port + os.sep + "create_child")
-		self.logger.debug("Runing cmd:%s\n" % cmd)
+		self.logger.debug("Running cmd:%s\n" % cmd)
 		try:
 			(rc, out) = commands.getstatusoutput(cmd)
-			time.sleep(0.2)
 			if rc:
 				self.logger.warning("cmd failed! (%s)" % cmd)
 				return 1
@@ -529,7 +524,7 @@ class NicObserver(Observer):
 
 	def delete_child (self, old_child):
 		cmd = "/bin/echo %s > %s" % (old_child, "/sys/class/net/" + self.parent.physical_port + os.sep + "delete_child")
-		self.logger.debug("Runing cmd:%s\n" % cmd)
+		self.logger.debug("Running cmd:%s\n" % cmd)
 		try:
 			(rc, out) = commands.getstatusoutput(cmd)
 			if rc:
@@ -540,7 +535,7 @@ class NicObserver(Observer):
 			return 2
 		return 0
 
-	#return slave name (ibx.y) of a specific mac addres
+	#return slave name (ibx.y) of a specific mac address
 	def get_slave_by_mac (self, mac, parent, vlan_id = None):
 		vifs = self.parent.get_parent_vifs()
 		for vif in vifs:
@@ -632,7 +627,7 @@ class VirtualNicObserver(NicObserver):
 		peer = None
 		all_ns = None
 		# find the orignal nic index
-		cmd = "ip -o link show |egrep \"%s[@|:]\" | awk -F': ' '{print $1}'" % origin_peer
+		cmd = "ip -o link show |egrep %s: | awk -F': ' '{print $1}'" % origin_peer
 		(rc, out) = commands.getstatusoutput(cmd)
 		if rc or len(out) == 0:
 			self.logger.debug("Failed to get peer index.origin: %s peer_idx %s, cmd: %s" % (peer_if_idx, origin_peer, cmd))
@@ -641,29 +636,27 @@ class VirtualNicObserver(NicObserver):
 
 		cmd = "ip -o link show |egrep ^%s: | awk -F': ' '{print $2}'" % peer_if_idx
 		(rc, out) = commands.getstatusoutput(cmd)
-		if rc or len(out) == 0 or (False == self.verify_peer_belongs_to_peer(origin_peer_idx, out.split("@")[0])):
+		if rc or len(out) == 0 or (False == self.verify_peer_belongs_to_peer(origin_peer_idx, out.strip())):
 			self.logger.debug("Failed to get peer from global namespace peer_idx %s, cmd: %s" % (peer_if_idx, cmd))
 			#try searching in all other namespaces:
 			cmd = "ip netns list"
 			(rc, out) = commands.getstatusoutput(cmd)
 			if rc == 0 and len(out) != 0:
-				all_ns=[]
-				for line in out.splitlines():
-					all_ns.append(line.split()[0])
+				all_ns = out.strip().split()
 				self.logger.debug("No peer in global space for peer_idx %s, will seek in all namespacess: %s \n" % (peer_if_idx, all_ns))
 				for ns in all_ns:
 					cmd = "ip netns exec %s ip link list |egrep ^%s: | awk -F': ' '{print $2}' " % (ns, peer_if_idx)
 					(rc, out) = commands.getstatusoutput(cmd)
-					if rc or len(out) == 0 or (False == self.verify_peer_belongs_to_peer(origin_peer_idx, out.split("@")[0], ns)):
+					if rc or len(out) == 0 or (False == self.verify_peer_belongs_to_peer(origin_peer_idx, out.strip(), ns)):
 						self.logger.debug("No peer in namespace %s for peer_idx %s\n" % (ns, peer_if_idx))
 						continue
-					peer = out.split("@")[0]
+					peer = out.strip()
 					self.logger.debug("Found peer %s in namespace %s for peer_idx %s\n" % (peer, ns, peer_if_idx))
 					return (peer, ns)
 			else:
 				self.logger.warning("Failed to run cmd: %s" % (cmd))
 		else:
-			peer = out.split("@")[0]
+			peer = out.strip()
 		# found in global ns, or didn't find in at any namespace
 		return (peer, None)
 
@@ -797,37 +790,24 @@ class VirtualNicObserver(NicObserver):
 						new_vlan_macs = list(set(vlan_macs) - set(self.known_vlan_macs[vlan_id]))
 						if new_vlan_macs:
 							vlan_if = self.parent.name + "." + vlan_id
-							existing_macs = []
-							for mac in new_vlan_macs:
-								current_slave = self.get_slave_by_mac(mac, vlan_if, vlan_id = vlan_id)
-								if current_slave is not None:
-									existing_macs.append(mac)
-							new_vlan_macs = list(set(new_vlan_macs) - set(existing_macs))
-							if new_vlan_macs:
-								self.logger.debug("Found new vlan macs %s for vlan %s." % (new_vlan_macs, vlan_id))
-								vlan_ob.add_loop(vlan_if, [], new_vlan_macs, [vlan_if])
-								self.known_vlan_macs[vlan_id] = self.known_vlan_macs[vlan_id] + new_vlan_macs
+							self.logger.debug("Found new vlan macs %s for vlan %s." % (new_vlan_macs, vlan_id))
+							vlan_ob.add_loop(vlan_if, [], new_vlan_macs, [vlan_if])
+							self.known_vlan_macs[vlan_id] = self.known_vlan_macs[vlan_id] + new_vlan_macs
 
-					# Remove loop
-					for vlan_id, vlan_macs in self.known_vlan_macs.items():
-						if vlan_id not in vlan_rules:
-							vlan_macs_to_remove = self.known_vlan_macs[vlan_id]
-						else:
-							vlan_macs_to_remove = list(set(self.known_vlan_macs[vlan_id]) - set(vlan_rules[vlan_id]))
-							for mac in vlan_macs:
-								if self.get_slave_by_mac(mac, self.parent.name, vlan_id = vlan_id) is None:
-									vlan_macs_to_remove.append(mac)
-									self.logger.debug("Removing %s from macs of %s" % (mac, vlan_rules[vlan_id]))
-						for mac_to_remove in vlan_macs_to_remove:
-							current_slave = self.get_slave_by_mac(mac_to_remove, self.parent.name, vlan_id = vlan_id)
-							if current_slave is None:
-								if mac_to_remove in self.known_vlan_macs[vlan_id]:
-									self.logger.debug("Removing %s from macs of %s" % (mac_to_remove, vlan_id))
-									self.known_vlan_macs[vlan_id].remove(mac_to_remove)
-								continue
-							self.logger.debug("Need to remove slave: %s of vlan id %s" % (current_slave, vlan_id))
-							self.destroy_nic(mac_to_remove, self.parent.name, current_slave)
-							self.known_vlan_macs[vlan_id] = list(set(self.known_vlan_macs[vlan_id]) - set([mac_to_remove]))
+                                        # Remove loop
+                                        for vlan_id, vlan_macs in self.known_vlan_macs.items():
+                                                if vlan_id not in vlan_rules:
+                                                        vlan_macs_to_remove = self.known_vlan_macs[vlan_id]
+                                                else:
+                                                        vlan_macs_to_remove = list(set(self.known_vlan_macs[vlan_id]) - set(vlan_rules[vlan_id]))
+                                                vlan_if = self.parent.name + "." + vlan_id
+                                                for mac_to_remove in vlan_macs_to_remove:
+                                                        current_slave = self.get_slave_by_mac(mac_to_remove, self.parent.name, vlan_id = vlan_id)
+                                                        if not current_slave:
+                                                                continue
+                                                        self.logger.debug("Need to remove slave: %s of vlan id %s" % (current_slave, vlan_id))
+                                                        self.destroy_nic(mac_to_remove, self.parent.name, current_slave)
+                                                        self.known_vlan_macs[vlan_id] = list(set(self.known_vlan_macs[vlan_id]) - set([mac_to_remove]))
 					self.logger.debug("Connected interface %s to ovs-br %s macs2vlan: %s." % (n, br, str(self.map_mac_2_vlan)))
 
 			self.add_to_scanned_list(n)
@@ -840,7 +820,7 @@ class VirtualNicObserver(NicObserver):
 			time.sleep(retry_nap)
 			retry_cnt = retry_cnt + 1
 			self.logger.debug("Confirm that mac was %s: iter %d, max %d, nap %d" % (op_name, retry_cnt, retry_max, retry_nap))
-			# check if there is slave with this mac addres in the vifs list
+			# check if there is slave with this mac address in the vifs list
 			slave = self.get_slave_by_mac(mac, parent)
 			if (slave == None and action == "remove") or (slave != None and action == "create"):
 				self.logger.debug("Child nic %s of parent %s was %s" % (mac, parent, op_name))
@@ -868,29 +848,6 @@ class VirtualNicObserver(NicObserver):
 				break
 			i = i + 1
 		return slave
-
-	def set_slave_mode (self, slave, new_mode):
-		rc = 0
-		cmd = "ifconfig %s down" % slave
-		(rc, out) = commands.getstatusoutput(cmd)
-		if rc:
-			self.logger.warning("cmd failed! (%s)" % cmd)
-			return rc
-
-		cmd = "/bin/echo %s > %s" % (new_mode, "/sys/class/net/" + slave + os.sep + "mode")
-
-		(rc, out) = commands.getstatusoutput(cmd)
-		time.sleep (1)
-		if rc:
-			self.logger.warning("cmd failed! (%s)" % cmd)
-			return rc
-
-		cmd = "ifconfig %s up" % slave
-		(rc, out) = commands.getstatusoutput(cmd)
-		if rc:
-			self.logger.warning("cmd failed! (%s)" % cmd)
-			return rc
-		return rc
 
 	# create vif if remove flag is clear
 	def create_vif (self, parent, slave, mac, vlan_id = ""):
@@ -926,7 +883,6 @@ class VirtualNicObserver(NicObserver):
 				self.logger.warning("Failed to create child, index: (%s)" % slave_index)
 				return rc
 			self.logger.info("Clone nic %s was created" % slave)
-		rc = self.set_slave_mode(slave, "connected")
 		rc = rc or self.create_vif(parent, slave, mac)
 		return rc
 
@@ -1336,7 +1292,7 @@ class OVSVlanHandler(KVMVirtualVlanObserver):
 			self.add_loop(self.vlan_fake_name, self.slaves_macs, self.ovs_vif_macs, self.full_vlan_names)
 
 #######################################
-# check in ovs-flow-controll if there is a mppaing between vlan to new vlan
+# check in ovs-flow-control if there is a mapping between vlan to new vlan
 	def get_fc_vlan_map(self, ovs_name, vlan):
 		if None == ovs_name:
 			self.logger.debug("no ovs bridge returning")
@@ -1368,11 +1324,6 @@ class KVMOvsNicObserver(VirtualNicObserver, KVMDomain):
 
 	#returns list
 	def get_non_vlan_vifs(self):
-		if self.ovs_name:
-			cmd = "ovs-ofctl dump-flows %s 2> /dev/null |grep strip_vlan " % (self.ovs_name)
-			(rc, _) = commands.getstatusoutput(cmd)
-			if rc == 0:
-				return self.map_mac_2_vlan.keys()
 		out = []
 		for key in self.map_mac_2_vlan:
 			if self.map_mac_2_vlan[key] == None:
@@ -1388,7 +1339,7 @@ class KVMOvsNicObserver(VirtualNicObserver, KVMDomain):
 			vlan = self.map_mac_2_vlan[key]
 			self.logger.debug("in get_vlan_vifs checking vlan %s" % vlan)
 			if vlan != None:
-				# change vlan according to ovs flow-controll:
+				# change vlan according to ovs flow-control:
 				for br in all_bridges:
 					new_vlan = self.VlanHandler.get_fc_vlan_map(br, vlan)
 					if new_vlan != None:
@@ -1721,7 +1672,7 @@ class DaemonRunner:
 		self.parents = self.get_parents()
 
 	def get_environment (self):
-		# If xenstore is avaiable, use it
+		# If xenstore is available, use it
 		# (OVS/XS do not have libvirt, but has xenstore)
 		if os.path.exists(XEN_MANAGEMENT):
 			self.supported_observers = ["bond","vlan","nic"]
@@ -1729,7 +1680,7 @@ class DaemonRunner:
                         self.env_type = XEN_ENV
 			return XenEnvironment()
 		# if not (e.g. KVM) then we require virsh (via libvirt)
-		if os.path.exists(VIRSH_MANAGEMENT) or os.path.exists(OVS_MANAGEMENT):
+		if os.path.exists(VIRSH_MANAGEMENT) or os.path.exists(OVS_MANAGEMENT) or os.path.exists(OVS_MANAGEMENT_UBUNTU):
 			#self.supported_observers = ["bond","vlan","nic","ovs-nic","ovs-vlan","ovs-bond"]
 			self.supported_observers = ["bond","vlan","nic","ovs-nic"]
 			self.logger.debug("Running on KVM environment")

@@ -186,6 +186,26 @@ if [[ ! -z ${RHEL7_2} ]]; then
    set_config CONFIG_COMPAT_RHEL_7_2 y
 fi
 
+if [[ ! -z ${RHEL7_2} ]]; then
+	set_config CONFIG_COMPAT_IP_TUNNELS y
+	set_config CONFIG_COMPAT_TCF_GACT y
+	set_config CONFIG_COMPAT_FLOW_DISSECTOR y
+	set_config CONFIG_COMPAT_CLS_FLOWER_MOD m
+	set_config CONFIG_COMPAT_TCF_TUNNEL_KEY_MOD m
+	set_config CONFIG_COMPAT_TCF_VLAN_MOD m
+fi
+
+KERNEL4_9=$(echo ${KVERSION} | grep ^4\.9)
+if [[ ! -z ${KERNEL4_9} ]]; then
+	set_config CONFIG_COMPAT_KERNEL_4_9 y
+fi
+
+if [[ ! -z ${KERNEL4_9} ]]; then
+	set_config CONFIG_COMPAT_FLOW_DISSECTOR y
+	set_config CONFIG_COMPAT_CLS_FLOWER_MOD m
+	set_config CONFIG_COMPAT_TCF_TUNNEL_KEY_MOD m
+fi
+
 if [ -e /etc/debian_version ]; then
 	DEBIAN6=$(cat /etc/debian_version | grep 6\.0)
 	if [[ ! -z ${DEBIAN6} ]]; then
@@ -484,6 +504,11 @@ fi
 
 if (grep -q bitmap_set ${KLIB_BUILD}/include/linux/bitmap.h > /dev/null 2>&1 || grep -q bitmap_set ${KSRC}/include/linux/bitmap.h > /dev/null 2>&1); then
 		set_config CONFIG_COMPAT_IS_BITMAP y
+fi
+
+if (grep -A2 __blkdev_issue_zeroout ${KLIB_BUILD}/include/linux/blkdev.h | grep -q "unsigned flags" > /dev/null 2>&1 ||
+    grep -A2 __blkdev_issue_zeroout ${KSRC}/include/linux/blkdev.h | grep -q "unsigned flags" > /dev/null 2>&1); then
+		set_config CONFIG_COMPAT_IS_BLKDEV_ISSUE_ZEROOUT_HAS_FLAGS y
 fi
 
 if (grep -Eq "struct in_device.*idev" ${KLIB_BUILD}/include/net/route.h > /dev/null 2>&1 || grep -Eq "struct in_device.*idev" ${KSRC}/include/net/route.h > /dev/null 2>&1); then

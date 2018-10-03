@@ -158,7 +158,7 @@ int mlx5_fpga_query(struct mlx5_core_dev *dev, struct mlx5_fpga_query *query)
 	if (err)
 		return err;
 
-	query->status = MLX5_GET(fpga_ctrl, out, status);
+	query->image_status = MLX5_GET(fpga_ctrl, out, status);
 	query->admin_image = MLX5_GET(fpga_ctrl, out, flash_select_admin);
 	query->oper_image = MLX5_GET(fpga_ctrl, out, flash_select_oper);
 	return 0;

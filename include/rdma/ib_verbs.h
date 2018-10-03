@@ -64,6 +64,7 @@
 #include <linux/cgroup_rdma.h>
 #include <uapi/rdma/ib_user_verbs.h>
 #include <rdma/ib_verbs_exp_def.h>
+#include <rdma/restrack.h>
 
 #define IB_FW_VERSION_NAME_MAX	ETHTOOL_FWVERS_LEN
 
@@ -80,6 +81,7 @@ struct ib_nvmf_ctrl;
 struct ib_nvmf_backend_ctrl_init_attr;
 struct ib_nvmf_ns;
 struct ib_nvmf_ns_init_attr;
+struct ib_nvmf_ns_attr;
 struct ib_mr_init_attr;
 
 union ib_gid {
@@ -102,8 +104,12 @@ enum ib_gid_type {
 
 #define ROCE_V2_UDP_DPORT      4791
 struct ib_gid_attr {
-	enum ib_gid_type	gid_type;
 	struct net_device	*ndev;
+	struct ib_device	*device;
+	union ib_gid		gid;
+	enum ib_gid_type	gid_type;
+	u16			index;
+	u8			port_num;
 };
 
 enum rdma_node_type {
@@ -157,13 +163,13 @@ static inline enum ib_gid_type ib_network_to_gid_type(enum rdma_network_type net
 	return IB_GID_TYPE_IB;
 }
 
-static inline enum rdma_network_type ib_gid_to_network_type(enum ib_gid_type gid_type,
-							    union ib_gid *gid)
+static inline enum rdma_network_type
+rdma_gid_attr_network_type(const struct ib_gid_attr *attr)
 {
-	if (gid_type == IB_GID_TYPE_IB)
+	if (attr->gid_type == IB_GID_TYPE_IB)
 		return RDMA_NETWORK_IB;
 
-	if (ipv6_addr_v4mapped((struct in6_addr *)gid))
+	if (ipv6_addr_v4mapped((struct in6_addr *)&attr->gid))
 		return RDMA_NETWORK_IPV4;
 	else
 		return RDMA_NETWORK_IPV6;
@@ -512,6 +518,7 @@ enum ib_port_speed {
  *   filled in by the drivers get_stats routine
  */
 struct rdma_hw_stats {
+	struct mutex lock;
 	unsigned long	timestamp;
 	unsigned long	lifespan;
 	const char * const *names;
@@ -705,6 +712,7 @@ struct ib_event_handler {
 	} while (0)
 
 struct ib_global_route {
+	const struct ib_gid_attr *sgid_attr;
 	union ib_gid	dgid;
 	u32		flow_label;
 	u8		sgid_index;
@@ -802,6 +810,7 @@ enum ib_mr_type {
 	IB_MR_INDIRECT_REG,
 	IB_MR_TYPE_SG_GAPS,
 	IB_MR_TYPE_DM,
+	IB_MR_TYPE_FIXED_SIZE,
 };
 
 /**
@@ -1064,6 +1073,7 @@ struct ib_srq_attr {
 	u32	max_wr;
 	u32	max_sge;
 	u32	srq_limit;
+	struct ib_nvmf_srq_attr nvmf;
 };
 
 struct ib_srq_init_attr {
@@ -1615,6 +1625,7 @@ struct ib_pd {
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
 	struct ib_mr	       *__internal_mr;
+	struct rdma_restrack_entry res;
 };
 
 struct ib_xrcd {
@@ -1624,12 +1635,17 @@ struct ib_xrcd {
 
 	struct mutex		tgt_qp_mutex;
 	struct list_head	tgt_qp_list;
+	/*
+	 * Implementation details of the RDMA core, don't use in drivers:
+	 */
+	struct rdma_restrack_entry res;
 };
 
 struct ib_ah {
 	struct ib_device	*device;
 	struct ib_pd		*pd;
 	struct ib_uobject	*uobject;
+	const struct ib_gid_attr *sgid_attr;
 	enum rdma_ah_attr_type	type;
 };
 
@@ -1655,6 +1671,10 @@ struct ib_cq {
 		struct irq_poll		iop;
 		struct work_struct	work;
 	};
+	/*
+	 * Implementation details of the RDMA core, don't use in drivers:
+	 */
+	struct rdma_restrack_entry res;
 };
 
 struct ib_srq {
@@ -1824,6 +1844,9 @@ struct ib_qp {
 	struct ib_uobject      *uobject;
 	void                  (*event_handler)(struct ib_event *, void *);
 	void		       *qp_context;
+	/* sgid_attrs associated with the AV's */
+	const struct ib_gid_attr *av_sgid_attr;
+	const struct ib_gid_attr *alt_path_sgid_attr;
 	u32			qp_num;
 	u32			max_write_sge;
 	u32			max_read_sge;
@@ -1832,6 +1855,11 @@ struct ib_qp {
 	struct ib_qp_security  *qp_sec;
 	u8			port;
 	enum ib_qpg_type        qpg_type;
+
+	/*
+	 * Implementation details of the RDMA core, don't use in drivers:
+	 */
+	struct rdma_restrack_entry     res;
 };
 
 struct ib_mr {
@@ -1848,6 +1876,11 @@ struct ib_mr {
 		struct list_head	qp_entry;	/* FR */
 	};
 	struct ib_dm	  *dm;
+
+	/*
+	 * Implementation details of the RDMA core, don't use in drivers:
+	 */
+	struct rdma_restrack_entry res;
 };
 
 struct ib_mw {
@@ -1894,6 +1927,8 @@ enum ib_flow_spec_type {
 	IB_FLOW_SPEC_TCP		= 0x40,
 	IB_FLOW_SPEC_UDP		= 0x41,
 	IB_FLOW_SPEC_VXLAN_TUNNEL	= 0x50,
+	IB_FLOW_SPEC_GRE		= 0x51,
+	IB_FLOW_SPEC_MPLS		= 0x60,
 	IB_FLOW_SPEC_INNER		= 0x100,
 	/* Actions */
 	IB_FLOW_SPEC_ACTION_TAG         = 0x1000,
@@ -2021,6 +2056,34 @@ struct ib_flow_spec_tunnel {
 	struct ib_flow_tunnel_filter  mask;
 };
 
+struct ib_flow_gre_filter {
+	__be16 c_ks_res0_ver;
+	__be16 protocol;
+	__be32 key;
+	/* Must be last */
+	u8	real_sz[0];
+};
+
+struct ib_flow_spec_gre {
+	u32                           type;
+	u16			      size;
+	struct ib_flow_gre_filter     val;
+	struct ib_flow_gre_filter     mask;
+};
+
+struct ib_flow_mpls_filter {
+	__be32 tag;
+	/* Must be last */
+	u8	real_sz[0];
+};
+
+struct ib_flow_spec_mpls {
+	u32                           type;
+	u16			      size;
+	struct ib_flow_mpls_filter     val;
+	struct ib_flow_mpls_filter     mask;
+};
+
 struct ib_flow_spec_action_tag {
 	enum ib_flow_spec_type	      type;
 	u16			      size;
@@ -2049,6 +2112,8 @@ union ib_flow_spec {
 	struct ib_flow_spec_tcp_udp	tcp_udp;
 	struct ib_flow_spec_ipv6        ipv6;
 	struct ib_flow_spec_tunnel      tunnel;
+	struct ib_flow_spec_gre		gre;
+	struct ib_flow_spec_mpls	mpls;
 	struct ib_flow_spec_action_tag  flow_tag;
 	struct ib_flow_spec_action_drop drop;
 	struct ib_flow_spec_action_count flow_count;
@@ -2222,6 +2287,8 @@ struct ib_device {
 	struct kobject		      *mad_sa_cc_kobj;
 
 	/* EXP APIs will be added below to minimize conflicts via upstream rebase */
+	int                     (*query_nvmf_ns)(struct ib_nvmf_ns *ns,
+						 struct ib_nvmf_ns_attr *ns_attr);
 	struct ib_nvmf_ctrl *   (*create_nvmf_backend_ctrl)(struct ib_srq *srq,
 				struct ib_nvmf_backend_ctrl_init_attr *init_attr);
 	int                     (*destroy_nvmf_backend_ctrl)(struct ib_nvmf_ctrl *ctrl);
@@ -2312,37 +2379,35 @@ struct ib_device {
 	 */
 	struct net_device	  *(*get_netdev)(struct ib_device *device,
 						 u8 port_num);
+	/* query_gid should be return GID value for @device, when @port_num
+	 * link layer is either IB or iWarp. It is no-op if @port_num port
+	 * is RoCE link layer.
+	 */
 	int		           (*query_gid)(struct ib_device *device,
 						u8 port_num, int index,
 						union ib_gid *gid);
-	/* When calling add_gid, the HW vendor's driver should
-	 * add the gid of device @device at gid index @index of
-	 * port @port_num to be @gid. Meta-info of that gid (for example,
-	 * the network device related to this gid is available
-	 * at @attr. @context allows the HW vendor driver to store extra
-	 * information together with a GID entry. The HW vendor may allocate
-	 * memory to contain this information and store it in @context when a
-	 * new GID entry is written to. Params are consistent until the next
-	 * call of add_gid or delete_gid. The function should return 0 on
+	/* When calling add_gid, the HW vendor's driver should add the gid
+	 * of device of port at gid index available at @attr. Meta-info of
+	 * that gid (for example, the network device related to this gid) is
+	 * available at @attr. @context allows the HW vendor driver to store
+	 * extra information together with a GID entry. The HW vendor driver may
+	 * allocate memory to contain this information and store it in @context
+	 * when a new GID entry is written to. Params are consistent until the
+	 * next call of add_gid or delete_gid. The function should return 0 on
 	 * success or error otherwise. The function could be called
-	 * concurrently for different ports. This function is only called
-	 * when roce_gid_table is used.
+	 * concurrently for different ports. This function is only called when
+	 * roce_gid_table is used.
 	 */
-	int		           (*add_gid)(struct ib_device *device,
-					      u8 port_num,
-					      unsigned int index,
-					      const union ib_gid *gid,
-					      const struct ib_gid_attr *attr,
+	int		           (*add_gid)(const struct ib_gid_attr *attr,
 					      void **context);
 	/* When calling del_gid, the HW vendor's driver should delete the
-	 * gid of device @device at gid index @index of port @port_num.
+	 * gid of device @device at gid index gid_index of port port_num
+	 * available in @attr.
 	 * Upon the deletion of a GID entry, the HW vendor must free any
 	 * allocated memory. The caller will clear @context afterwards.
 	 * This function is only called when roce_gid_table is used.
 	 */
-	int		           (*del_gid)(struct ib_device *device,
-					      u8 port_num,
-					      unsigned int index,
+	int		           (*del_gid)(const struct ib_gid_attr *attr,
 					      void **context);
 	int		           (*query_pkey)(struct ib_device *device,
 						 u8 port_num, u16 index, u16 *pkey);
@@ -2554,6 +2619,10 @@ struct ib_device {
 #endif
 
 	u32                          index;
+	/*
+	 * Implementation details of the RDMA core, don't use in drivers
+	 */
+	struct rdma_restrack_root     res;
 
 	/**
 	 * The following mandatory functions are used only at device
@@ -3029,10 +3098,6 @@ static inline bool rdma_cap_read_inv(struct ib_device *dev, u32 port_num)
 	return rdma_protocol_iwarp(dev, port_num);
 }
 
-int ib_query_gid(struct ib_device *device,
-		 u8 port_num, int index, union ib_gid *gid,
-		 struct ib_gid_attr *attr);
-
 int ib_set_vf_link_state(struct ib_device *device, int vf, u8 port,
 			 int state);
 int ib_get_vf_config(struct ib_device *device, int vf, u8 port,
@@ -3054,7 +3119,6 @@ int ib_modify_port(struct ib_device *device,
 		   struct ib_port_modify *port_modify);
 
 int ib_find_gid(struct ib_device *device, union ib_gid *gid,
-		enum ib_gid_type gid_type, struct net_device *ndev,
 		u8 *port_num, u16 *index);
 
 int ib_find_pkey(struct ib_device *device,
@@ -3074,14 +3138,16 @@ enum ib_pd_flags {
 };
 
 struct ib_pd *__ib_alloc_pd(struct ib_device *device, unsigned int flags,
-		const char *caller);
+		const char *caller, bool skip_tracking);
 
 /* Part of Lustre compatibility patch */
 #define ib_alloc_pd(device, ...) ib_alloc_pd_(device, ##__VA_ARGS__, 2, 1)
 #define ib_alloc_pd_(device, flags, n, ...) ib_alloc_pd_##n(device, flags)
-#define ib_alloc_pd_1(device, ...) __ib_alloc_pd(device, 0, __func__)
-#define ib_alloc_pd_2(device, flags) __ib_alloc_pd(device, flags, __func__)
+#define ib_alloc_pd_1(device, ...) __ib_alloc_pd(device, 0, KBUILD_MODNAME, false)
+#define ib_alloc_pd_2(device, flags) __ib_alloc_pd(device, flags, KBUILD_MODNAME, false)
 
+#define ib_alloc_pd_notrack(device, flags) \
+	__ib_alloc_pd((device), (flags), KBUILD_MODNAME, true)
 void ib_dealloc_pd(struct ib_pd *pd);
 
 /**
@@ -3128,7 +3194,7 @@ int ib_get_gids_from_rdma_hdr(const union rdma_network_hdr *hdr,
 int ib_get_rdma_header_version(const union rdma_network_hdr *hdr);
 
 /**
- * ib_init_ah_from_wc - Initializes address handle attributes from a
+ * ib_init_ah_attr_from_wc - Initializes address handle attributes from a
  *   work completion.
  * @device: Device on which the received message arrived.
  * @port_num: Port on which the received message arrived.
@@ -3137,10 +3203,17 @@ int ib_get_rdma_header_version(const union rdma_network_hdr *hdr);
  *   ignored unless the work completion indicates that the GRH is valid.
  * @ah_attr: Returned attributes that can be used when creating an address
  *   handle for replying to the message.
+ * When ib_init_ah_attr_from_wc() returns success,
+ * (a) for IB link layer it optionally contains a reference to SGID attribute
+ * when GRH is present for IB link layer.
+ * (b) for RoCE link layer it contains a reference to SGID attribute.
+ * User must invoke rdma_cleanup_ah_attr_gid_attr() to release reference to SGID
+ * attributes which are initialized using ib_init_ah_attr_from_wc().
+ *
  */
-int ib_init_ah_from_wc(struct ib_device *device, u8 port_num,
-		       const struct ib_wc *wc, const struct ib_grh *grh,
-		       struct rdma_ah_attr *ah_attr);
+int ib_init_ah_attr_from_wc(struct ib_device *device, u8 port_num,
+			    const struct ib_wc *wc, const struct ib_grh *grh,
+			    struct rdma_ah_attr *ah_attr);
 
 /**
  * ib_create_ah_from_wc - Creates an address handle associated with the
@@ -3358,8 +3431,15 @@ static inline int ib_post_recv(struct ib_qp *qp,
 	return qp->device->post_recv(qp, recv_wr, bad_recv_wr);
 }
 
-struct ib_cq *ib_alloc_cq(struct ib_device *dev, void *private,
-		int nr_cqe, int comp_vector, enum ib_poll_context poll_ctx);
+struct ib_cq *__ib_alloc_cq(struct ib_device *dev, void *private,
+			    int nr_cqe, int comp_vector,
+			    enum ib_poll_context poll_ctx, const char *caller,
+			    bool skip_tracking);
+#define ib_alloc_cq(device, priv, nr_cqe, comp_vect, poll_ctx) \
+	__ib_alloc_cq((device), (priv), (nr_cqe), (comp_vect), (poll_ctx), KBUILD_MODNAME, false)
+#define ib_alloc_cq_notrack(device, priv, nr_cqe, comp_vect, poll_ctx) \
+	__ib_alloc_cq((device), (priv), (nr_cqe), (comp_vect), (poll_ctx), KBUILD_MODNAME, true)
+
 void ib_free_cq(struct ib_cq *cq);
 int ib_process_cq_direct(struct ib_cq *cq, int budget);
 
@@ -3423,18 +3503,6 @@ static inline int ib_poll_cq(struct ib_cq *cq, int num_entries,
 {
 	return cq->device->poll_cq(cq, num_entries, wc);
 }
-
-/**
- * ib_peek_cq - Returns the number of unreaped completions currently
- *   on the specified CQ.
- * @cq: The CQ to peek.
- * @wc_cnt: A minimum number of unreaped completions to check for.
- *
- * If the number of unreaped completions is greater than or equal to wc_cnt,
- * this function returns wc_cnt, otherwise, it returns the actual number of
- * unreaped completions.
- */
-int ib_peek_cq(struct ib_cq *cq, int wc_cnt);
 
 /**
  * ib_req_notify_cq - Request completion notification on a CQ.
@@ -3795,8 +3863,11 @@ int ib_detach_mcast(struct ib_qp *qp, union ib_gid *gid, u16 lid);
 /**
  * ib_alloc_xrcd - Allocates an XRC domain.
  * @device: The device on which to allocate the XRC domain.
+ * @caller: Module name for kernel consumers
  */
-struct ib_xrcd *ib_alloc_xrcd(struct ib_device *device);
+struct ib_xrcd *__ib_alloc_xrcd(struct ib_device *device, const char *caller);
+#define ib_alloc_xrcd(device) \
+	__ib_alloc_xrcd((device), KBUILD_MODNAME)
 
 /**
  * ib_dealloc_xrcd - Deallocates an XRC domain.
@@ -4091,14 +4162,24 @@ static inline void rdma_ah_set_grh(struct rdma_ah_attr *attr,
 	grh->sgid_index = sgid_index;
 	grh->hop_limit = hop_limit;
 	grh->traffic_class = traffic_class;
+	grh->sgid_attr = NULL;
 }
+
+void rdma_destroy_ah_attr(struct rdma_ah_attr *ah_attr);
+void rdma_move_grh_sgid_attr(struct rdma_ah_attr *attr, union ib_gid *dgid,
+			     u32 flow_label, u8 hop_limit, u8 traffic_class,
+			     const struct ib_gid_attr *sgid_attr);
+void rdma_copy_ah_attr(struct rdma_ah_attr *dest,
+		       const struct rdma_ah_attr *src);
+void rdma_replace_ah_attr(struct rdma_ah_attr *old,
+			  const struct rdma_ah_attr *new);
+void rdma_move_ah_attr(struct rdma_ah_attr *dest, struct rdma_ah_attr *src);
 
 /*Get AH type */
 static inline enum rdma_ah_attr_type rdma_ah_find_type(struct ib_device *dev,
 						       u32 port_num)
 {
-	if ((rdma_protocol_roce(dev, port_num)) ||
-	    (rdma_protocol_iwarp(dev, port_num)))
+	if (rdma_protocol_roce(dev, port_num))
 		return RDMA_AH_ATTR_TYPE_ROCE;
 	else if ((rdma_protocol_ib(dev, port_num)) &&
 		 (rdma_cap_opa_ah(dev, port_num)))

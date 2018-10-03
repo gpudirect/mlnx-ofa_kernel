@@ -42,6 +42,7 @@
 
 #include <rdma/ib_mad.h>
 #include <rdma/ib_pma.h>
+#include <rdma/ib_cache.h>
 
 struct ib_port;
 
@@ -338,7 +339,7 @@ static struct attribute *port_default_attrs[] = {
 	NULL
 };
 
-static size_t print_ndev(struct ib_gid_attr *gid_attr, char *buf)
+static size_t print_ndev(const struct ib_gid_attr *gid_attr, char *buf)
 {
 	if (!gid_attr->ndev)
 		return -EINVAL;
@@ -346,33 +347,30 @@ static size_t print_ndev(struct ib_gid_attr *gid_attr, char *buf)
 	return sprintf(buf, "%s\n", gid_attr->ndev->name);
 }
 
-static size_t print_gid_type(struct ib_gid_attr *gid_attr, char *buf)
+static size_t print_gid_type(const struct ib_gid_attr *gid_attr, char *buf)
 {
 	return sprintf(buf, "%s\n", ib_cache_gid_type_str(gid_attr->gid_type));
 }
 
-static ssize_t _show_port_gid_attr(struct ib_port *p,
-				   struct port_attribute *attr,
-				   char *buf,
-				   size_t (*print)(struct ib_gid_attr *gid_attr,
-						   char *buf))
+static ssize_t _show_port_gid_attr(
+	struct ib_port *p, struct port_attribute *attr, char *buf,
+	size_t (*print)(const struct ib_gid_attr *gid_attr, char *buf))
 {
 	struct port_table_attribute *tab_attr =
 		container_of(attr, struct port_table_attribute, attr);
-	union ib_gid gid;
-	struct ib_gid_attr gid_attr = {};
+	const struct ib_gid_attr *gid_attr;
 	ssize_t ret;
 
-	ret = ib_query_gid(p->ibdev, p->port_num, tab_attr->index, &gid,
-			   &gid_attr);
-	if (ret)
-		goto err;
+	gid_attr = rdma_get_gid_attr(p->ibdev, p->port_num, tab_attr->index);
+	if (IS_ERR(gid_attr))
+		return PTR_ERR(gid_attr);
 
-	ret = print(&gid_attr, buf);
+	if (rdma_check_gid_user_access(gid_attr))
+		ret = print(gid_attr, buf);
+	else
+		ret = -EINVAL;
 
-err:
-	if (gid_attr.ndev)
-		dev_put(gid_attr.ndev);
+	rdma_put_gid_attr(gid_attr);
 	return ret;
 }
 
@@ -381,14 +379,32 @@ static ssize_t show_port_gid(struct ib_port *p, struct port_attribute *attr,
 {
 	struct port_table_attribute *tab_attr =
 		container_of(attr, struct port_table_attribute, attr);
-	union ib_gid gid;
+	const struct ib_gid_attr *gid_attr;
 	ssize_t ret;
 
-	ret = ib_query_gid(p->ibdev, p->port_num, tab_attr->index, &gid, NULL);
-	if (ret)
-		return ret;
+	gid_attr = rdma_get_gid_attr(p->ibdev, p->port_num, tab_attr->index);
+	if (IS_ERR(gid_attr)) {
+		const union ib_gid zgid = {};
 
-	return sprintf(buf, "%pI6\n", gid.raw);
+		/* If reading GID fails, it is likely due to GID entry being
+		 * empty (invalid) or reserved GID in the table.  User space
+		 * expects to read GID table entries as long as it given index
+		 * is within GID table size.  Administrative/debugging tool
+		 * fails to query rest of the GID entries if it hits error
+		 * while querying a GID of the given index.  To avoid user
+		 * space throwing such error on fail to read gid, return zero
+		 * GID as before. This maintains backward compatibility.
+		 */
+		return sprintf(buf, "%pI6\n", zgid.raw);
+	}
+
+	if (rdma_check_gid_user_access(gid_attr))
+		ret = sprintf(buf, "%pI6\n", gid_attr->gid.raw);
+	else
+		ret = sprintf(buf, "%pI6\n", zgid.raw);
+
+	rdma_put_gid_attr(gid_attr);
+	return ret;
 }
 
 static ssize_t show_port_gid_attr_ndev(struct ib_port *p,
@@ -803,10 +819,15 @@ static ssize_t show_hw_stats(struct kobject *kobj, struct attribute *attr,
 		dev = port->ibdev;
 		stats = port->hw_stats;
 	}
+	mutex_lock(&stats->lock);
 	ret = update_hw_stats(dev, stats, hsa->port_num, hsa->index);
 	if (ret)
-		return ret;
-	return print_hw_stat(stats, hsa->index, buf);
+		goto unlock;
+	ret = print_hw_stat(stats, hsa->index, buf);
+unlock:
+	mutex_unlock(&stats->lock);
+
+	return ret;
 }
 
 static ssize_t show_stats_lifespan(struct kobject *kobj,
@@ -944,6 +965,7 @@ static void setup_hw_stats(struct ib_device *device, struct ib_port *port,
 		sysfs_attr_init(hsag->attrs[i]);
 	}
 
+	mutex_init(&stats->lock);
 	/* treat an error here as non-fatal */
 	hsag->attrs[i] = alloc_hsa_lifespan("lifespan", port_num);
 	if (hsag->attrs[i])

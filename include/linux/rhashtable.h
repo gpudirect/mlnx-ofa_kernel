@@ -19,6 +19,10 @@
 
 #include "../../compat/config.h"
 
+#ifdef CONFIG_COMPAT_RHLTABLE
+#undef HAVE_RHLTABLE
+#endif
+
 #ifdef HAVE_RHLTABLE
 #include_next <linux/rhashtable.h>
 #else /* HAVE_RHLTABLE */
@@ -731,8 +735,10 @@ slow_path:
 		if (!key ||
 		    (params.obj_cmpfn ?
 		     params.obj_cmpfn(&arg, rht_obj(ht, head)) :
-		     rhashtable_compare(&arg, rht_obj(ht, head))))
+		     rhashtable_compare(&arg, rht_obj(ht, head)))) {
+			pprev = &head->next;
 			continue;
+		}
 
 		data = rht_obj(ht, head);
 

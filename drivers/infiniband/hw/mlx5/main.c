@@ -68,11 +68,14 @@
 #include <linux/mmu_context.h>
 
 #define DRIVER_NAME "mlx5_ib"
-#define DRIVER_VERSION	"4.3-1.0.1"
+#define DRIVER_VERSION	"4.4-2.0.7"
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION("Mellanox Connect-IB HCA IB driver");
 MODULE_LICENSE("Dual BSD/GPL");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 
 static char mlx5_version[] =
 	DRIVER_NAME ": Mellanox Connect-IB Infiniband driver v"
@@ -283,6 +286,9 @@ static int mlx5_query_port_roce(struct ib_device *device, u8 port_num,
 	if (err)
 		return err;
 
+	props->active_width     = IB_WIDTH_4X;
+	props->active_speed     = IB_SPEED_QDR;
+
 	translate_eth_proto_oper(eth_prot_oper, &props->active_speed,
 				 &props->active_width);
 
@@ -370,59 +376,27 @@ static int set_roce_addr(struct mlx5_ib_dev *dev, u8 port_num,
 				      vlan_id);
 }
 
-static int mlx5_ib_add_gid(struct ib_device *device, u8 port_num,
-			   unsigned int index, const union ib_gid *gid,
-			   const struct ib_gid_attr *attr,
+static int mlx5_ib_add_gid(const struct ib_gid_attr *attr,
 			   __always_unused void **context)
 {
-	return set_roce_addr(to_mdev(device), port_num, index, gid, attr);
+	return set_roce_addr(to_mdev(attr->device), attr->port_num,
+			     attr->index, &attr->gid, attr);
 }
 
-static int mlx5_ib_del_gid(struct ib_device *device, u8 port_num,
-			   unsigned int index, __always_unused void **context)
+static int mlx5_ib_del_gid(const struct ib_gid_attr *attr,
+			   __always_unused void **context)
 {
-	return set_roce_addr(to_mdev(device), port_num, index, NULL, NULL);
+	return set_roce_addr(to_mdev(attr->device), attr->port_num,
+			     attr->index, NULL, NULL);
 }
 
-__be16 mlx5_get_roce_udp_sport(struct mlx5_ib_dev *dev, u8 port_num,
-			       int index)
+__be16 mlx5_get_roce_udp_sport(struct mlx5_ib_dev *dev,
+			       const struct ib_gid_attr *attr)
 {
-	struct ib_gid_attr attr;
-	union ib_gid gid;
-
-	if (ib_get_cached_gid(&dev->ib_dev, port_num, index, &gid, &attr))
-		return 0;
-
-	if (!attr.ndev)
-		return 0;
-
-	dev_put(attr.ndev);
-
-	if (attr.gid_type != IB_GID_TYPE_ROCE_UDP_ENCAP)
+	if (attr->gid_type != IB_GID_TYPE_ROCE_UDP_ENCAP)
 		return 0;
 
 	return cpu_to_be16(MLX5_CAP_ROCE(dev->mdev, r_roce_min_src_udp_port));
-}
-
-int mlx5_get_roce_gid_type(struct mlx5_ib_dev *dev, u8 port_num,
-			   int index, enum ib_gid_type *gid_type)
-{
-	struct ib_gid_attr attr;
-	union ib_gid gid;
-	int ret;
-
-	ret = ib_get_cached_gid(&dev->ib_dev, port_num, index, &gid, &attr);
-	if (ret)
-		return ret;
-
-	if (!attr.ndev)
-		return -ENODEV;
-
-	dev_put(attr.ndev);
-
-	*gid_type = attr.gid_type;
-
-	return 0;
 }
 
 static int mlx5_use_mad_ifc(struct mlx5_ib_dev *dev)
@@ -681,7 +655,8 @@ int mlx5_ib_query_device(struct ib_device *ibdev,
 						MLX5_RX_HASH_SRC_PORT_TCP |
 						MLX5_RX_HASH_DST_PORT_TCP |
 						MLX5_RX_HASH_SRC_PORT_UDP |
-						MLX5_RX_HASH_DST_PORT_UDP;
+						MLX5_RX_HASH_DST_PORT_UDP |
+						MLX5_RX_HASH_INNER;
 			resp.response_length += sizeof(resp.rss_caps);
 		}
 	} else {
@@ -796,13 +771,20 @@ int mlx5_ib_query_device(struct ib_device *ibdev,
 	}
 
 	if (field_avail(typeof(resp), cqe_comp_caps, uhw->outlen)) {
-		resp.cqe_comp_caps.max_num =
-			MLX5_CAP_GEN(dev->mdev, cqe_compression) ?
-			MLX5_CAP_GEN(dev->mdev, cqe_compression_max_num) : 0;
-		resp.cqe_comp_caps.supported_format =
-			MLX5_IB_CQE_RES_FORMAT_HASH |
-			MLX5_IB_CQE_RES_FORMAT_CSUM;
 		resp.response_length += sizeof(resp.cqe_comp_caps);
+		if (MLX5_CAP_GEN(dev->mdev, cqe_compression)) {
+			resp.cqe_comp_caps.max_num =
+				MLX5_CAP_GEN(dev->mdev,
+					     cqe_compression_max_num);
+
+			resp.cqe_comp_caps.supported_format =
+				MLX5_IB_CQE_RES_FORMAT_HASH |
+				MLX5_IB_CQE_RES_FORMAT_CSUM;
+
+			if (MLX5_CAP_GEN(dev->mdev, mini_cqe_resp_stride_index))
+				resp.cqe_comp_caps.supported_format |=
+					MLX5_IB_CQE_RES_FORMAT_CSUM_STRIDX;
+		}
 	}
 
 	if (field_avail(typeof(resp), packet_pacing_caps, uhw->outlen)) {
@@ -871,8 +853,12 @@ int mlx5_ib_query_device(struct ib_device *ibdev,
 				MLX5_MIN_SINGLE_STRIDE_LOG_NUM_BYTES;
 			resp.striding_rq_caps.max_single_stride_log_num_of_bytes =
 				MLX5_MAX_SINGLE_STRIDE_LOG_NUM_BYTES;
-			resp.striding_rq_caps.min_single_wqe_log_num_of_strides =
-				MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
+			if (MLX5_CAP_GEN(dev->mdev, ext_stride_num_range))
+				resp.striding_rq_caps.min_single_wqe_log_num_of_strides =
+					MLX5_EXT_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
+			else
+				resp.striding_rq_caps.min_single_wqe_log_num_of_strides =
+					MLX5_MIN_SINGLE_WQE_LOG_NUM_STRIDES;
 			resp.striding_rq_caps.max_single_wqe_log_num_of_strides =
 				MLX5_MAX_SINGLE_WQE_LOG_NUM_STRIDES;
 			resp.striding_rq_caps.supported_qpts =
@@ -892,6 +878,14 @@ int mlx5_ib_query_device(struct ib_device *ibdev,
 		if (MLX5_CAP_ETH(mdev, tunnel_stateless_gre))
 			resp.tunnel_offloads_caps |=
 				MLX5_IB_TUNNELED_OFFLOADS_GRE;
+		if (MLX5_CAP_GEN(mdev, flex_parser_protocols) &
+		    MLX5_FLEX_PROTO_CW_MPLS_GRE)
+			resp.tunnel_offloads_caps |=
+				MLX5_IB_TUNNELED_OFFLOADS_MPLS_GRE;
+		if (MLX5_CAP_GEN(mdev, flex_parser_protocols) &
+		    MLX5_FLEX_PROTO_CW_MPLS_UDP)
+			resp.tunnel_offloads_caps |=
+				MLX5_IB_TUNNELED_OFFLOADS_MPLS_UDP;
 	}
 
 	if (uhw->outlen) {
@@ -1420,32 +1414,34 @@ static int alloc_capi_context(struct mlx5_ib_dev *dev, struct mlx5_capi_context 
 
 	err = cxllib_get_PE_attributes(current, CXL_TRANSLATED_MODE, &attr);
 	if (err)
-		goto out;
+		return err;
 
 	mlx5_ib_dbg(dev, "sr 0x%llx\n", attr.sr);
 	mlx5_ib_dbg(dev, "lpid 0x%x\n", attr.lpid);
 	mlx5_ib_dbg(dev, "tid 0x%x\n", attr.tid);
 	mlx5_ib_dbg(dev, "pid 0x%x\n", attr.pid);
 
+	/* Obtain process's mm */
 	cctx->mm = get_task_mm(current);
 	if (!cctx->mm) {
 		err = -ENOMEM;
-		goto out;
+		return err;
 	}
+	mmgrab(cctx->mm);
+	mmput(cctx->mm);
 
-	mm_context_add_copro(cctx->mm);
+	/* create pec */
 	err = mlx5_core_create_pec(dev->mdev, &attr, &cctx->pasid);
 	if (err) {
 		mlx5_ib_warn(dev, "create pec failed %d\n", err);
 		goto out_mm;
 	}
 
+	mm_context_add_copro(cctx->mm);
 	return 0;
 
 out_mm:
-	mm_context_remove_copro(cctx->mm);
-	mmput(cctx->mm);
-out:
+	mmdrop(cctx->mm);
 	return err;
 }
 
@@ -1457,14 +1453,10 @@ static int free_capi_context(struct mlx5_ib_dev *dev, struct mlx5_capi_context *
 		return 0;
 
 	err = mlx5_core_destroy_pec(dev->mdev, cctx->pasid);
-	if (err) {
+	if (err)
 		mlx5_ib_warn(dev, "destroy pec failed\n");
-		goto out;
-	}
 	mm_context_remove_copro(cctx->mm);
-	mmput(cctx->mm);
-
-out:
+	mmdrop(cctx->mm);
 	return err;
 }
 #else
@@ -1647,6 +1639,10 @@ static struct ib_ucontext *mlx5_ib_alloc_ucontext(struct ib_device *ibdev,
 	err = alloc_capi_context(dev, &context->cctx);
 	if (err)
 		goto out_td;
+
+	if (mlx5_lag_is_active(dev->mdev))
+		atomic_set(&context->tx_port_affinity,
+			   atomic_add_return(1, &dev->roce.tx_port_affinity));
 
 	return &context->ibucontext;
 
@@ -2046,7 +2042,8 @@ static int mlx5_ib_dealloc_pd(struct ib_pd *pd)
 enum {
 	MATCH_CRITERIA_ENABLE_OUTER_BIT,
 	MATCH_CRITERIA_ENABLE_MISC_BIT,
-	MATCH_CRITERIA_ENABLE_INNER_BIT
+	MATCH_CRITERIA_ENABLE_INNER_BIT,
+	MATCH_CRITERIA_ENABLE_MISC2_BIT
 };
 
 #define HEADER_IS_ZERO(match_criteria, headers)			           \
@@ -2066,6 +2063,9 @@ static u8 get_match_criteria_enable(u32 *match_criteria)
 	match_criteria_enable |=
 		(!HEADER_IS_ZERO(match_criteria, inner_headers)) <<
 		MATCH_CRITERIA_ENABLE_INNER_BIT;
+	match_criteria_enable |=
+		(!HEADER_IS_ZERO(match_criteria, misc_parameters_2)) <<
+		MATCH_CRITERIA_ENABLE_MISC2_BIT;
 
 	return match_criteria_enable;
 }
@@ -2129,6 +2129,27 @@ static bool is_counter_set_valid(struct ib_counter_set *cs,
 	return (mcs->desc_cs->cs_desc.counted_type == type);
 }
 
+static int check_mpls_supp_fields(u32 field_support, const __be32 *set_mask)
+{
+	if (MLX5_GET(fte_match_mpls, set_mask, mpls_label) &&
+	    !(field_support & MLX5_FIELD_SUPPORT_MPLS_LABEL))
+		return -EOPNOTSUPP;
+
+	if (MLX5_GET(fte_match_mpls, set_mask, mpls_exp) &&
+	    !(field_support & MLX5_FIELD_SUPPORT_MPLS_EXP))
+		return -EOPNOTSUPP;
+
+	if (MLX5_GET(fte_match_mpls, set_mask, mpls_s_bos) &&
+	    !(field_support & MLX5_FIELD_SUPPORT_MPLS_S_BOS))
+		return -EOPNOTSUPP;
+
+	if (MLX5_GET(fte_match_mpls, set_mask, mpls_ttl) &&
+	    !(field_support & MLX5_FIELD_SUPPORT_MPLS_TTL))
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
 #define LAST_ETH_FIELD vlan_tag
 #define LAST_IB_FIELD sl
 #define LAST_IPV4_FIELD tos
@@ -2156,12 +2177,17 @@ struct parse_flow_attr_out_params {
 };
 static int parse_flow_attr(struct mlx5_core_dev *mdev, u32 *match_c,
 			   u32 *match_v, const union ib_flow_spec *ib_spec,
-			   struct parse_flow_attr_out_params *out_params)
+			   struct parse_flow_attr_out_params *out_params,
+			   u32 prev_type)
 {
 	void *misc_params_c = MLX5_ADDR_OF(fte_match_param, match_c,
 					   misc_parameters);
 	void *misc_params_v = MLX5_ADDR_OF(fte_match_param, match_v,
 					   misc_parameters);
+	void *misc_params2_c = MLX5_ADDR_OF(fte_match_param, match_c,
+					    misc_parameters_2);
+	void *misc_params2_v = MLX5_ADDR_OF(fte_match_param, match_v,
+					    misc_parameters_2);
 	void *headers_c;
 	void *headers_v;
 	int match_ipv;
@@ -2360,6 +2386,93 @@ static int parse_flow_attr(struct mlx5_core_dev *mdev, u32 *match_c,
 			 ntohs(ib_spec->tcp_udp.mask.dst_port));
 		MLX5_SET(fte_match_set_lyr_2_4, headers_v, udp_dport,
 			 ntohs(ib_spec->tcp_udp.val.dst_port));
+		break;
+	case IB_FLOW_SPEC_GRE:
+		if (ib_spec->gre.mask.c_ks_res0_ver)
+			return -EOPNOTSUPP;
+
+		MLX5_SET(fte_match_set_lyr_2_4, headers_c, ip_protocol,
+			 0xff);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
+			 IPPROTO_GRE);
+
+		MLX5_SET(fte_match_set_misc, misc_params_c, gre_protocol,
+			 ntohs(ib_spec->gre.mask.protocol));
+		MLX5_SET(fte_match_set_misc, misc_params_v, gre_protocol,
+			 ntohs(ib_spec->gre.val.protocol));
+
+		memcpy(MLX5_ADDR_OF(fte_match_set_misc, misc_params_c,
+				    gre_key_h),
+		       &ib_spec->gre.mask.key,
+		       sizeof(ib_spec->gre.mask.key));
+		memcpy(MLX5_ADDR_OF(fte_match_set_misc, misc_params_v,
+				    gre_key_h),
+		       &ib_spec->gre.val.key,
+		       sizeof(ib_spec->gre.val.key));
+		break;
+	case IB_FLOW_SPEC_MPLS:
+		switch (prev_type) {
+		case IB_FLOW_SPEC_UDP:
+			if (check_mpls_supp_fields(MLX5_CAP_FLOWTABLE_NIC_RX(mdev,
+						   ft_field_support.outer_first_mpls_over_udp),
+						   &ib_spec->mpls.mask.tag))
+				return -EOPNOTSUPP;
+
+			memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_v,
+					    outer_first_mpls_over_udp),
+			       &ib_spec->mpls.val.tag,
+			       sizeof(ib_spec->mpls.val.tag));
+			memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_c,
+					    outer_first_mpls_over_udp),
+			       &ib_spec->mpls.mask.tag,
+			       sizeof(ib_spec->mpls.mask.tag));
+			break;
+		case IB_FLOW_SPEC_GRE:
+			if (check_mpls_supp_fields(MLX5_CAP_FLOWTABLE_NIC_RX(mdev,
+						   ft_field_support.outer_first_mpls_over_gre),
+						   &ib_spec->mpls.mask.tag))
+				return -EOPNOTSUPP;
+
+			memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_v,
+					    outer_first_mpls_over_gre),
+			       &ib_spec->mpls.val.tag,
+			       sizeof(ib_spec->mpls.val.tag));
+			memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_c,
+					    outer_first_mpls_over_gre),
+			       &ib_spec->mpls.mask.tag,
+			       sizeof(ib_spec->mpls.mask.tag));
+			break;
+		default:
+			if (ib_spec->type & IB_FLOW_SPEC_INNER) {
+				if (check_mpls_supp_fields(MLX5_CAP_FLOWTABLE_NIC_RX(mdev,
+							   ft_field_support.inner_first_mpls),
+							   &ib_spec->mpls.mask.tag))
+					return -EOPNOTSUPP;
+
+				memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_v,
+						    inner_first_mpls),
+				       &ib_spec->mpls.val.tag,
+				       sizeof(ib_spec->mpls.val.tag));
+				memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_c,
+						    inner_first_mpls),
+				       &ib_spec->mpls.mask.tag,
+				       sizeof(ib_spec->mpls.mask.tag));
+			} else {
+				if (check_mpls_supp_fields(MLX5_CAP_FLOWTABLE_NIC_RX(mdev,
+							   ft_field_support.outer_first_mpls),
+							   &ib_spec->mpls.mask.tag))
+					return -EOPNOTSUPP;
+
+				memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_v,
+						    outer_first_mpls),
+				       &ib_spec->mpls.val.tag,
+				       sizeof(ib_spec->mpls.val.tag));
+				memcpy(MLX5_ADDR_OF(fte_match_set_misc2, misc_params2_c,
+						    outer_first_mpls),
+				       &ib_spec->mpls.mask.tag,
+				       sizeof(ib_spec->mpls.mask.tag));
+			}
+		}
 		break;
 	case IB_FLOW_SPEC_VXLAN_TUNNEL:
 		if (FIELDS_NOT_SUPPORTED(ib_spec->tunnel.mask,
@@ -2657,6 +2770,7 @@ static struct mlx5_ib_flow_handler *_create_flow_rule(struct mlx5_ib_dev *dev,
 	struct mlx5_ib_cs *rcs;
 	const void *ib_flow = (const void *)flow_attr + sizeof(*flow_attr);
 	unsigned int spec_index;
+	u32 prev_type = 0;
 	int err = 0;
 	int dest_num = 0;
 
@@ -2679,10 +2793,11 @@ static struct mlx5_ib_flow_handler *_create_flow_rule(struct mlx5_ib_dev *dev,
 	for (spec_index = 0; spec_index < flow_attr->num_of_specs; spec_index++) {
 		err = parse_flow_attr(dev->mdev, spec->match_criteria,
 				      spec->match_value,
-				      ib_flow, &parse_out_params);
+				      ib_flow, &parse_out_params, prev_type);
 		if (err < 0)
 			goto free;
 
+		prev_type = ((union ib_flow_spec *)ib_flow)->type;
 		ib_flow += ((union ib_flow_spec *)ib_flow)->size;
 	}
 
@@ -3364,14 +3479,14 @@ static int create_umr_res(struct mlx5_ib_dev *dev)
 		goto error_0;
 	}
 
-	pd = ib_alloc_pd(&dev->ib_dev, 0);
+	pd = ib_alloc_pd_notrack(&dev->ib_dev, 0);
 	if (IS_ERR(pd)) {
 		mlx5_ib_dbg(dev, "Couldn't create PD for sync UMR QP\n");
 		ret = PTR_ERR(pd);
 		goto error_0;
 	}
 
-	cq = ib_alloc_cq(&dev->ib_dev, NULL, 128, 0, IB_POLL_SOFTIRQ);
+	cq = ib_alloc_cq_notrack(&dev->ib_dev, NULL, 128, 0, IB_POLL_SOFTIRQ);
 	if (IS_ERR(cq)) {
 		mlx5_ib_dbg(dev, "Couldn't create CQ for sync UMR QP\n");
 		ret = PTR_ERR(cq);
@@ -3819,6 +3934,15 @@ static const struct mlx5_ib_counter extended_err_cnts[] = {
 	INIT_Q_COUNTER(req_cqe_flush_error),
 };
 
+#define INIT_EXT_ETH_COUNTER(_name)		\
+	{ .name = #_name, .offset =	\
+	MLX5_BYTE_OFF(ppcnt_reg, \
+		      counter_set.eth_extended_cntrs_grp_data_layout._name##_high)}
+
+static const struct mlx5_ib_counter ext_eth_cnts[] = {
+	INIT_EXT_ETH_COUNTER(rx_icrc_encapsulated),
+};
+
 static void mlx5_ib_dealloc_counters(struct mlx5_ib_dev *dev)
 {
 	unsigned int i;
@@ -3853,7 +3977,10 @@ static int __mlx5_ib_alloc_counters(struct mlx5_ib_dev *dev,
 		cnts->num_cong_counters = ARRAY_SIZE(cong_cnts);
 		num_counters += ARRAY_SIZE(cong_cnts);
 	}
-
+	if (MLX5_CAP_PCAM_FEATURE(dev->mdev, rx_icrc_encapsulated_counter)) {
+		cnts->num_ext_eth_counters = ARRAY_SIZE(ext_eth_cnts);
+		num_counters += ARRAY_SIZE(ext_eth_cnts);
+	}
 	cnts->names = kcalloc(num_counters, sizeof(cnts->names), GFP_KERNEL);
 	if (!cnts->names)
 		return -ENOMEM;
@@ -3909,6 +4036,13 @@ static void mlx5_ib_fill_counters(struct mlx5_ib_dev *dev,
 			offsets[j] = cong_cnts[i].offset;
 		}
 	}
+
+	if (MLX5_CAP_PCAM_FEATURE(dev->mdev, rx_icrc_encapsulated_counter)) {
+		for (i = 0; i < ARRAY_SIZE(ext_eth_cnts); i++, j++) {
+			names[j] = ext_eth_cnts[i].name;
+			offsets[j] = ext_eth_cnts[i].offset;
+		}
+	}
 }
 
 static int mlx5_ib_alloc_counters(struct mlx5_ib_dev *dev)
@@ -3958,7 +4092,8 @@ static struct rdma_hw_stats *mlx5_ib_alloc_hw_stats(struct ib_device *ibdev,
 
 	return rdma_alloc_hw_stats_struct(port->cnts.names,
 					  port->cnts.num_q_counters +
-					  port->cnts.num_cong_counters,
+					  port->cnts.num_cong_counters +
+					  port->cnts.num_ext_eth_counters,
 					  RDMA_HW_STATS_DEFAULT_LIFESPAN);
 }
 
@@ -3984,6 +4119,33 @@ static int mlx5_ib_query_q_counters(struct mlx5_ib_dev *dev,
 	for (i = 0; i < port->cnts.num_q_counters; i++) {
 		val = *(__be32 *)(out + port->cnts.offsets[i]);
 		stats->value[i] = (u64)be32_to_cpu(val);
+	}
+
+free:
+	kvfree(out);
+	return ret;
+}
+
+static int mlx5_ib_query_ext_eth_counters(struct mlx5_ib_dev *dev,
+					  struct mlx5_ib_port *port,
+					  struct rdma_hw_stats *stats)
+{
+	int offset = port->cnts.num_q_counters + port->cnts.num_cong_counters;
+	int sz = MLX5_ST_SZ_BYTES(ppcnt_reg);
+	void *out = kvzalloc(sz, GFP_KERNEL);
+	int ret, i;
+
+	if (!out)
+		return -ENOMEM;
+
+	ret = mlx5_cmd_query_ext_eth_counters(dev->mdev, out, sz);
+	if (ret)
+		goto free;
+
+	for (i = 0; i < port->cnts.num_ext_eth_counters; i++) {
+		stats->value[i + offset] =
+			be64_to_cpup((__be64 *)(out +
+				    port->cnts.offsets[i + offset]));
 	}
 
 free:
@@ -4017,6 +4179,13 @@ static int mlx5_ib_get_hw_stats(struct ib_device *ibdev,
 		if (ret)
 			return ret;
 		num_counters += port->cnts.num_cong_counters;
+	}
+
+	if (MLX5_CAP_PCAM_FEATURE(dev->mdev, rx_icrc_encapsulated_counter)) {
+		ret =  mlx5_ib_query_ext_eth_counters(dev, port, stats);
+		if (ret)
+			return ret;
+		num_counters += port->cnts.num_ext_eth_counters;
 	}
 
 	return num_counters;
@@ -4177,7 +4346,7 @@ mlx5_ib_get_vector_affinity(struct ib_device *ibdev, int comp_vector)
 {
 	struct mlx5_ib_dev *dev = to_mdev(ibdev);
 
-	return mlx5_get_vector_affinity(dev->mdev, comp_vector);
+	return mlx5_get_vector_affinity_hint(dev->mdev, comp_vector);
 }
 
 static int mlx5_ib_describe_counter_set(struct ib_device *ib_dev,
@@ -4449,6 +4618,78 @@ static void dealloc_ib_counter_sets(struct mlx5_ib_dev *dev)
 	kfree(dev->counter_sets.desc_cs_arr);
 }
 
+static ssize_t ooo_read(struct file *filp, char __user *buf,
+			size_t count, loff_t *pos)
+{
+	struct mlx5_ib_dbg_ooo *ooo = filp->private_data;
+	char lbuf[20];
+	int len;
+
+	len = snprintf(lbuf, sizeof(lbuf), "%d\n", ooo->enabled);
+	return simple_read_from_buffer(buf, count, pos, lbuf, len);
+}
+
+static ssize_t ooo_write(struct file *filp, const char __user *buf,
+			 size_t count, loff_t *pos)
+{
+	struct mlx5_ib_dbg_ooo *ooo = filp->private_data;
+	u32 var;
+
+	if (kstrtouint_from_user(buf, count, 0, &var))
+		return -EFAULT;
+
+	ooo->enabled = !!var;
+	return count;
+}
+
+static const struct file_operations dbg_ooo_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.write	= ooo_write,
+	.read	= ooo_read,
+};
+
+static void mlx5_ib_cleanup_ooo_debugfs(struct mlx5_ib_dev *dev)
+{
+	if (!mlx5_debugfs_root || !dev->ooo.dir_debugfs)
+		return;
+
+	debugfs_remove_recursive(dev->ooo.dir_debugfs);
+	memset(&dev->ooo, 0, sizeof(dev->ooo));
+}
+
+static void mlx5_ib_init_ooo_debugfs(struct mlx5_ib_dev *dev)
+{
+	if (!mlx5_debugfs_root || dev->rep)
+		return;
+
+	if (!MLX5_CAP_GEN(dev->mdev, multipath_rc_qp) &&
+	    !MLX5_CAP_GEN(dev->mdev, multipath_xrc_qp) &&
+	    !MLX5_CAP_GEN(dev->mdev, multipath_dc_qp))
+		return;
+
+	dev->ooo.dir_debugfs =
+		debugfs_create_dir("ooo",
+				   dev->mdev->priv.dbg_root);
+	if (!dev->ooo.dir_debugfs)
+		goto out_debugfs;
+
+	dev->ooo.ooo_debugfs =
+		debugfs_create_file("enable", 0600,
+				    dev->ooo.dir_debugfs,
+				    &dev->ooo,
+				    &dbg_ooo_fops);
+
+	if (!dev->ooo.ooo_debugfs)
+		goto out_debugfs;
+
+	return;
+
+out_debugfs:
+	mlx5_ib_warn(dev, "ooo debugfs failure\n");
+	mlx5_ib_cleanup_ooo_debugfs(dev);
+}
+
 void *__mlx5_ib_add(struct mlx5_core_dev *mdev,
 		    struct mlx5_ib_dev *dev,
 		    bool rep)
@@ -4591,6 +4832,8 @@ void *__mlx5_ib_add(struct mlx5_core_dev *mdev,
 	dev->ib_dev.modify_qp		= mlx5_ib_modify_qp;
 	dev->ib_dev.query_qp		= mlx5_ib_query_qp;
 	dev->ib_dev.destroy_qp		= mlx5_ib_destroy_qp;
+	dev->ib_dev.drain_sq		= mlx5_ib_drain_sq;
+	dev->ib_dev.drain_rq		= mlx5_ib_drain_rq;
 	dev->ib_dev.post_send		= mlx5_ib_post_send;
 	dev->ib_dev.post_recv		= mlx5_ib_post_recv;
 	dev->ib_dev.create_cq		= mlx5_ib_create_cq;
@@ -4640,6 +4883,8 @@ void *__mlx5_ib_add(struct mlx5_core_dev *mdev,
 		dev->ib_dev.destroy_nvmf_backend_ctrl = mlx5_ib_destroy_nvmf_backend_ctrl;
 		dev->ib_dev.attach_nvmf_ns            = mlx5_ib_attach_nvmf_ns;
 		dev->ib_dev.detach_nvmf_ns            = mlx5_ib_detach_nvmf_ns;
+		if (MLX5_CAP_NVMF(mdev, frontend_namespace_context))
+			dev->ib_dev.query_nvmf_ns = mlx5_ib_query_nvmf_ns;
 
 		mlx5_ib_internal_fill_nvmf_caps(dev);
 	}
@@ -4793,11 +5038,16 @@ void *__mlx5_ib_add(struct mlx5_core_dev *mdev,
 		goto err_dc;
 	}
 
+	err = init_ttl_sysfs(dev);
+	if (err) {
+		mlx5_ib_err(dev, "Fail to init ttl sysfs\n");
+		goto err_tc;
+	}
 	for (i = 0; i < ARRAY_SIZE(mlx5_class_attributes); i++) {
 		err = device_create_file(&dev->ib_dev.dev,
 					 mlx5_class_attributes[i]);
 		if (err)
-			goto err_tc;
+			goto err_ttl;
 	}
 
 	if ((MLX5_CAP_GEN(mdev, port_type) == MLX5_CAP_PORT_TYPE_ETH) &&
@@ -4807,14 +5057,18 @@ void *__mlx5_ib_add(struct mlx5_core_dev *mdev,
 
 	err = alloc_ib_counter_sets(dev);
 	if (err)
-		goto err_dc;
+		goto err_ttl;
 
 	if (!rep && MLX5_VPORT_MANAGER(mdev))
 		mlx5_ib_register_vport_reps(dev);
 
+	mlx5_ib_init_ooo_debugfs(dev);
+
 	dev->ib_active = true;
 
 	return dev;
+err_ttl:
+	cleanup_ttl_sysfs(dev);
 err_tc:
 	cleanup_tc_sysfs(dev);
 err_dc:
@@ -4876,7 +5130,7 @@ static void *mlx5_ib_add(struct mlx5_core_dev *mdev)
 	if (!ibdev)
 		return NULL;
 
-	if (MLX5_VPORT_MANAGER(mdev) &&
+	if (MLX5_ESWITCH_MANAGER(mdev) &&
 	    mlx5_ib_eswitch_mode(mdev->priv.eswitch) == SRIOV_OFFLOADS)
 		ibdev->rep = mlx5_ib_vport_rep(mdev->priv.eswitch, 0);
 
@@ -4889,9 +5143,12 @@ void __mlx5_ib_remove(struct mlx5_core_dev *mdev, void *context,
 	struct mlx5_ib_dev *dev = context;
 	enum rdma_link_layer ll = mlx5_ib_port_link_layer(&dev->ib_dev, 1);
 
+	mlx5_ib_cleanup_ooo_debugfs(dev);
+
 	if (!rep && MLX5_VPORT_MANAGER(mdev))
 		mlx5_ib_unregister_vport_reps(dev);
 
+	cleanup_ttl_sysfs(dev);
 	cleanup_tc_sysfs(dev);
 
 	if (MLX5_CAP_GEN(dev->mdev, port_type) ==

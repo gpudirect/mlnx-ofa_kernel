@@ -34,15 +34,17 @@
 #include <rdma/ib_umem_odp.h>
 #include <linux/kernel.h>
 #include <linux/debugfs.h>
+#include <linux/sched/mm.h>
 
 #include "mlx5_ib.h"
 #include "cmd.h"
+#include "odp_exp.h"
 
 #define MAX_PREFETCH_LEN (4*1024*1024U)
 
 /* Timeout in ms to wait for an active mmu notifier to complete when handling
  * a pagefault. */
-#define MMU_NOTIFIER_TIMEOUT 1000
+#define MMU_NOTIFIER_TIMEOUT 60000
 
 #define MLX5_IMR_MTT_BITS (30 - PAGE_SHIFT)
 #define MLX5_IMR_MTT_SHIFT (MLX5_IMR_MTT_BITS + PAGE_SHIFT)
@@ -53,6 +55,7 @@
 #define MLX5_KSM_PAGE_SHIFT MLX5_IMR_MTT_SHIFT
 
 static u64 mlx5_imr_ksm_entries;
+static int pages_in_range(u64 address, u32 length);
 
 static int check_parent(struct ib_umem_odp *odp,
 			       struct mlx5_ib_mr *parent)
@@ -332,23 +335,22 @@ void mlx5_ib_internal_fill_odp_caps(struct mlx5_ib_dev *dev)
 	    MLX5_CAP_GEN(dev->mdev, umr_extended_translation_offset))
 		caps->general_caps |= IB_ODP_SUPPORT_IMPLICIT;
 
+	if (mlx5_ib_capi_enabled(dev))
+		caps->general_caps |= IB_ODP_SUPPORT_IMPLICIT;
+
 	return;
 }
 
 static void mlx5_ib_page_fault_resume(struct mlx5_ib_dev *dev,
 				      struct mlx5_pagefault *pfault,
+				      bool drop,
 				      int error)
 {
-	int wq_num = pfault->event_subtype == MLX5_PFAULT_SUBTYPE_WQE ?
-		     pfault->wqe.wq_num : pfault->token;
-	int ret = mlx5_core_page_fault_resume(dev->mdev,
-					      pfault->token,
-					      wq_num,
-					      pfault->type,
-					      error);
+	int ret = mlx5_core_page_fault_resume(dev->mdev, pfault, drop, error);
+
 	if (ret)
-		mlx5_ib_err(dev, "Failed to resolve the page fault on WQ 0x%x\n",
-			    wq_num);
+		mlx5_ib_err(dev, "Failed to resume the page fault (%d)\n", ret);
+
 	if (likely(!error))
 		ib_umem_odp_account_fault_handled(&dev->ib_dev);
 	else
@@ -358,16 +360,31 @@ static void mlx5_ib_page_fault_resume(struct mlx5_ib_dev *dev,
 
 #ifdef CONFIG_CXL_LIB
 static int handle_capi_pg_fault(struct mlx5_ib_dev *dev, struct mm_struct *mm,
-				u64 va, size_t sz)
+				u64 va, size_t sz, struct mlx5_pagefault *pfault)
 {
-	int err;
+	int err, index;
+	unsigned long start;
+	unsigned int duration;
 
-	err = cxllib_handle_fault(mm, va, sz, 0);
+	if (!mmget_not_zero(mm))
+		return -EPERM;
+
+	start = jiffies;
+	if (pfault->type & MLX5_PAGE_FAULT_RESUME_WRITE)
+		err = cxllib_handle_fault(mm, va, sz, DSISR_ISSTORE);
+	else
+		err = cxllib_handle_fault(mm, va, sz, 0);
+
+	duration = jiffies_to_msecs(jiffies - start);
+	index =	convert_duration_to_hist(duration);
+	dev->pf_cxl_hist[index]++;
+
+	mmput(mm);
 	return err;
 }
 #else
 static int handle_capi_pg_fault(struct mlx5_ib_dev *dev, struct mm_struct *mm,
-				u64 va, size_t sz)
+				u64 va, size_t sz, struct mlx5_pagefault *pfault)
 {
 	return 0;
 }
@@ -593,17 +610,6 @@ next_mr:
 	if (mr->umem->writable)
 		access_mask |= ODP_WRITE_ALLOWED_BIT;
 
-	if (mlx5_ib_capi_enabled(dev)) {
-		if (!mr->umem->mm) {
-			mlx5_ib_warn(dev, "mm is null\n");
-			return -1;
-		}
-		ret = handle_capi_pg_fault(dev, mr->umem->mm, io_virt, bcnt);
-		if (!ret && bytes_mapped)
-			*bytes_mapped += bcnt;
-		return ret;
-	}
-
 	current_seq = READ_ONCE(odp->notifiers_seq);
 	/*
 	 * Ensure the sequence number is valid for some time before we call
@@ -675,8 +681,8 @@ out:
 			if (!wait_for_completion_timeout(
 					&odp->notifier_completion,
 					timeout)) {
-				mlx5_ib_warn(dev, "timeout waiting for mmu notifier. seq %d against %d\n",
-					     current_seq, odp->notifiers_seq);
+				mlx5_ib_warn(dev, "timeout waiting for mmu notifier. seq %d against %d. notifiers_count=%d\n",
+					     current_seq, odp->notifiers_seq, odp->notifiers_count);
 			}
 		} else {
 			/* The MR is being killed, kill the QP as well. */
@@ -750,7 +756,8 @@ int pagefault_single_data_segment(struct mlx5_ib_dev *dev,
 				  u32 key, u64 io_virt, size_t bcnt,
 				  u32 *bytes_committed,
 				  u32 *bytes_mapped,
-				  enum ib_odp_dma_map_flags dma_flags)
+				  enum ib_odp_dma_map_flags dma_flags,
+				  struct mlx5_pagefault *pfault)
 {
 	int npages = 0, srcu_key, ret, i, outlen, cur_outlen = 0, depth = 0;
 	struct pf_frame *head = NULL, *frame;
@@ -782,6 +789,31 @@ next_mr:
 		if (!mr->live || !mr->ibmr.pd) {
 			mlx5_ib_dbg(dev, "got dead MR\n");
 			ret = -EFAULT;
+			goto srcu_unlock;
+		}
+
+		if (mlx5_ib_capi_enabled(dev)) {
+			if (!pfault) {
+				mlx5_ib_dbg(dev, "CAPI: pfault is NULL\n");
+				ret = -EFAULT;
+				goto srcu_unlock;
+			}
+
+			if (!mr->umem->mm) {
+				mlx5_ib_dbg(dev, "CAPI: skipping non ODP MR (lkey=0x%06x) in page fault handler.\n",
+					    key);
+				if (bytes_mapped)
+					*bytes_mapped += bcnt;
+				goto srcu_unlock;
+			}
+
+			ret = handle_capi_pg_fault(dev, mr->umem->mm,
+						   io_virt, bcnt, pfault);
+			if (!ret) {
+				if (bytes_mapped)
+					*bytes_mapped += bcnt;
+				ret = pages_in_range(io_virt, bcnt);
+			}
 			goto srcu_unlock;
 		}
 
@@ -992,7 +1024,7 @@ static int pagefault_data_segments(struct mlx5_ib_dev *dev,
 
 		ret = pagefault_single_data_segment(dev, key, io_virt, bcnt,
 						    &pfault->bytes_committed,
-						    bytes_mapped, 0);
+						    bytes_mapped, 0, pfault);
 		if (ret < 0)
 			break;
 		npages += ret;
@@ -1218,19 +1250,6 @@ invalid_transport_or_opcode:
 	return 0;
 }
 
-static struct mlx5_ib_qp *mlx5_ib_odp_find_qp(struct mlx5_ib_dev *dev,
-					      u32 wq_num)
-{
-	struct mlx5_core_qp *mqp = __mlx5_qp_lookup(dev->mdev, wq_num);
-
-	if (!mqp) {
-		mlx5_ib_dbg(dev, "QPN 0x%6x not found\n", wq_num);
-		return NULL;
-	}
-
-	return to_mibqp(mqp);
-}
-
 static void mlx5_ib_mr_wqe_pfault_handler(struct mlx5_ib_dev *dev,
 					  struct mlx5_pagefault *pfault)
 {
@@ -1241,15 +1260,26 @@ static void mlx5_ib_mr_wqe_pfault_handler(struct mlx5_ib_dev *dev,
 	int resume_with_error = 1;
 	u16 wqe_index = pfault->wqe.wqe_index;
 	int requestor = pfault->type & MLX5_PFAULT_REQUESTOR;
+	struct mlx5_core_qp *mqp = (struct mlx5_core_qp *)pfault->wqe.common;
 	struct mlx5_ib_qp *qp;
+	bool drop = false;
+	unsigned long flags;
+
+	if (!mqp)
+		return;
+	qp = to_mibqp(mqp);
+
+	mutex_lock(&qp->mutex);
+	if (pfault->wqe.ignore) {
+		drop = true;
+		goto resolve_page_fault;
+	}
 
 	buffer = (char *)__get_free_page(GFP_KERNEL);
-	if (!buffer)
-		return;
-
-	qp = mlx5_ib_odp_find_qp(dev, pfault->wqe.wq_num);
-	if (!qp)
-		goto out_err;
+	if (!buffer) {
+		mlx5_ib_err(dev, "Error allocating memory for IO page fault handling.\n");
+		goto resolve_page_fault;
+	}
 
 	ret = mlx5_ib_read_user_wqe(qp, requestor, wqe_index, buffer,
 				    PAGE_SIZE, &qp->trans_qp.base);
@@ -1286,11 +1316,21 @@ static void mlx5_ib_mr_wqe_pfault_handler(struct mlx5_ib_dev *dev,
 
 	resume_with_error = 0;
 resolve_page_fault:
-	mlx5_ib_page_fault_resume(dev, pfault, resume_with_error);
-	mlx5_ib_dbg(dev, "PAGE FAULT completed. QP 0x%x resume_with_error=%d, type: 0x%x\n",
-		    pfault->wqe.wq_num, resume_with_error,
-		    pfault->type);
-out_err:
+	mlx5_ib_page_fault_resume(dev, pfault, drop, resume_with_error);
+
+	spin_lock_irqsave(&mqp->common.lock, flags);
+	/* check if current pagefault event is also the last for the QP.
+	 * If yes, clear from QP
+	 */
+	if (requestor) {
+		if (pfault == mqp->pfault_req)
+			mqp->pfault_req = NULL;
+	} else {
+		if (pfault == mqp->pfault_res)
+			mqp->pfault_res = NULL;
+	}
+	spin_unlock_irqrestore(&mqp->common.lock, flags);
+	mutex_unlock(&qp->mutex);
 	free_page((unsigned long)buffer);
 }
 
@@ -1334,19 +1374,20 @@ static void mlx5_ib_mr_rdma_pfault_handler(struct mlx5_ib_dev *dev,
 	}
 
 	ret = pagefault_single_data_segment(dev, rkey, address, length,
-					    &pfault->bytes_committed, NULL, 0);
+					    &pfault->bytes_committed, NULL, 0,
+					    pfault);
 	if (ret == -EAGAIN) {
 		/* We're racing with an invalidation, don't prefetch */
 		prefetch_activated = 0;
 	} else if (ret < 0 || pages_in_range(address, length) > ret) {
-		mlx5_ib_page_fault_resume(dev, pfault, 1);
+		mlx5_ib_page_fault_resume(dev, pfault, false, 1);
 		if (ret != -ENOENT)
 			mlx5_ib_dbg(dev, "PAGE FAULT error %d. QP 0x%x, type: 0x%x\n",
 				    ret, pfault->token, pfault->type);
 		return;
 	}
 
-	mlx5_ib_page_fault_resume(dev, pfault, 0);
+	mlx5_ib_page_fault_resume(dev, pfault, false, 0);
 	mlx5_ib_dbg(dev, "PAGE FAULT completed. QP 0x%x, type: 0x%x, prefetch_activated: %d\n",
 		    pfault->token, pfault->type,
 		    prefetch_activated);
@@ -1361,7 +1402,8 @@ static void mlx5_ib_mr_rdma_pfault_handler(struct mlx5_ib_dev *dev,
 
 		ret = pagefault_single_data_segment(dev, rkey, address,
 						    prefetch_len,
-						    &bytes_committed, NULL, 0);
+						    &bytes_committed, NULL, 0,
+						    pfault);
 		if (ret < 0 && ret != -EAGAIN) {
 			mlx5_ib_dbg(dev, "Prefetch failed. ret: %d, QP 0x%x, address: 0x%.16llx, length = 0x%.16x\n",
 				    ret, pfault->token, address, prefetch_len);
@@ -1369,12 +1411,31 @@ static void mlx5_ib_mr_rdma_pfault_handler(struct mlx5_ib_dev *dev,
 	}
 }
 
+void mlx5_ib_pfault_done(struct mlx5_pagefault *pfault, void *context)
+{
+	struct mlx5_ib_dev *dev = context;
+	unsigned int duration;
+	int index;
+
+	duration = jiffies_to_msecs(jiffies - pfault->start);
+	index =	convert_duration_to_hist(duration);
+	dev->pf_int_total_hist[index]++;
+}
+
 void mlx5_ib_pfault(struct mlx5_core_dev *mdev, void *context,
 		    struct mlx5_pagefault *pfault)
 {
 	struct mlx5_ib_dev *dev = context;
 	u8 event_subtype = pfault->event_subtype;
+	unsigned int duration;
+	int index;
 
+	duration = jiffies_to_msecs(jiffies - pfault->start);
+	index =	convert_duration_to_hist(duration);
+	dev->pf_int_wq_hist[index]++;
+
+	pfault->done_cb = mlx5_ib_pfault_done;
+	pfault->done_context = dev;
 	switch (event_subtype) {
 	case MLX5_PFAULT_SUBTYPE_WQE:
 		mlx5_ib_mr_wqe_pfault_handler(dev, pfault);
@@ -1385,7 +1446,7 @@ void mlx5_ib_pfault(struct mlx5_core_dev *mdev, void *context,
 	default:
 		mlx5_ib_err(dev, "Invalid page fault event subtype: 0x%x\n",
 			    event_subtype);
-		mlx5_ib_page_fault_resume(dev, pfault, 1);
+		mlx5_ib_page_fault_resume(dev, pfault, false, 1);
 	}
 }
 

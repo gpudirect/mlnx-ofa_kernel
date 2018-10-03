@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Mellanox Technologies. All rights reserved
+ * Copyright (c) 2018 Mellanox Technologies. All rights reserved
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -39,7 +39,7 @@ static void parent_ethtool_get_drvinfo(struct net_device *parent_dev,
 
 	strncpy(drvinfo->driver, DRV_NAME, 32);
 
-	strncpy(drvinfo->version, eth_ipoib_driver_version, sizeof(drvinfo->version));
+	strncpy(drvinfo->version, DRV_VERSION, 32);
 
 	strncpy(drvinfo->bus_info, parent->ipoib_main_interface,
 		ETHTOOL_BUSINFO_LEN);
@@ -73,7 +73,7 @@ static const char parent_strings[][ETH_GSTRING_LEN] = {
 
 
 static int eipoib_get_settings(struct net_device *parent_dev,
-			       struct ethtool_cmd *ecmd)
+			       struct ethtool_link_ksettings *lks)
 {
 	int ret;
 	struct parent *parent = netdev_priv(parent_dev);
@@ -90,7 +90,7 @@ static int eipoib_get_settings(struct net_device *parent_dev,
 	}
 	rcu_read_unlock_bh();
 
-	ret = __ethtool_get_settings(slave->dev, ecmd);
+	ret = __ethtool_get_link_ksettings(slave->dev, lks);
 
 	return ret;
 }
@@ -127,7 +127,7 @@ static int parent_get_sset_count(struct net_device *parent_dev, int sset)
 static const struct ethtool_ops parent_ethtool_ops = {
 	.get_drvinfo		= parent_ethtool_get_drvinfo,
 	.get_strings		= parent_get_strings,
-	.get_settings		= eipoib_get_settings,
+	.get_link_ksettings	= eipoib_get_settings,
 	.get_ethtool_stats	= parent_get_ethtool_stats,
 	.get_sset_count		= parent_get_sset_count,
 	.get_link		= ethtool_op_get_link,

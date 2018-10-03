@@ -62,6 +62,10 @@ KCFLAGS += -Wno-date-time
 export KCFLAGS
 endif
 
+# Pass CFLAGS_RETPOLINE to the kernel's build system. Even if it was
+# not defined: we test there if it is empty
+export CFLAGS_RETPOLINE
+
 CPP_MAJOR := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f1)
 CPP_MINOR := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f2)
 CPP_PATCH := $(shell $(CPP) -dumpversion 2>&1 | cut -d'.' -f3)
@@ -228,6 +232,7 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_MLX4_FC=$(CONFIG_MLX4_FC) \
 		CONFIG_SUNRPC_XPRT_RDMA=$(CONFIG_SUNRPC_XPRT_RDMA) \
 		CONFIG_SUNRPC_XPRT_RDMA_DUMMY=$(CONFIG_SUNRPC_XPRT_RDMA_DUMMY) \
+		CONFIG_E_IPOIB=$(CONFIG_E_IPOIB) \
 		CONFIG_DTRACE= \
 		CONFIG_CC_STACKPROTECTOR_STRONG= \
 		CONFIG_CTF= \
@@ -305,6 +310,7 @@ endif
 	install -m 0755 ofed_scripts/sysctl_perf_tuning $(INSTALL_MOD_PATH)/sbin
 	install -d $(INSTALL_MOD_PATH)/$(prefix)/sbin
 	install -m 0755 ofed_scripts/*affinity* $(INSTALL_MOD_PATH)/$(prefix)/sbin
+	install -m 0755 ofed_scripts/vf-net-link-name.sh $(INSTALL_MOD_PATH)/etc/infiniband
 
 	install -d $(INSTALL_MOD_PATH)/etc/modprobe.d
 ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/modprobe.d/mlnx.conf)","")
@@ -330,9 +336,18 @@ ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/modprobe.d/ib_ipoib.conf)","")
 endif
 endif
 
+ifeq ($(CONFIG_E_IPOIB),m)
+	install -d $(INSTALL_MOD_PATH)/sbin
+	install -m 0755 ofed_scripts/ipoibd $(INSTALL_MOD_PATH)/usr/sbin
+	install -m 0755 ofed_scripts/eipoib_daemon $(INSTALL_MOD_PATH)/usr/sbin
+endif
+
 	install -d $(INSTALL_MOD_PATH)/etc/udev/rules.d
 ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/udev/rules.d/90-ib.rules)","")
 	install -m 0644 ofed_scripts/90-ib.rules $(INSTALL_MOD_PATH)/etc/udev/rules.d
+endif
+ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/udev/rules.d/82-net-setup-link.rules)","")
+	install -m 0644 ofed_scripts/82-net-setup-link.rules $(INSTALL_MOD_PATH)/etc/udev/rules.d
 endif
 ifneq ($(shell udevinfo -V 2> /dev/null | awk '{print $NF}' 2>/dev/null | grep -E "^0[1-4]"),)
 	sed -i -e 's/KERNEL==/KERNEL=/g' $(INSTALL_MOD_PATH)/etc/udev/rules.d
@@ -346,6 +361,7 @@ endif
 	install -m 0755 ofed_scripts/cma_roce_tos $(INSTALL_MOD_PATH)/usr/sbin
 	install -m 0755 ofed_scripts/setup_mr_cache.sh $(INSTALL_MOD_PATH)/usr/sbin
 	install -m 0755 ofed_scripts/odp_stat.sh $(INSTALL_MOD_PATH)/usr/sbin
+	install -m 0755 ofed_scripts/show_counters $(INSTALL_MOD_PATH)/usr/sbin
 	install -d $(INSTALL_MOD_PATH)/etc/
 
 

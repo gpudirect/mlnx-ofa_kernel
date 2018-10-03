@@ -34,10 +34,14 @@
 #include <linux/module.h>
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
+#include <linux/mlx5/qp.h>
+#ifdef CONFIG_RFS_ACCEL
+#include <linux/cpu_rmap.h>
+#endif
 #include "mlx5_core.h"
 #include "fpga/core.h"
 #include "eswitch.h"
-#include "diag/tracer.h"
+#include "diag/fw_tracer.h"
 
 enum {
 	MLX5_EQE_SIZE		= sizeof(struct mlx5_eqe),
@@ -219,7 +223,6 @@ static void eqe_pf_action(struct work_struct *work)
 	struct mlx5_eq *eq = pfault->eq;
 
 	mlx5_core_page_fault(eq->dev, pfault);
-	mempool_free(pfault, eq->pf_ctx.pool);
 }
 
 static void eq_pf_process(struct mlx5_eq *eq)
@@ -241,7 +244,9 @@ static void eq_pf_process(struct mlx5_eq *eq)
 		pf_eqe = &eqe->data.page_fault;
 		pfault->event_subtype = eqe->sub_type;
 		pfault->bytes_committed = be32_to_cpu(pf_eqe->bytes_committed);
+		pfault->wqe.common = NULL;
 
+		pfault->start = jiffies;
 		mlx5_core_dbg(dev,
 			      "PAGE_FAULT: subtype: 0x%02x, bytes_committed: 0x%06x\n",
 			      eqe->sub_type, pfault->bytes_committed);
@@ -290,6 +295,32 @@ static void eq_pf_process(struct mlx5_eq *eq)
 				      pfault->type, pfault->token,
 				      pfault->wqe.wq_num,
 				      pfault->wqe.wqe_index);
+			pfault->wqe.common = mlx5_core_get_rsc(eq->dev,
+							       pfault->wqe.wq_num);
+
+			pfault->wqe.ignore = false;
+			if (pfault->wqe.common  &&
+			    pfault->wqe.common->res == MLX5_RES_QP) {
+				int requestor = pfault->type & MLX5_PFAULT_REQUESTOR;
+				struct mlx5_core_qp *mqp = (struct mlx5_core_qp *)pfault->wqe.common;
+				unsigned long flags;
+
+				/* after QP is modified to RESET it is possible that new
+				 * pagefault event arrives. This implies that the pending pagefault
+				 * is no long relevant
+				 */
+				spin_lock_irqsave(&mqp->common.lock, flags);
+				if (requestor) {
+					if (mqp->pfault_req)
+						mqp->pfault_req->wqe.ignore = true;
+					mqp->pfault_req = pfault;
+				} else {
+					if (mqp->pfault_res)
+						mqp->pfault_res->wqe.ignore = true;
+					mqp->pfault_res = pfault;
+				}
+				spin_unlock_irqrestore(&mqp->common.lock, flags);
+			}
 			break;
 
 		default:
@@ -301,6 +332,7 @@ static void eq_pf_process(struct mlx5_eq *eq)
 			 */
 		}
 
+		pfault->done_cb = NULL;
 		pfault->eq = eq;
 		INIT_WORK(&pfault->work, eqe_pf_action);
 		queue_work(eq->pf_ctx.wq, &pfault->work);
@@ -368,13 +400,15 @@ static void eq_pf_action(struct work_struct *work)
 	spin_unlock_irq(&eq->pf_ctx.lock);
 }
 
-static int init_pf_ctx(struct mlx5_eq_pagefault *pf_ctx, const char *name)
+static int init_pf_ctx(struct mlx5_eq_pagefault *pf_ctx, const char *name, bool capi_enabled)
 {
 	spin_lock_init(&pf_ctx->lock);
 	INIT_WORK(&pf_ctx->work, eq_pf_action);
 
-	pf_ctx->wq = alloc_ordered_workqueue(name,
-					     WQ_MEM_RECLAIM);
+	pf_ctx->wq = alloc_workqueue(name,
+				     WQ_HIGHPRI | WQ_CPU_INTENSIVE,
+				     MLX5_NUM_CMD_EQE);
+
 	if (!pf_ctx->wq)
 		return -ENOMEM;
 
@@ -389,20 +423,58 @@ err_wq:
 	return -ENOMEM;
 }
 
-int mlx5_core_page_fault_resume(struct mlx5_core_dev *dev, u32 token,
-				u32 wq_num, u8 type, int error)
+static void page_fault_resume_callback(int status, void *context)
 {
-	u32 out[MLX5_ST_SZ_DW(page_fault_resume_out)] = {0};
-	u32 in[MLX5_ST_SZ_DW(page_fault_resume_in)]   = {0};
+	struct mlx5_pagefault *pfault = context;
 
-	MLX5_SET(page_fault_resume_in, in, opcode,
-		 MLX5_CMD_OP_PAGE_FAULT_RESUME);
-	MLX5_SET(page_fault_resume_in, in, error, !!error);
-	MLX5_SET(page_fault_resume_in, in, page_fault_type, type);
-	MLX5_SET(page_fault_resume_in, in, wq_number, wq_num);
-	MLX5_SET(page_fault_resume_in, in, token, token);
+	if (pfault->done_cb)
+		pfault->done_cb(pfault, pfault->done_context);
 
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	if (status)
+		mlx5_core_err(pfault->eq->dev, "Resolve the page fault failed with status %d\n",
+			      status);
+	if (pfault->event_subtype == MLX5_PFAULT_SUBTYPE_WQE &&
+	    pfault->wqe.common)
+		mlx5_core_put_rsc(pfault->wqe.common);
+
+	mempool_free(pfault, pfault->eq->pf_ctx.pool);
+}
+
+int mlx5_core_page_fault_resume(struct mlx5_core_dev *dev,
+				struct mlx5_pagefault *pfault,
+				bool drop,
+				int error)
+{
+	int ret;
+
+	if (likely(!drop)) {
+		u32 *out = pfault->out_pf_resume;
+		u32 *in = pfault->in_pf_resume;
+		u32 token = pfault->token;
+		int wq_num = pfault->event_subtype == MLX5_PFAULT_SUBTYPE_WQE ?
+			pfault->wqe.wq_num : pfault->token;
+		u8 type = pfault->type;
+
+		memset(out, 0, MLX5_ST_SZ_BYTES(page_fault_resume_out));
+		memset(in, 0, MLX5_ST_SZ_BYTES(page_fault_resume_in));
+
+		MLX5_SET(page_fault_resume_in, in, opcode,
+			 MLX5_CMD_OP_PAGE_FAULT_RESUME);
+		MLX5_SET(page_fault_resume_in, in, error, !!error);
+		MLX5_SET(page_fault_resume_in, in, page_fault_type, type);
+		MLX5_SET(page_fault_resume_in, in, wq_number, wq_num);
+		MLX5_SET(page_fault_resume_in, in, token, token);
+
+		ret = mlx5_cmd_exec_cb(dev,
+				       in, MLX5_ST_SZ_BYTES(page_fault_resume_in),
+				       out, MLX5_ST_SZ_BYTES(page_fault_resume_out),
+				       page_fault_resume_callback, pfault);
+	} else {
+		page_fault_resume_callback(0, pfault);
+		ret = 0;
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(mlx5_core_page_fault_resume);
 #endif
@@ -419,6 +491,51 @@ static void general_event_handler(struct mlx5_core_dev *dev,
 		mlx5_core_dbg(dev, "General event with unrecognized subtype: sub_type %d\n",
 			      eqe->sub_type);
 	}
+}
+
+/* caller must eventually call mlx5_cq_put on the returned cq */
+static struct mlx5_core_cq *mlx5_eq_cq_get(struct mlx5_eq *eq, u32 cqn)
+{
+	struct mlx5_cq_table *table = &eq->cq_table;
+	struct mlx5_core_cq *cq = NULL;
+
+	spin_lock(&table->lock);
+	cq = radix_tree_lookup(&table->tree, cqn);
+	if (likely(cq))
+		mlx5_cq_hold(cq);
+	spin_unlock(&table->lock);
+
+	return cq;
+}
+
+static void mlx5_eq_cq_completion(struct mlx5_eq *eq, u32 cqn)
+{
+	struct mlx5_core_cq *cq = mlx5_eq_cq_get(eq, cqn);
+
+	if (unlikely(!cq)) {
+		mlx5_core_warn(eq->dev, "Completion event for bogus CQ 0x%x\n", cqn);
+		return;
+	}
+
+	++cq->arm_sn;
+
+	cq->comp(cq);
+
+	mlx5_cq_put(cq);
+}
+
+static void mlx5_eq_cq_event(struct mlx5_eq *eq, u32 cqn, int event_type)
+{
+	struct mlx5_core_cq *cq = mlx5_eq_cq_get(eq, cqn);
+
+	if (unlikely(!cq)) {
+		mlx5_core_warn(eq->dev, "Async event for bogus CQ 0x%x\n", cqn);
+		return;
+	}
+
+	cq->event(cq, event_type);
+
+	mlx5_cq_put(cq);
 }
 
 static void mlx5_temp_warning_event(struct mlx5_core_dev *dev,
@@ -464,7 +581,7 @@ static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 		switch (eqe->type) {
 		case MLX5_EVENT_TYPE_COMP:
 			cqn = be32_to_cpu(eqe->data.comp.cqn) & 0xffffff;
-			mlx5_cq_completion(dev, cqn);
+			mlx5_eq_cq_completion(eq, cqn);
 			break;
 
 		case MLX5_EVENT_TYPE_DCT_DRAINED:
@@ -547,7 +664,7 @@ static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 			cqn = be32_to_cpu(eqe->data.cq_err.cqn) & 0xffffff;
 			mlx5_core_warn(dev, "CQ error on CQN 0x%x, syndrome 0x%x\n",
 				       cqn, eqe->data.cq_err.syndrome);
-			mlx5_cq_event(dev, cqn, eqe->type);
+			mlx5_eq_cq_event(eq, cqn, eqe->type);
 			break;
 
 		case MLX5_EVENT_TYPE_PAGE_REQUEST:
@@ -587,7 +704,7 @@ static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 			break;
 
 		case MLX5_EVENT_TYPE_DEVICE_TRACER:
-			mlx5_tracer_event(dev, eqe);
+			mlx5_fw_tracer_event(dev, eqe);
 			break;
 
 		default:
@@ -659,6 +776,7 @@ int mlx5_create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq, u8 vecidx,
 		       int nent, u64 mask, const char *name,
 		       enum mlx5_eq_type type)
 {
+	struct mlx5_cq_table *cq_table = &eq->cq_table;
 	u32 out[MLX5_ST_SZ_DW(create_eq_out)] = {0};
 	struct mlx5_priv *priv = &dev->priv;
 	irq_handler_t handler;
@@ -667,6 +785,11 @@ int mlx5_create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq, u8 vecidx,
 	int inlen;
 	u32 *in;
 	int err;
+
+	/* Init CQ table */
+	memset(cq_table, 0, sizeof(*cq_table));
+	spin_lock_init(&cq_table->lock);
+	INIT_RADIX_TREE(&cq_table->tree, GFP_ATOMIC);
 
 	eq->type = type;
 	eq->nent = roundup_pow_of_two(nent + MLX5_NUM_SPARE_EQE);
@@ -727,7 +850,7 @@ int mlx5_create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq, u8 vecidx,
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 	if (type == MLX5_EQ_TYPE_PF) {
-		err = init_pf_ctx(&eq->pf_ctx, name);
+		err = init_pf_ctx(&eq->pf_ctx, name, dev->capi.enabled);
 		if (err)
 			goto err_irq;
 	} else
@@ -760,7 +883,6 @@ err_buf:
 	mlx5_buf_free(dev, &eq->buf);
 	return err;
 }
-EXPORT_SYMBOL_GPL(mlx5_create_map_eq);
 
 int mlx5_destroy_unmap_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq)
 {
@@ -787,7 +909,40 @@ int mlx5_destroy_unmap_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq)
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(mlx5_destroy_unmap_eq);
+
+int mlx5_eq_add_cq(struct mlx5_eq *eq, struct mlx5_core_cq *cq)
+{
+	struct mlx5_cq_table *table = &eq->cq_table;
+	int err;
+
+	spin_lock_irq(&table->lock);
+	err = radix_tree_insert(&table->tree, cq->cqn, cq);
+	spin_unlock_irq(&table->lock);
+
+	return err;
+}
+
+int mlx5_eq_del_cq(struct mlx5_eq *eq, struct mlx5_core_cq *cq)
+{
+	struct mlx5_cq_table *table = &eq->cq_table;
+	struct mlx5_core_cq *tmp;
+
+	spin_lock_irq(&table->lock);
+	tmp = radix_tree_delete(&table->tree, cq->cqn);
+	spin_unlock_irq(&table->lock);
+
+	if (!tmp) {
+		mlx5_core_warn(eq->dev, "cq 0x%x not found in eq 0x%x tree\n", eq->eqn, cq->cqn);
+		return -ENOENT;
+	}
+
+	if (tmp != cq) {
+		mlx5_core_warn(eq->dev, "corruption on cqn 0x%x in eq 0x%x\n", eq->eqn, cq->cqn);
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 int mlx5_eq_init(struct mlx5_core_dev *dev)
 {
@@ -941,4 +1096,28 @@ int mlx5_core_eq_query(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
 	MLX5_SET(query_eq_in, in, eq_number, eq->eqn);
 	return mlx5_cmd_exec(dev, in, sizeof(in), out, outlen);
 }
-EXPORT_SYMBOL_GPL(mlx5_core_eq_query);
+
+/* This function should only be called after mlx5_cmd_force_teardown_hca */
+void mlx5_core_eq_free_irqs(struct mlx5_core_dev *dev)
+{
+	struct mlx5_eq_table *table = &dev->priv.eq_table;
+	struct mlx5_eq *eq;
+	
+#ifdef CONFIG_RFS_ACCEL
+	if (dev->rmap) {
+		free_irq_cpu_rmap(dev->rmap);
+		dev->rmap = NULL;
+	}
+#endif
+	list_for_each_entry(eq, &table->comp_eqs_list, list)
+		free_irq(eq->irqn, eq);
+
+	free_irq(table->pages_eq.irqn, &table->pages_eq);
+	free_irq(table->async_eq.irqn, &table->async_eq);
+	free_irq(table->cmd_eq.irqn, &table->cmd_eq);
+#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+	if (MLX5_CAP_GEN(dev, pg))
+		free_irq(table->pfault_eq.irqn, &table->pfault_eq);
+#endif
+	pci_free_irq_vectors(dev->pdev);
+}

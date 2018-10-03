@@ -1,0 +1,42 @@
+From: Yevgeny Kliteynik <kliteyn@mellanox.com>
+Subject: [PATCH] BACKPORT: net/sched/act_tunnel_key.c
+
+---
+ net/sched/act_tunnel_key.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+--- a/net/sched/act_tunnel_key.c
++++ b/net/sched/act_tunnel_key.c
+@@ -217,7 +217,7 @@ MODULE_LICENSE("GPL v2");
+ MODULE_INFO(retpoline, "Y");
+ #endif
+ 
+-#else /* CONFIG_COMPAT_KERNEL_4_9 */
++#else	/* CONFIG_COMPAT_KERNEL_4_9 */
+ 
+ /*
+  * Copyright (c) 2016, Amir Vadai <amir@vadai.me>
+@@ -344,7 +344,7 @@ static int tunnel_key_init(struct net *n
+ 			saddr = nla_get_in_addr(tb[TCA_TUNNEL_KEY_ENC_IPV4_SRC]);
+ 			daddr = nla_get_in_addr(tb[TCA_TUNNEL_KEY_ENC_IPV4_DST]);
+ 
+-			metadata = __ip_tun_set_dst(saddr, daddr, 0, 0,
++			metadata = backport__ip_tun_set_dst(saddr, daddr, 0, 0,
+ 						    dst_port, TUNNEL_KEY,
+ 						    key_id, 0);
+ 		} else if (tb[TCA_TUNNEL_KEY_ENC_IPV6_SRC] &&
+@@ -355,7 +355,7 @@ static int tunnel_key_init(struct net *n
+ 			saddr = nla_get_in6_addr(tb[TCA_TUNNEL_KEY_ENC_IPV6_SRC]);
+ 			daddr = nla_get_in6_addr(tb[TCA_TUNNEL_KEY_ENC_IPV6_DST]);
+ 
+-			metadata = __ipv6_tun_set_dst(&saddr, &daddr, 0, 0, dst_port,
++			metadata = backport__ipv6_tun_set_dst(&saddr, &daddr, 0, 0, dst_port,
+ 						      0, TUNNEL_KEY,
+ 						      key_id, 0);
+ 		}
+@@ -569,4 +569,4 @@ MODULE_AUTHOR("Amir Vadai <amir@vadai.me
+ MODULE_DESCRIPTION("ip tunnel manipulation actions");
+ MODULE_LICENSE("GPL v2");
+ 
+-#endif /* CONFIG_COMPAT_KERNEL_4_9 */
++#endif	/* CONFIG_COMPAT_KERNEL_4_9 */

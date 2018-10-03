@@ -32,6 +32,7 @@
 
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
+#include <linux/mlx5/eswitch.h>
 #include <linux/module.h>
 #include "mlx5_core.h"
 #include "../../mlxfw/mlxfw.h"
@@ -159,13 +160,13 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 	}
 
 	if (MLX5_CAP_GEN(dev, vport_group_manager) &&
-	    MLX5_CAP_GEN(dev, eswitch_flow_table)) {
+	    MLX5_ESWITCH_MANAGER(dev)) {
 		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH_FLOW_TABLE);
 		if (err)
 			return err;
 	}
 
-	if (MLX5_CAP_GEN(dev, eswitch_flow_table)) {
+	if (MLX5_ESWITCH_MANAGER(dev)) {
 		err = mlx5_core_get_caps(dev, MLX5_CAP_ESWITCH);
 		if (err)
 			return err;
@@ -179,6 +180,12 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 
 	if (MLX5_CAP_GEN(dev, qos)) {
 		err = mlx5_core_get_caps(dev, MLX5_CAP_QOS);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, debug)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_DEBUG);
 		if (err)
 			return err;
 	}
@@ -211,12 +218,20 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 	return 0;
 }
 
-int mlx5_cmd_init_hca(struct mlx5_core_dev *dev)
+int mlx5_cmd_init_hca(struct mlx5_core_dev *dev, uint32_t *sw_owner_id)
 {
 	u32 out[MLX5_ST_SZ_DW(init_hca_out)] = {0};
 	u32 in[MLX5_ST_SZ_DW(init_hca_in)]   = {0};
+	int i;
 
 	MLX5_SET(init_hca_in, in, opcode, MLX5_CMD_OP_INIT_HCA);
+
+	if (MLX5_CAP_GEN(dev, sw_owner_id)) {
+		for (i = 0; i < 4; i++)
+			MLX5_ARRAY_SET(init_hca_in, in, sw_owner_id, i,
+				       sw_owner_id[i]);
+	}
+
 	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 
@@ -614,5 +629,43 @@ int mlx5_modify_other_hca_cap_roce(struct mlx5_core_dev *mdev,
 	err = modify_other_hca_cap(mdev, function_id, in);
 
 	kfree(in);
+	return err;
+}
+
+int set_tunneled_operation(struct mlx5_core_dev *mdev,
+			   u16 asn_match_mask, u16 asn_match_value,
+			   u32 *log_response_bar_size,
+			   u64 *response_bar_address)
+{
+	int out_sz = MLX5_ST_SZ_BYTES(set_tunnel_operation_out);
+	int in_sz = MLX5_ST_SZ_BYTES(set_tunnel_operation_in);
+	void *out, *in;
+	int err;
+
+	err = -ENOMEM;
+	in = kzalloc(in_sz, GFP_KERNEL);
+	if (!in)
+		goto out;
+
+	out = kzalloc(out_sz, GFP_KERNEL);
+	if (!out)
+		goto free_in;
+
+	MLX5_SET(set_tunnel_operation_in, in, opcode,
+		 MLX5_CMD_OP_SET_TUNNELED_OPERATIONS);
+	MLX5_SET(set_tunnel_operation_in, in,
+		 asn_match_mask, asn_match_mask);
+	MLX5_SET(set_tunnel_operation_in, in,
+		 asn_match_value, asn_match_value);
+
+	err = mlx5_cmd_exec(mdev, in, in_sz, out, out_sz);
+	if (!err) {
+		*log_response_bar_size = MLX5_GET(set_tunnel_operation_out, out, log_response_bar_size);
+		*response_bar_address = MLX5_GET64(set_tunnel_operation_out, out, response_bar_address);
+	}
+	kfree(out);
+free_in:
+	kfree(in);
+out:
 	return err;
 }
