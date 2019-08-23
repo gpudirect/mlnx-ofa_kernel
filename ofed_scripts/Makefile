@@ -23,6 +23,8 @@ obj-$(CONFIG_INFINIBAND)        += drivers/infiniband/
 obj-$(CONFIG_INFINIBAND_IPATH)  += drivers/infiniband/hw/ipath/
 obj-$(CONFIG_INFINIBAND_HNS)    += drivers/infiniband/hw/hns/
 obj-$(CONFIG_INFINIBAND_HISILICON_HNS) += drivers/infiniband/hw/hns/
+obj-$(CONFIG_INFINIBAND_HNS_HIP06) += drivers/infiniband/hw/hns/
+obj-$(CONFIG_INFINIBAND_HNS_HIP08) += drivers/infiniband/hw/hns/
 obj-$(CONFIG_INFINIBAND_EHCA)   += drivers/infiniband/hw/ehca/
 obj-$(CONFIG_INFINIBAND_AMSO1100)   += drivers/infiniband/hw/amso1100/
 obj-$(CONFIG_MLX4_CORE)         += drivers/net/ethernet/mellanox/mlx4/
@@ -61,4 +63,5 @@ ifneq ($(CONFIG_MLX5_ESWITCH),)
 	obj-$(CONFIG_COMPAT_CLS_FLOWER_MOD)     += net/sched/cls_flower.o
 	obj-$(CONFIG_COMPAT_TCF_TUNNEL_KEY_MOD) += net/sched/act_tunnel_key.o
 	obj-$(CONFIG_COMPAT_TCF_VLAN_MOD)       += net/sched/act_vlan.o
+	obj-$(CONFIG_COMPAT_TCF_PEDIT_MOD)      += net/sched/act_pedit.o
 endif

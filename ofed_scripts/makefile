@@ -14,6 +14,11 @@ export KSRC_OBJ
 export KLIB_BUILD
 export KVERSION
 export MAKE
+ifneq (,$(MLNX_PYTHON_EXECUTABLE))
+MLNX_PYTHON = $(MLNX_PYTHON_EXECUTABLE)
+else
+MLNX_PYTHON = python
+endif
 
 -include $(COMPAT_CONFIG)
 
@@ -211,6 +216,7 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_INFINIBAND_SDP_DEBUG_DATA=$(CONFIG_INFINIBAND_SDP_DEBUG_DATA) \
 		CONFIG_INFINIBAND_MADEYE=$(CONFIG_INFINIBAND_MADEYE) \
 		CONFIG_MLX4_CORE=$(CONFIG_MLX4_CORE) \
+		CONFIG_MLX4_CORE_GEN2=$(CONFIG_MLX4_CORE_GEN2) \
 		CONFIG_MLXFW=$(CONFIG_MLXFW) \
 		CONFIG_MLX5_CORE=$(CONFIG_MLX5_CORE) \
 		CONFIG_MLX5_ACCEL=$(CONFIG_MLX5_ACCEL) \
@@ -220,6 +226,8 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_MLX5_FPGA_TOOLS=$(CONFIG_MLX5_FPGA_TOOLS) \
 		CONFIG_MLX5_CORE_EN=$(CONFIG_MLX5_CORE_EN) \
 		CONFIG_MLX5_CORE_EN_DCB=$(CONFIG_MLX5_CORE_EN_DCB) \
+		CONFIG_MLX5_EN_ARFS=$(CONFIG_MLX5_EN_ARFS) \
+		CONFIG_MLX5_EN_RXNFC=$(CONFIG_MLX5_EN_RXNFC) \
 		CONFIG_MLX5_MPFS=$(CONFIG_MLX5_MPFS) \
 		CONFIG_MLX5_ESWITCH=$(CONFIG_MLX5_ESWITCH) \
 		CONFIG_MLX5_CORE_IPOIB=$(CONFIG_MLX5_CORE_IPOIB) \
@@ -238,6 +246,8 @@ kernel: $(COMPAT_CONFIG) $(COMPAT_AUTOCONF)
 		CONFIG_DTRACE= \
 		CONFIG_CTF= \
 		CONFIG_INFINIBAND_ON_DEMAND_PAGING=$(CONFIG_INFINIBAND_ON_DEMAND_PAGING) \
+		CONFIG_BF_DEVICE_EMULATION=$(CONFIG_BF_DEVICE_EMULATION) \
+		CONFIG_BF_POWER_FAILURE_EVENT=$(CONFIG_BF_POWER_FAILURE_EVENT) \
 		LINUXINCLUDE=' \
 		-D__OFED_BUILD__ \
 		-D__KERNEL__ \
@@ -309,6 +319,7 @@ endif
 
 	install -d $(INSTALL_MOD_PATH)/sbin
 	install -m 0755 ofed_scripts/sysctl_perf_tuning $(INSTALL_MOD_PATH)/sbin
+	install -m 0755 ofed_scripts/mlnx_eswitch_set $(INSTALL_MOD_PATH)/sbin
 	install -d $(INSTALL_MOD_PATH)/$(prefix)/sbin
 	install -m 0755 ofed_scripts/*affinity* $(INSTALL_MOD_PATH)/$(prefix)/sbin
 	install -m 0755 ofed_scripts/vf-net-link-name.sh $(INSTALL_MOD_PATH)/etc/infiniband
@@ -316,6 +327,10 @@ endif
 	install -d $(INSTALL_MOD_PATH)/etc/modprobe.d
 ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/modprobe.d/mlnx.conf)","")
 	install -m 0644 ofed_scripts/mlnx.conf $(INSTALL_MOD_PATH)/etc/modprobe.d
+endif
+
+ifeq ("$(wildcard $(INSTALL_MOD_PATH)/etc/modprobe.d/mlnx-eswitch.conf)","")
+	install -m 0644 ofed_scripts/mlnx-eswitch.conf $(INSTALL_MOD_PATH)/etc/modprobe.d
 endif
 
 ifneq ($(filter m,$(CONFIG_MLX5_CORE) $(CONFIG_MLX4_CORE)),)
@@ -369,16 +384,16 @@ endif
 # build the python scripts
 build_py_scripts:
 ifeq ($(shell /usr/bin/lsb_release -s -i 2>/dev/null | grep -qiE "debian|ubuntu" 2>/dev/null && echo YES || echo ''),)
-	cd ofed_scripts/utils && python setup.py build && cd -
+	cd ofed_scripts/utils && $(MLNX_PYTHON) setup.py build && cd -
 endif
 
 
 # install the python scripts
 install_py_scripts:
 ifeq ($(RECORD_PY_FILES),1)
-	cd ofed_scripts/utils && python setup.py install -O1 --root=$(INSTALL_MOD_PATH) --record ../../../../ofed-files && cd -
+	cd ofed_scripts/utils && $(MLNX_PYTHON) setup.py install -O1 --root=$(INSTALL_MOD_PATH) --record ../../../../ofed-files && cd -
 else
-	cd ofed_scripts/utils && python setup.py install -O1 --root=$(INSTALL_MOD_PATH)/ && cd -
+	cd ofed_scripts/utils && $(MLNX_PYTHON) setup.py install -O1 --root=$(INSTALL_MOD_PATH)/ && cd -
 endif
 
 

@@ -1,14 +1,14 @@
-From: Alaa Hleihel <alaa@mellanox.com>
+From: Talat Batheesh <talatb@mellanox.com>
 Subject: [PATCH] BACKPORT: drivers/infiniband/core/netlink.c
 
-Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
+Change-Id: Icb56e4b83696ad166a987c404c5a84b8292e1bb1
 ---
  drivers/infiniband/core/netlink.c | 46 +++++++++++++++++++++++++++++++++++++++
  1 file changed, 46 insertions(+)
 
 --- a/drivers/infiniband/core/netlink.c
 +++ b/drivers/infiniband/core/netlink.c
-@@ -98,6 +98,7 @@ static bool is_nl_valid(unsigned int typ
+@@ -94,6 +94,7 @@ static bool is_nl_valid(unsigned int typ
  
  	if (!cb_table || (!cb_table[op].dump && !cb_table[op].doit))
  		return false;
@@ -16,7 +16,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  	return true;
  }
  
-@@ -161,8 +162,12 @@ int ibnl_put_attr(struct sk_buff *skb, s
+@@ -157,8 +158,12 @@ int ibnl_put_attr(struct sk_buff *skb, s
  }
  EXPORT_SYMBOL(ibnl_put_attr);
  
@@ -29,7 +29,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  {
  	int type = nlh->nlmsg_type;
  	unsigned int index = RDMA_NL_GET_CLIENT(type);
-@@ -175,7 +180,11 @@ static int rdma_nl_rcv_msg(struct sk_buf
+@@ -171,7 +176,11 @@ static int rdma_nl_rcv_msg(struct sk_buf
  	cb_table = rdma_nl_types[index].cb_table;
  
  	if ((cb_table[op].flags & RDMA_NL_ADMIN_PERM) &&
@@ -41,7 +41,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  		return -EPERM;
  
  	/*
-@@ -184,22 +193,36 @@ static int rdma_nl_rcv_msg(struct sk_buf
+@@ -180,22 +189,36 @@ static int rdma_nl_rcv_msg(struct sk_buf
  	 */
  	if (index == RDMA_NL_LS) {
  		if (cb_table[op].doit)
@@ -78,7 +78,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  
  	return 0;
  }
-@@ -211,10 +234,16 @@ static int rdma_nl_rcv_msg(struct sk_buf
+@@ -207,10 +230,16 @@ static int rdma_nl_rcv_msg(struct sk_buf
   * for that consumer only.
   */
  static int rdma_nl_rcv_skb(struct sk_buff *skb, int (*cb)(struct sk_buff *,
@@ -95,7 +95,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  	struct nlmsghdr *nlh;
  	int err;
  
-@@ -242,13 +271,21 @@ static int rdma_nl_rcv_skb(struct sk_buf
+@@ -238,13 +267,21 @@ static int rdma_nl_rcv_skb(struct sk_buf
  		if (nlh->nlmsg_type < NLMSG_MIN_TYPE)
  			goto ack;
  
@@ -117,7 +117,7 @@ Change-Id: I935e89872d8d773a26cb5d793f83c54809422642
  
  skip:
  		msglen = NLMSG_ALIGN(nlh->nlmsg_len);
-@@ -293,11 +330,20 @@ EXPORT_SYMBOL(rdma_nl_multicast);
+@@ -289,11 +326,20 @@ EXPORT_SYMBOL(rdma_nl_multicast);
  
  int __init rdma_nl_init(void)
  {
