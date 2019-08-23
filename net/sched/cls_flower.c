@@ -64,6 +64,13 @@
 	nla_parse_nested(tb, act, tca, policy)
 #endif
 
+#define FL_KEY_MEMBER_OFFSET(member) offsetof(struct fl_flow_key, member)
+#define FL_KEY_MEMBER_SIZE(member) (sizeof(((struct fl_flow_key *)0)->member))
+
+#define FL_KEY_IS_MASKED(mask, member)					\
+	memchr_inv(((char *)mask) + FL_KEY_MEMBER_OFFSET(member),	\
+		   0, FL_KEY_MEMBER_SIZE(member))			\
+
 struct fl_flow_key {
 	int	indev_ifindex;
 	struct flow_dissector_key_control control;
@@ -128,6 +135,8 @@ struct cls_fl_filter {
 		struct rcu_head	rcu;
 	};
 	struct net_device *hw_dev;
+
+	u32 mlx5e_flags;
 };
 
 static unsigned short int fl_mask_range(const struct fl_flow_mask *mask)
@@ -200,6 +209,11 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 
 	// commented out by Paul.
 	if (!atomic_read(&head->ht.nelems))
+		return -1;
+
+	if ((skb->protocol == htons(ETH_P_8021Q) ||
+	     skb_vlan_tag_present(skb)) &&
+	    !FL_KEY_IS_MASKED(&head->mask.key, vlan))
 		return -1;
 
 	fl_clear_masked_range(&skb_key, &head->mask);
@@ -275,7 +289,7 @@ static void fl_hw_destroy_filter(struct tcf_proto *tp, struct cls_fl_filter *f)
 	offload.cookie = (unsigned long)f;
 
 	priv = netdev_priv(dev);
-	mlx5e_delete_flower(priv, &offload);
+	mlx5e_delete_flower(priv, &offload, f->mlx5e_flags);
 }
 
 static int fl_hw_replace_filter(struct tcf_proto *tp,
@@ -298,13 +312,16 @@ static int fl_hw_replace_filter(struct tcf_proto *tp,
 
 		priv = netdev_priv(f->hw_dev);
 		esw = priv->mdev->priv.eswitch;
-		f->hw_dev = mlx5_eswitch_get_uplink_netdev(esw);
+		f->hw_dev = mlx5_eswitch_uplink_get_proto_dev(esw, REP_ETH);
 		if (!f->hw_dev) {
 			f->hw_dev = dev;
 			return tc_skip_sw(f->flags) ? -EINVAL : 0;
 		}
+
+		f->mlx5e_flags = MLX5E_TC_EGRESS;
 	} else {
 		f->hw_dev = dev;
+		f->mlx5e_flags = MLX5E_TC_INGRESS;
 	}
 
 	offload.command = TC_CLSFLOWER_REPLACE;
@@ -316,7 +333,7 @@ static int fl_hw_replace_filter(struct tcf_proto *tp,
 	offload.exts = &f->exts;
 
 	priv = netdev_priv(f->hw_dev);
-	err = mlx5e_configure_flower(priv, &offload);
+	err = mlx5e_configure_flower(priv, &offload, f->mlx5e_flags);
 	if (!err)
 		f->flags |= TCA_CLS_FLAGS_IN_HW;
 	if (tc_skip_sw(f->flags))
@@ -341,7 +358,7 @@ static void fl_hw_update_stats(struct tcf_proto *tp, struct cls_fl_filter *f)
 	offload.exts = &f->exts;
 
 	priv = netdev_priv(dev);
-	mlx5e_stats_flower(priv, &offload);
+	mlx5e_stats_flower(priv, &offload, f->mlx5e_flags);
 }
 
 static void __fl_delete(struct tcf_proto *tp, struct cls_fl_filter *f)
@@ -358,7 +375,7 @@ static void __fl_delete(struct tcf_proto *tp, struct cls_fl_filter *f)
 		call_rcu(&f->rcu, fl_destroy_filter);
 	else
 #endif
-	call_rcu(&f->rcu, fl_destroy_filter);
+		__fl_destroy_filter(f);
 }
 
 static void fl_destroy_sleepable(struct work_struct *work)
@@ -573,9 +590,6 @@ static int fl_set_key_flags(struct nlattr **tb,
 
 	fl_set_key_flag(key, mask, flags_key, flags_mask,
 			TCA_FLOWER_KEY_FLAGS_IS_FRAGMENT, FLOW_DIS_IS_FRAGMENT);
-	fl_set_key_flag(key, mask, flags_key, flags_mask,
-			TCA_FLOWER_KEY_FLAGS_FRAG_IS_FIRST,
-			FLOW_DIS_FIRST_FRAG);
 
 	return 0;
 }
@@ -803,13 +817,6 @@ static int fl_init_hashtable(struct cls_fl_head *head,
 	return rhashtable_init(&head->ht, &head->ht_params);
 }
 
-#define FL_KEY_MEMBER_OFFSET(member) offsetof(struct fl_flow_key, member)
-#define FL_KEY_MEMBER_SIZE(member) (sizeof(((struct fl_flow_key *) 0)->member))
-
-#define FL_KEY_IS_MASKED(mask, member)						\
-	memchr_inv(((char *)mask) + FL_KEY_MEMBER_OFFSET(member),		\
-		   0, FL_KEY_MEMBER_SIZE(member))				\
-
 #define FL_KEY_SET(keys, cnt, id, member)					\
 	do {									\
 		keys[cnt].key_id = id;						\
@@ -960,16 +967,16 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 		goto errout;
 
 	if (!handle) {
-		err = idr_alloc(&head->handle_idr, fnew, 1,
-				INT_MAX, GFP_KERNEL);
+		handle = idr_alloc(&head->handle_idr, fnew, 1,
+				   INT_MAX, GFP_KERNEL);
 	} else if (!fold) {
 		/* user specifies a handle and it doesn't exist */
-		err = idr_alloc(&head->handle_idr, fnew, handle,
-				handle+1, GFP_KERNEL);
+		handle = idr_alloc(&head->handle_idr, fnew, handle,
+				   handle + 1, GFP_KERNEL);
 	}
-	if (IS_ERR_VALUE(err))
+	if (IS_ERR_VALUE(handle))
 		goto errout;
-	fnew->handle = (u32)err;
+	fnew->handle = handle;
 
 	if (tb[TCA_FLOWER_FLAGS]) {
 		fnew->flags = nla_get_u32(tb[TCA_FLOWER_FLAGS]);
@@ -1191,9 +1198,6 @@ static int fl_dump_key_flags(struct sk_buff *skb, u32 flags_key, u32 flags_mask)
 
 	fl_get_key_flag(flags_key, flags_mask, &key, &mask,
 			TCA_FLOWER_KEY_FLAGS_IS_FRAGMENT, FLOW_DIS_IS_FRAGMENT);
-	fl_get_key_flag(flags_key, flags_mask, &key, &mask,
-			TCA_FLOWER_KEY_FLAGS_FRAG_IS_FIRST,
-			FLOW_DIS_FIRST_FRAG);
 
 	_key = cpu_to_be32(key);
 	_mask = cpu_to_be32(mask);
@@ -1455,9 +1459,6 @@ module_exit(cls_fl_exit);
 MODULE_AUTHOR("Jiri Pirko <jiri@resnulli.us>");
 MODULE_DESCRIPTION("Flower classifier");
 MODULE_LICENSE("GPL v2");
-#ifdef RETPOLINE_MLNX
-MODULE_INFO(retpoline, "Y");
-#endif
 
 #else /* CONFIG_COMPAT_KERNEL_4_9 */
 
@@ -2194,7 +2195,7 @@ static int fl_init_hashtable(struct cls_fl_head *head,
 }
 
 #define FL_KEY_MEMBER_OFFSET(member) offsetof(struct fl_flow_key, member)
-#define FL_KEY_MEMBER_SIZE(member) (sizeof(((struct fl_flow_key *) 0)->member))
+#define FL_KEY_MEMBER_SIZE(member) (sizeof(((struct fl_flow_key *)0)->member))
 
 #define FL_KEY_IS_MASKED(mask, member)						\
 	memchr_inv(((char *)mask) + FL_KEY_MEMBER_OFFSET(member),		\
@@ -2387,28 +2388,28 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 
 		if (!tc_flags_valid(fnew->flags)) {
 			err = -EINVAL;
-			goto errout;
+			goto errout_idr;
 		}
 	}
 
 	err = fl_set_parms(net, tp, fnew, &mask, base, tb, tca[TCA_RATE], ovr);
 	if (err)
-		goto errout;
+		goto errout_idr;
 
 	err = fl_check_assign_mask(head, &mask);
 	if (err)
-		goto errout;
+		goto errout_idr;
 
 	if (!tc_skip_sw(fnew->flags)) {
 		if (!fold && fl_lookup(head, &fnew->mkey)) {
 			err = -EEXIST;
-			goto errout;
+			goto errout_idr;
 		}
 
 		err = rhashtable_insert_fast(&head->ht, &fnew->ht_node,
 					     head->ht_params);
 		if (err)
-			goto errout;
+			goto errout_idr;
 	}
 
 	if (!tc_skip_hw(fnew->flags)) {
@@ -2417,7 +2418,7 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 					   &mask.key,
 					   fnew);
 		if (err)
-			goto errout;
+			goto errout_idr;
 	}
 
 	if (!tc_in_hw(fnew->flags))
@@ -2450,6 +2451,12 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 	kfree(tb);
 	return 0;
 
+errout_idr:
+	if (fnew->handle > USER_HANDLE_START)
+		idr_remove(&head->user_handle_idr,
+			   fnew->handle - USER_HANDLE_START);
+	else
+		idr_remove(&head->handle_idr, fnew->handle);
 errout:
 	tcf_exts_destroy(&fnew->exts);
 	kfree(fnew);

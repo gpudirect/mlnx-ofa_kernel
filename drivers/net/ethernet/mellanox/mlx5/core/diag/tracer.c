@@ -739,7 +739,7 @@ static void mlx5_tracer_ownership_change(struct work_struct *work)
 
 	if (tracer->tracer_owner) {
 		/* Our ownership was released */
-		tracer->tracer_owner = 0;
+ 		tracer->tracer_owner = 0;
 		mlx5_tracer_free_resources(dev);
 	} else {
 		/* Try to get ownership */
@@ -756,40 +756,37 @@ static void mlx5_tracer_ownership_change(struct work_struct *work)
 				      err);
 			return;
 		}
-
 		err = mlx5_tracer_acquire_log_buf(dev);
 		if (err) {
 			mlx5_core_dbg(dev, "Acquire log buffer failed %d\n",
 				      err);
 			return;
 		}
-
 		err = mlx5_tracer_allocate_strings_db_buffers(dev);
 		if (err) {
 			mlx5_core_warn(dev, "Allocate strings database failed %d\n",
 				       err);
 			goto free_log_buf;
 		}
-
 		err = mlx5_tracer_read_strings_db(dev);
 		if (err) {
 			mlx5_core_warn(dev, "Read strings DB failed %d\n", err);
 			goto free_string_db;
 		}
-
 		err = mlx5_tracer_set_mtrc_conf(dev);
 		if (err) {
 			mlx5_core_warn(dev, "Failed to set tracer configuration %d\n"
 				       , err);
 			goto free_string_db;
 		}
-
 		err = mlx5_tracer_enable(dev);
 		if (err) {
 			mlx5_core_warn(dev, "Failed to set tracer control %d\n"
 				       , err);
 			goto free_string_db;
 		}
+
+
 	}
 
 	return;
@@ -804,21 +801,16 @@ int mlx5_tracer_init(struct mlx5_core_dev *dev)
 {
 	/* Temporary block for iTrace */
 	return 0;
-
 	INIT_WORK(&dev->tracer.log_work, mlx5_tracer_handle_traces);
 	INIT_WORK(&dev->tracer.ownership_change_work,
 		  mlx5_tracer_ownership_change);
 
 	schedule_work(&dev->tracer.ownership_change_work);
-
 	return 0;
 }
 
 void mlx5_tracer_cleanup(struct mlx5_core_dev *dev)
 {
-	/* Temporary block for iTrace */
-	return;
-
 	if (!MLX5_CAP_MCAM_REG(dev, tracer_registers)) {
 		mlx5_core_dbg(dev, "Tracer capability not present\n");
 		return;
@@ -836,9 +828,6 @@ void mlx5_tracer_cleanup(struct mlx5_core_dev *dev)
 
 void mlx5_tracer_event(struct mlx5_core_dev *dev, struct mlx5_eqe *eqe)
 {
-	/* Temporary block for iTrace */
-	return;
-
 	switch (eqe->sub_type) {
 	case MLX5_TRACER_SUBTYPE_OWNERSHIP_CHANGE:
 		if (test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state))

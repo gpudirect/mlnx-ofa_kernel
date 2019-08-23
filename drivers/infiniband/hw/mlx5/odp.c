@@ -44,7 +44,7 @@
 
 /* Timeout in ms to wait for an active mmu notifier to complete when handling
  * a pagefault. */
-#define MMU_NOTIFIER_TIMEOUT 60000
+#define MMU_NOTIFIER_TIMEOUT 1000
 
 #define MLX5_IMR_MTT_BITS (30 - PAGE_SHIFT)
 #define MLX5_IMR_MTT_SHIFT (MLX5_IMR_MTT_BITS + PAGE_SHIFT)
@@ -681,8 +681,9 @@ out:
 			if (!wait_for_completion_timeout(
 					&odp->notifier_completion,
 					timeout)) {
-				mlx5_ib_warn(dev, "timeout waiting for mmu notifier. seq %d against %d. notifiers_count=%d\n",
-					     current_seq, odp->notifiers_seq, odp->notifiers_count);
+				mlx5_ib_dbg(dev, "timeout waiting for mmu notifier. seq %d against %d. notifiers_count=%d\n",
+					    current_seq, odp->notifiers_seq, odp->notifiers_count);
+				atomic_inc(&dev->odp_stats.num_timeout_mmu_notifier);
 			}
 		} else {
 			/* The MR is being killed, kill the QP as well. */
@@ -1480,10 +1481,6 @@ int mlx5_ib_odp_init_one(struct mlx5_ib_dev *dev)
 {
 	int ret;
 
-	ret = init_srcu_struct(&dev->mr_srcu);
-	if (ret)
-		return ret;
-
 	ret = mlx5_ib_exp_odp_init_one(dev);
 	if (ret)
 		goto out_srcu;
@@ -1496,25 +1493,10 @@ int mlx5_ib_odp_init_one(struct mlx5_ib_dev *dev)
 		}
 	}
 
-	init_completion(&dev->comp_prefetch);
-	atomic_set(&dev->num_prefetch, 1);
-
 	return 0;
 out_srcu:
 	cleanup_srcu_struct(&dev->mr_srcu);
 	return ret;
-}
-
-void mlx5_ib_odp_shutdown_one(struct mlx5_ib_dev *dev)
-{
-	if (!atomic_dec_and_test(&dev->num_prefetch))
-		wait_for_completion(&dev->comp_prefetch);
-}
-
-void mlx5_ib_odp_remove_one(struct mlx5_ib_dev *dev)
-{
-	debugfs_remove_recursive(dev->odp_stats.odp_debugfs);
-	cleanup_srcu_struct(&dev->mr_srcu);
 }
 
 int mlx5_ib_odp_init(void)

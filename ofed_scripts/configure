@@ -79,7 +79,7 @@ Usage:  `basename $0` [options]
     --with-user_mad-mod    make CONFIG_INFINIBAND_USER_MAD=m [no]
     --without-user_mad-mod    [yes]
 
-    --with-user_access-mod    make CONFIG_INFINIBAND_USER_ACCESS=m [no]
+    --with-user_access-mod    make CONFIG_INFINIBAND_USER_ACCESS=m CONFIG_INFINIBAND_USER_ACCESS_UCM=m [no]
     --without-user_access-mod    [yes]
 
     --with-addr_trans-mod    make CONFIG_INFINIBAND_ADDR_TRANS=y [no]
@@ -128,10 +128,10 @@ Usage:  `basename $0` [options]
     --with-mlxfw-mod              make CONFIG_MLXFW=m [no]
     --without-mlxfw-mod           [yes]
 
-    --with-innova-flex            make CONFIG_MLX5_ACCEL=y CONFIG_MLX5_FPGA=y CONFIG_MLX5_FPGA_TOOLS=m [no]
+    --with-innova-flex            make CONFIG_MLX5_ACCEL=y CONFIG_MLX5_FPGA=y CONFIG_MLX5_FPGA_TOOLS=m CONFIG_MLX5_EN_TLS=y [no]
     --without-innova-flex         [yes]
 
-    --with-innova-ipsec           make CONFIG_MLX5_ACCEL=y CONFIG_MLX5_FPGA=y CONFIG_MLX5_FPGA_TOOLS=m CONFIG_MLX5_EN_IPSEC=y [no]
+    --with-innova-ipsec           make CONFIG_MLX5_ACCEL=y CONFIG_MLX5_FPGA=y CONFIG_MLX5_FPGA_TOOLS=m CONFIG_MLX5_EN_IPSEC=y CONFIG_MLX5_EN_TLS=y [no]
     --without-innova-ipsec        [yes]
 
     --with-iser-mod    make CONFIG_INFINIBAND_ISER=m [no]
@@ -263,6 +263,7 @@ CONFIG_RDMA_RXE_DUMMY=${CONFIG_RDMA_RXE_DUMMY:-''}
 
 CONFIG_INFINIBAND_USER_MAD=${CONFIG_INFINIBAND_USER_MAD:-''}
 CONFIG_INFINIBAND_USER_ACCESS=${CONFIG_INFINIBAND_USER_ACCESS:-''}
+CONFIG_INFINIBAND_USER_ACCESS_UCM=${CONFIG_INFINIBAND_USER_ACCESS_UCM:-''}
 CONFIG_INFINIBAND_ADDR_TRANS=${CONFIG_INFINIBAND_ADDR_TRANS:-''}
 CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS=''
 CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM:-''}
@@ -270,6 +271,7 @@ CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM:-''}
 CONFIG_MLX4_CORE=${CONFIG_MLX4_CORE:-''}
 CONFIG_MLXFW=${CONFIG_MLXFW:-''}
 CONFIG_MLX5_ACCEL=${CONFIG_MLX5_ACCEL:-''}
+CONFIG_MLX5_EN_TLS=${CONFIG_MLX5_EN_TLS:-''}
 CONFIG_MLX5_EN_IPSEC=${CONFIG_MLX5_EN_IPSEC:-''}
 CONFIG_MLX5_FPGA=${CONFIG_MLX5_FPGA:-''}
 CONFIG_MLX5_FPGA_TOOLS=${CONFIG_MLX5_FPGA_TOOLS:-''}
@@ -570,12 +572,14 @@ main()
                         ;;
                         --with-user_access-mod)
                             CONFIG_INFINIBAND_USER_ACCESS="m"
+                            CONFIG_INFINIBAND_USER_ACCESS_UCM="m"
                             CONFIG_INFINIBAND_USER_MEM=y
                             add_conf "# Load UVERBS module" "UVERBS_LOAD=yes"
                             add_conf "# Load UCM module" "UCM_LOAD=yes"
                         ;;
                         --without-user_access-mod)
                             CONFIG_INFINIBAND_USER_ACCESS=
+                            CONFIG_INFINIBAND_USER_ACCESS_UCM=
                             CONFIG_INFINIBAND_USER_MEM=
                         ;;
                         --with-user_memory-mod)
@@ -607,17 +611,20 @@ main()
                         ;;
                         --with-innova-flex)
                             CONFIG_MLX5_ACCEL="y"
+                            CONFIG_MLX5_EN_TLS="y"
                             CONFIG_MLX5_FPGA="y"
                             CONFIG_MLX5_FPGA_TOOLS="m"
                             add_conf "# Load MLX5 FPGA modules" "MLX5_FPGA_LOAD=yes"
                         ;;
                         --without-innova-flex)
                             CONFIG_MLX5_ACCEL=
+                            CONFIG_MLX5_EN_TLS=
                             CONFIG_MLX5_FPGA=
                             CONFIG_MLX5_FPGA_TOOLS=
                         ;;
                         --with-innova-ipsec)
                             CONFIG_MLX5_ACCEL="y"
+                            CONFIG_MLX5_EN_TLS="y"
                             CONFIG_MLX5_FPGA="y"
                             CONFIG_MLX5_FPGA_TOOLS="m"
                             CONFIG_MLX5_EN_IPSEC="y"
@@ -626,6 +633,7 @@ main()
                         ;;
                         --without-innova-ipsec)
                             CONFIG_MLX5_ACCEL=
+                            CONFIG_MLX5_EN_TLS=
                             CONFIG_MLX5_FPGA=
                             CONFIG_MLX5_FPGA_TOOLS=
                             CONFIG_MLX5_EN_IPSEC=
@@ -846,7 +854,7 @@ main()
                             CONFIG_NVME_FABRICS="m"
                             CONFIG_NVME_FC="m"
                             CONFIG_NVME_RDMA="m"
-                            CONFIG_NVME_MULTIPATH=
+                            CONFIG_NVME_MULTIPATH="y"
                             CONFIG_NVME_HOST_WITHOUT_FC=
                         ;;
                         --without-nvmf_host-mod)
@@ -865,7 +873,7 @@ main()
                             CONFIG_NVME_FABRICS="m"
                             CONFIG_NVME_FC=
                             CONFIG_NVME_RDMA="m"
-                            CONFIG_NVME_MULTIPATH=
+                            CONFIG_NVME_MULTIPATH="y"
                             CONFIG_NVME_TARGET=
                             CONFIG_NVME_TARGET_LOOP=
                             CONFIG_NVME_TARGET_RDMA=
@@ -1184,6 +1192,14 @@ if [ "X${CONFIG_MLX5_EN_IPSEC}" == "Xy" ]; then
     fi
 fi
 
+check_autofconf CONFIG_TLS_DEVICE
+if [ "X${CONFIG_MLX5_EN_TLS=}" == "Xy" ]; then
+    if ! [ "X${CONFIG_TLS_DEVICE=}" == "X1" ]; then
+        echo "Warning: CONFIG_TLS_DEVICE is not enabled in the kernel, cannot enable CONFIG_MLX5_EN_TLS."
+        CONFIG_MLX5_EN_TLS=
+    fi
+fi
+
 CFLAGS_RETPOLINE=''
 case "$ARCH" in i386 | x86_64)
     check_autofconf CONFIG_RETPOLINE
@@ -1273,6 +1289,7 @@ CONFIG_RDMA_RXE_DUMMY=${CONFIG_RDMA_RXE_DUMMY}
 
 CONFIG_INFINIBAND_USER_MAD=${CONFIG_INFINIBAND_USER_MAD}
 CONFIG_INFINIBAND_USER_ACCESS=${CONFIG_INFINIBAND_USER_ACCESS}
+CONFIG_INFINIBAND_USER_ACCESS_UCM=${CONFIG_INFINIBAND_USER_ACCESS_UCM}
 CONFIG_INFINIBAND_ADDR_TRANS=${CONFIG_INFINIBAND_ADDR_TRANS}
 CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS=${CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS}
 CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM}
@@ -1280,6 +1297,7 @@ CONFIG_INFINIBAND_USER_MEM=${CONFIG_INFINIBAND_USER_MEM}
 CONFIG_MLX4_CORE=${CONFIG_MLX4_CORE}
 CONFIG_MLXFW=${CONFIG_MLXFW}
 CONFIG_MLX5_ACCEL=${CONFIG_MLX5_ACCEL}
+CONFIG_MLX5_EN_TLS=${CONFIG_MLX5_EN_TLS}
 CONFIG_MLX5_EN_IPSEC=${CONFIG_MLX5_EN_IPSEC}
 CONFIG_MLX5_FPGA=${CONFIG_MLX5_FPGA}
 CONFIG_MLX5_FPGA_TOOLS=${CONFIG_MLX5_FPGA_TOOLS}
@@ -1415,6 +1433,11 @@ if [ "X${CONFIG_INFINIBAND_USER_ACCESS}" == "Xm" ]; then
 else
         DEFINE_INFINIBAND_USER_ACCESS="#undef CONFIG_INFINIBAND_USER_ACCESS"
 fi
+if [ "X${CONFIG_INFINIBAND_USER_ACCESS_UCM}" == "Xm" ]; then
+        DEFINE_INFINIBAND_USER_ACCESS_UCM="#undef CONFIG_INFINIBAND_USER_ACCESS_UCM\n#define CONFIG_INFINIBAND_USER_ACCESS_UCM 1"
+else
+        DEFINE_INFINIBAND_USER_ACCESS_UCM="#undef CONFIG_INFINIBAND_USER_ACCESS_UCM"
+fi
 if [ "X${CONFIG_INFINIBAND_ADDR_TRANS}" == "Xy" ]; then
         DEFINE_INFINIBAND_ADDR_TRANS="#undef CONFIG_INFINIBAND_ADDR_TRANS\n#define CONFIG_INFINIBAND_ADDR_TRANS 1"
 else
@@ -1444,6 +1467,11 @@ if [ "X${CONFIG_MLX5_ACCEL}" == "Xy" ]; then
         DEFINE_MLX5_ACCEL="#undef CONFIG_MLX5_ACCEL\n#define CONFIG_MLX5_ACCEL 1"
 else
         DEFINE_MLX5_ACCEL="#undef CONFIG_MLX5_ACCEL"
+fi
+if [ "X${CONFIG_MLX5_EN_TLS}" == "Xy" ]; then
+        DEFINE_MLX5_EN_TLS="#undef CONFIG_MLX5_EN_TLS\n#define CONFIG_MLX5_EN_TLS 1"
+else
+        DEFINE_MLX5_EN_TLS="#undef CONFIG_MLX5_EN_TLS"
 fi
 if [ "X${CONFIG_MLX5_EN_IPSEC}" == "Xy" ]; then
         DEFINE_MLX5_EN_IPSEC="#undef CONFIG_MLX5_EN_IPSEC\n#define CONFIG_MLX5_EN_IPSEC 1"
@@ -1759,6 +1787,7 @@ $(echo -e "${DEFINE_CONFIG_RDMA_RXE_DUMMY}" | grep -v undef)
 
 $(echo -e "${DEFINE_INFINIBAND_USER_MAD}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_USER_ACCESS}" | grep -v undef)
+$(echo -e "${DEFINE_INFINIBAND_USER_ACCESS_UCM}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS}" | grep -v undef)
 $(echo -e "${DEFINE_INFINIBAND_USER_MEM}" | grep -v undef)
@@ -1779,6 +1808,7 @@ $(echo -e "${DEFINE_E_IPOIB}" | grep -v undef)
 $(echo -e "${DEFINE_MLX4_CORE}" | grep -v undef)
 $(echo -e "${DEFINE_MLXFW}" | grep -v undef)
 $(echo -e "${DEFINE_MLX5_ACCEL}" | grep -v undef)
+$(echo -e "${DEFINE_MLX5_EN_TLS}" | grep -v undef)
 $(echo -e "${DEFINE_MLX5_EN_IPSEC}" | grep -v undef)
 $(echo -e "${DEFINE_MLX5_FPGA}" | grep -v undef)
 $(echo -e "${DEFINE_MLX5_FPGA_TOOLS}" | grep -v undef)
@@ -1841,6 +1871,7 @@ $(echo -e "${DEFINE_CONFIG_MLNX_BLOCK_REQUEST_MODULE}" | grep -v undef)
 
 #undef CONFIG_INFINIBAND_USER_MAD
 #undef CONFIG_INFINIBAND_USER_ACCESS
+#undef CONFIG_INFINIBAND_USER_ACCESS_UCM
 #undef CONFIG_INFINIBAND_ADDR_TRANS
 #undef CONFIG_INFINIBAND_ADDR_TRANS_CONFIGFS
 #undef CONFIG_INFINIBAND_USER_MEM
@@ -1848,6 +1879,7 @@ $(echo -e "${DEFINE_CONFIG_MLNX_BLOCK_REQUEST_MODULE}" | grep -v undef)
 #undef CONFIG_MLX4_CORE
 #undef CONFIG_MLXFW
 #undef CONFIG_MLX5_ACCEL
+#undef CONFIG_MLX5_EN_TLS
 #undef CONFIG_MLX5_EN_IPSEC
 #undef CONFIG_MLX5_FPGA
 #undef CONFIG_MLX5_FPGA_TOOLS
@@ -1920,6 +1952,7 @@ $(echo -e "${DEFINE_CONFIG_RDMA_RXE_DUMMY}")
 
 $(echo -e "${DEFINE_INFINIBAND_USER_MAD}")
 $(echo -e "${DEFINE_INFINIBAND_USER_ACCESS}")
+$(echo -e "${DEFINE_INFINIBAND_USER_ACCESS_UCM}")
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS}")
 $(echo -e "${DEFINE_INFINIBAND_ADDR_TRANS_CONFIGFS}")
 $(echo -e "${DEFINE_INFINIBAND_USER_MEM}")
@@ -1940,6 +1973,7 @@ $(echo -e "${DEFINE_E_IPOIB}")
 $(echo -e "${DEFINE_MLX4_CORE}")
 $(echo -e "${DEFINE_MLXFW}")
 $(echo -e "${DEFINE_MLX5_ACCEL}")
+$(echo -e "${DEFINE_MLX5_EN_TLS}")
 $(echo -e "${DEFINE_MLX5_EN_IPSEC}")
 $(echo -e "${DEFINE_MLX5_FPGA}")
 $(echo -e "${DEFINE_MLX5_FPGA_TOOLS}")

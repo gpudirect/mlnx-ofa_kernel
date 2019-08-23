@@ -30,7 +30,7 @@ from optparse import OptionParser
 import libxml2
 import signal
 
-VERSION = "4.4-2.0.7"
+VERSION = "4.5-1.0.1"
 
 # Global parameters
 logger = None

@@ -213,9 +213,6 @@ module_exit(tunnel_key_cleanup_module);
 MODULE_AUTHOR("Based on original module by Amir Vadai <amir@vadai.me>");
 MODULE_DESCRIPTION("ip tunnel manipulation actions - backport");
 MODULE_LICENSE("GPL v2");
-#ifdef RETPOLINE_MLNX
-MODULE_INFO(retpoline, "Y");
-#endif
 
 #else /* CONFIG_COMPAT_KERNEL_4_9 */
 

@@ -329,6 +329,7 @@ int mlx5_fpga_device_reload(struct mlx5_fpga_device *fdev,
 		break;
 	case MLX5_FDEV_STATE_SUCCESS:
 	case MLX5_FDEV_STATE_FAILURE:
+	case MLX5_FDEV_STATE_DISCONNECTED:
 		break;
 	}
 	spin_unlock_irqrestore(&fdev->state_lock, flags);
@@ -413,6 +414,7 @@ int mlx5_fpga_flash_select(struct mlx5_fpga_device *fdev,
 	case MLX5_FDEV_STATE_NONE:
 		spin_unlock_irqrestore(&fdev->state_lock, flags);
 		return -ENODEV;
+	case MLX5_FDEV_STATE_DISCONNECTED:
 	case MLX5_FDEV_STATE_IN_PROGRESS:
 	case MLX5_FDEV_STATE_SUCCESS:
 	case MLX5_FDEV_STATE_FAILURE:
@@ -428,6 +430,39 @@ int mlx5_fpga_flash_select(struct mlx5_fpga_device *fdev,
 	return err;
 }
 EXPORT_SYMBOL(mlx5_fpga_flash_select);
+
+int mlx5_fpga_connectdisconnect(struct mlx5_fpga_device *fdev,
+				enum mlx5_fpga_connect *connect)
+{
+	unsigned long flags;
+	int err;
+
+	spin_lock_irqsave(&fdev->state_lock, flags);
+	switch (fdev->fdev_state) {
+	case MLX5_FDEV_STATE_NONE:
+		spin_unlock_irqrestore(&fdev->state_lock, flags);
+		return -ENODEV;
+	case MLX5_FDEV_STATE_IN_PROGRESS:
+	case MLX5_FDEV_STATE_SUCCESS:
+	case MLX5_FDEV_STATE_FAILURE:
+	case MLX5_FDEV_STATE_DISCONNECTED:
+		break;
+	}
+	spin_unlock_irqrestore(&fdev->state_lock, flags);
+
+	err = mlx5_fpga_ctrl_connect(fdev->mdev, connect);
+	if (err)
+		mlx5_fpga_err(fdev, "Failed to connect/disconnect: %d\n", err);
+	return err;
+}
+EXPORT_SYMBOL(mlx5_fpga_connectdisconnect);
+
+int mlx5_fpga_temperature(struct mlx5_fpga_device *fdev,
+			  struct mlx5_fpga_temperature *temp)
+{
+	return mlx5_fpga_query_mtmp(fdev->mdev, temp);
+}
+EXPORT_SYMBOL(mlx5_fpga_temperature);
 
 struct device *mlx5_fpga_dev(struct mlx5_fpga_device *fdev)
 {

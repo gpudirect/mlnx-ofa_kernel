@@ -50,6 +50,7 @@ enum mlx5_fdev_state {
 	MLX5_FDEV_STATE_SUCCESS = 0,
 	MLX5_FDEV_STATE_FAILURE = 1,
 	MLX5_FDEV_STATE_IN_PROGRESS = 2,
+	MLX5_FDEV_STATE_DISCONNECTED = 3,
 	MLX5_FDEV_STATE_NONE = 0xFFFF,
 };
 
@@ -71,6 +72,7 @@ struct mlx5_fpga_device {
 	} conn_res;
 
 	struct mlx5_fpga_ipsec *ipsec;
+	struct mlx5_fpga_tls *tls;
 
 	struct list_head list;
 	struct list_head client_data_list;

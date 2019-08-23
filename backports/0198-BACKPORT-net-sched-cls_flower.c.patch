@@ -2,8 +2,8 @@ From: Yevgeny Kliteynik <kliteyn@mellanox.com>
 Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 
 ---
- net/sched/cls_flower.c | 387 ++++++++++++++++++++++++++++---------------------
- 1 file changed, 221 insertions(+), 166 deletions(-)
+ net/sched/cls_flower.c | 385 +++++++++++++++++++++++++++----------------------
+ 1 file changed, 216 insertions(+), 169 deletions(-)
 
 --- a/net/sched/cls_flower.c
 +++ b/net/sched/cls_flower.c
@@ -64,8 +64,8 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  #define tcf_exts_init(exts, action, police) (0)
  
  #define tcf_exts_validate(net, tp, tb, est, eptr, ovr) \
-@@ -130,6 +180,13 @@ struct cls_fl_filter {
- 	struct net_device *hw_dev;
+@@ -139,6 +189,13 @@ struct cls_fl_filter {
+ 	u32 mlx5e_flags;
  };
  
 +static void fl_hw_destroy_filter(struct tcf_proto *tp, struct cls_fl_filter *f);
@@ -78,7 +78,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  static unsigned short int fl_mask_range(const struct fl_flow_mask *mask)
  {
  	return mask->range.end - mask->range.start;
-@@ -260,90 +317,6 @@ static void fl_destroy_filter(struct rcu
+@@ -274,93 +331,6 @@ static void fl_destroy_filter(struct rcu
  	tcf_queue_work(&f->work);
  }
  
@@ -97,7 +97,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 -	offload.cookie = (unsigned long)f;
 -
 -	priv = netdev_priv(dev);
--	mlx5e_delete_flower(priv, &offload);
+-	mlx5e_delete_flower(priv, &offload, f->mlx5e_flags);
 -}
 -
 -static int fl_hw_replace_filter(struct tcf_proto *tp,
@@ -120,13 +120,16 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 -
 -		priv = netdev_priv(f->hw_dev);
 -		esw = priv->mdev->priv.eswitch;
--		f->hw_dev = mlx5_eswitch_get_uplink_netdev(esw);
+-		f->hw_dev = mlx5_eswitch_uplink_get_proto_dev(esw, REP_ETH);
 -		if (!f->hw_dev) {
 -			f->hw_dev = dev;
 -			return tc_skip_sw(f->flags) ? -EINVAL : 0;
 -		}
+-
+-		f->mlx5e_flags = MLX5E_TC_EGRESS;
 -	} else {
 -		f->hw_dev = dev;
+-		f->mlx5e_flags = MLX5E_TC_INGRESS;
 -	}
 -
 -	offload.command = TC_CLSFLOWER_REPLACE;
@@ -138,7 +141,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 -	offload.exts = &f->exts;
 -
 -	priv = netdev_priv(f->hw_dev);
--	err = mlx5e_configure_flower(priv, &offload);
+-	err = mlx5e_configure_flower(priv, &offload, f->mlx5e_flags);
 -	if (!err)
 -		f->flags |= TCA_CLS_FLAGS_IN_HW;
 -	if (tc_skip_sw(f->flags))
@@ -163,13 +166,13 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 -	offload.exts = &f->exts;
 -
 -	priv = netdev_priv(dev);
--	mlx5e_stats_flower(priv, &offload);
+-	mlx5e_stats_flower(priv, &offload, f->mlx5e_flags);
 -}
 -
  static void __fl_delete(struct tcf_proto *tp, struct cls_fl_filter *f)
  {
  	struct cls_fl_head *head = rtnl_dereference(tp->root);
-@@ -1441,11 +1414,22 @@ static struct tcf_proto_ops cls_fl_ops _
+@@ -1445,11 +1415,22 @@ static struct tcf_proto_ops cls_fl_ops _
  
  static int __init cls_fl_init(void)
  {
@@ -192,7 +195,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  	unregister_tcf_proto_ops(&cls_fl_ops);
  }
  
-@@ -1490,6 +1474,11 @@ MODULE_INFO(retpoline, "Y");
+@@ -1491,6 +1472,11 @@ MODULE_LICENSE("GPL v2");
  #include <net/dst.h>
  #include <net/dst_metadata.h>
  
@@ -204,8 +207,11 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  struct fl_flow_key {
  	int	indev_ifindex;
  	struct flow_dissector_key_control control;
-@@ -1554,6 +1543,55 @@ struct cls_fl_filter {
+@@ -1553,8 +1539,58 @@ struct cls_fl_filter {
+ 	struct rcu_head	rcu;
+ 	struct tc_to_netdev tc;
  	struct net_device *hw_dev;
++	u32 mlx5e_flags;
  };
  
 +static void fl_hw_destroy_filter(struct tcf_proto *tp, struct cls_fl_filter *f);
@@ -247,7 +253,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 +}
 +
 +static inline bool tc_can_offload(const struct net_device *dev,
-+				  const struct tcf_proto *tp)
++                                  const struct tcf_proto *tp)
 +{
 +	if (!(dev->features & NETIF_F_HW_TC)) {
 +		return false;
@@ -260,7 +266,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  static unsigned short int fl_mask_range(const struct fl_flow_mask *mask)
  {
  	return mask->range.end - mask->range.start;
-@@ -1688,88 +1726,6 @@ static void fl_destroy_filter(struct rcu
+@@ -1689,88 +1725,6 @@ static void fl_destroy_filter(struct rcu
  	kfree(f);
  }
  
@@ -349,33 +355,10 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
  static void __fl_delete(struct tcf_proto *tp, struct cls_fl_filter *f)
  {
  	list_del_rcu(&f->list);
-@@ -2608,6 +2564,7 @@ static int fl_dump(struct net *net, stru
- 	key = &f->key;
- 	mask = &head->mask.key;
- 
-+#if 0
- 	if (mask->indev_ifindex) {
- 		struct net_device *dev;
- 
-@@ -2616,6 +2573,7 @@ static int fl_dump(struct net *net, stru
- 			goto nla_put_failure;
- 	}
- 
-+#endif
- 	if (!tc_skip_hw(f->flags))
- 		fl_hw_update_stats(tp, f);
- 
-@@ -2818,3 +2776,100 @@ MODULE_DESCRIPTION("Flower classifier");
+@@ -2825,3 +2779,96 @@ MODULE_DESCRIPTION("Flower classifier");
  MODULE_LICENSE("GPL v2");
  
  #endif /* CONFIG_COMPAT_KERNEL_4_9 */
-+
-+/*
-+ * Kernel 4.9 shares the following functions on old kernel.
-+ * Otherwise, system will panic.
-+ *
-+ * On kernel 4.9. there is no prio in struct tc_cls_flower_offload.
-+ */
 +
 +static void fl_hw_destroy_filter(struct tcf_proto *tp, struct cls_fl_filter *f)
 +{
@@ -394,7 +377,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 +	offload.cookie = (unsigned long)f;
 +
 +	priv = netdev_priv(dev);
-+	mlx5e_delete_flower(priv, &offload);
++	mlx5e_delete_flower(priv, &offload, f->mlx5e_flags);
 +}
 +
 +static int fl_hw_replace_filter(struct tcf_proto *tp,
@@ -417,13 +400,16 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 +
 +		priv = netdev_priv(f->hw_dev);
 +		esw = priv->mdev->priv.eswitch;
-+		f->hw_dev = mlx5_eswitch_get_uplink_netdev(esw);
++		f->hw_dev = mlx5_eswitch_uplink_get_proto_dev(esw, REP_ETH);
 +		if (!f->hw_dev) {
 +			f->hw_dev = dev;
 +			return tc_skip_sw(f->flags) ? -EINVAL : 0;
 +		}
++
++		f->mlx5e_flags = MLX5E_TC_EGRESS;
 +	} else {
 +		f->hw_dev = dev;
++		f->mlx5e_flags = MLX5E_TC_INGRESS;
 +	}
 +
 +	offload.command = TC_CLSFLOWER_REPLACE;
@@ -437,7 +423,7 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 +	offload.exts = &f->exts;
 +
 +	priv = netdev_priv(f->hw_dev);
-+	err = mlx5e_configure_flower(priv, &offload);
++	err = mlx5e_configure_flower(priv, &offload, f->mlx5e_flags);
 +	if (!err)
 +		f->flags |= TCA_CLS_FLAGS_IN_HW;
 +	if (tc_skip_sw(f->flags))
@@ -464,5 +450,5 @@ Subject: [PATCH] BACKPORT: net/sched/cls_flower.c
 +	offload.exts = &f->exts;
 +
 +	priv = netdev_priv(dev);
-+	mlx5e_stats_flower(priv, &offload);
++	mlx5e_stats_flower(priv, &offload, f->mlx5e_flags);
 +}
